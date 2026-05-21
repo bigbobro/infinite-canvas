@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -27,17 +28,20 @@ func AIChatCompletions(w http.ResponseWriter, r *http.Request) {
 func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	body, contentType, modelName, err := readAIRequest(r)
 	if err != nil {
-		Fail(w, err.Error())
+		log.Printf("AI proxy request read failed: %v", err)
+		Fail(w, "AI 接口请求失败")
 		return
 	}
 	channel, err := service.SelectModelChannel(modelName)
 	if err != nil {
-		Fail(w, err.Error())
+		log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
+		Fail(w, "AI 接口请求失败")
 		return
 	}
 	request, err := http.NewRequest(http.MethodPost, service.BuildModelChannelURL(channel, path), bytes.NewReader(body))
 	if err != nil {
-		Fail(w, err.Error())
+		log.Printf("AI proxy build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, path), err)
+		Fail(w, "AI 接口请求失败")
 		return
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
@@ -46,10 +50,18 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		Fail(w, err.Error())
+		log.Printf("AI proxy request failed: url=%s err=%v", request.URL.String(), err)
+		Fail(w, "AI 接口请求失败")
 		return
 	}
 	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		log.Printf("AI upstream error: url=%s status=%d body=%s", request.URL.String(), response.StatusCode, strings.TrimSpace(string(payload)))
+		Fail(w, "AI 接口请求失败")
+		return
+	}
 
 	for key, values := range response.Header {
 		if strings.EqualFold(key, "Content-Length") {

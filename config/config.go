@@ -1,6 +1,10 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"strings"
+
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
 )
@@ -19,5 +23,23 @@ var Cfg Config
 
 func Load() error {
 	_ = godotenv.Load()
-	return env.Parse(&Cfg)
+	if err := env.Parse(&Cfg); err != nil {
+		return err
+	}
+	if strings.TrimSpace(Cfg.JWTSecret) == "" || Cfg.JWTSecret == "infinite-canvas" {
+		secret, err := randomSecret()
+		if err != nil {
+			return err
+		}
+		Cfg.JWTSecret = secret
+	}
+	return nil
+}
+
+func randomSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

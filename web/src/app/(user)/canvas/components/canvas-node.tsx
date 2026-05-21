@@ -495,13 +495,15 @@ function ImageContent({
 
   return (
     <BatchFrame batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} onToggleBatch={onToggleBatch}>
-      <img
-        src={node.metadata!.content!}
-        alt={node.title}
-        draggable={false}
-        onDragStart={(event) => event.preventDefault()}
-        className={`pointer-events-none block h-full w-full select-none rounded-[inherit] ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
-      />
+      <div className="h-full w-full overflow-hidden rounded-3xl">
+        <img
+          src={node.metadata!.content!}
+          alt={node.title}
+          draggable={false}
+          onDragStart={(event) => event.preventDefault()}
+          className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
+        />
+      </div>
       {isBatchRoot ? (
         <button
           type="button"

@@ -41,7 +41,7 @@
 
 | 模式 | 说明 |
 | --- | --- |
-| 云端渠道 | 使用后端 `/api/ai/*` 代理接口，请求会按模型名匹配 `private.value.channels` 中的可用渠道 |
+| 云端渠道 | 使用后端 `/api/v1/*` 代理接口，请求会按模型名匹配 `private.value.channels` 中的可用渠道 |
 | 本地直连 | 仅 `allowCustomChannel` 为 `true` 时可选，用户在浏览器本地配置 `baseUrl`、`apiKey` 和模型列表后直接请求模型接口 |
 
 ## private.value

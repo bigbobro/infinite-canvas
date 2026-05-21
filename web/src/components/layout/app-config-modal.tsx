@@ -70,7 +70,7 @@ export function AppConfigModal() {
                 size="middle"
                 value={effectiveMode}
                 onChange={(value) => updateConfig("channelMode", value as AiConfig["channelMode"])}
-                options={[{ label: "云端渠道", value: "remote" }, { label: "本地直连", value: "local" }]}
+                options={[{ label: "本地直连", value: "local" },{ label: "云端渠道", value: "remote" }]}
               />
             </Form.Item>
           ) : null}

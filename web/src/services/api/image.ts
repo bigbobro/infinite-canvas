@@ -14,6 +14,8 @@ export type ChatCompletionMessage = {
 type ImageApiResponse = {
   data?: Array<Record<string, unknown>>;
   error?: { message?: string };
+  code?: number;
+  msg?: string;
 };
 
 function resolveImageDataUrl(item: Record<string, unknown>) {
@@ -27,6 +29,9 @@ function resolveImageDataUrl(item: Record<string, unknown>) {
 }
 
 function parseImagePayload(payload: ImageApiResponse) {
+  if (typeof payload.code === "number" && payload.code !== 0) {
+    throw new Error(payload.msg || "请求失败");
+  }
   const images =
     payload.data
       ?.map(resolveImageDataUrl)
@@ -41,8 +46,9 @@ function parseImagePayload(payload: ImageApiResponse) {
 }
 
 function readAxiosError(error: unknown, fallback: string) {
-  if (axios.isAxiosError<{ error?: { message?: string } }>(error)) {
-    return error.response?.data?.error?.message || (error.response?.status ? `${fallback}：${error.response.status}` : fallback);
+  if (axios.isAxiosError<{ error?: { message?: string }; msg?: string; code?: number }>(error)) {
+    const responseData = error.response?.data;
+    return responseData?.msg || responseData?.error?.message || (error.response?.status ? `${fallback}：${error.response.status}` : fallback);
   }
   return error instanceof Error ? error.message : fallback;
 }
@@ -64,7 +70,7 @@ function withSystemPrompt(config: AiConfig, prompt: string) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
-  return config.channelMode === "remote" ? `/api/ai${path}` : buildApiUrl(config.baseUrl, path);
+  return config.channelMode === "remote" ? `/api/v1${path}` : buildApiUrl(config.baseUrl, path);
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
@@ -134,7 +140,7 @@ export async function requestImageQuestion(config: AiConfig, messages: ChatCompl
   let processedLength = 0;
 
   try {
-    await axios.post(
+    const response = await axios.post(
       aiApiUrl(config, "/chat/completions"),
       {
       model: config.model,
@@ -162,6 +168,21 @@ export async function requestImageQuestion(config: AiConfig, messages: ChatCompl
         },
       },
     );
+    if (typeof response.data === "object" && response.data && "code" in response.data && (response.data as { code?: number; msg?: string }).code !== 0) {
+      throw new Error((response.data as { msg?: string }).msg || "请求失败");
+    }
+    if (typeof response.data === "string") {
+      let apiError = "";
+      try {
+        const payload = JSON.parse(response.data) as { code?: number; msg?: string };
+        if (typeof payload.code === "number" && payload.code !== 0) {
+          apiError = payload.msg || "请求失败";
+        }
+      } catch {
+        // ignore plain text stream content
+      }
+      if (apiError) throw new Error(apiError);
+    }
     if (buffer) {
       parseStreamChunk(buffer, (delta) => {
         answer += delta;

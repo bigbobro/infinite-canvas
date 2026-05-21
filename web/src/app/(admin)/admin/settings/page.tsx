@@ -2,7 +2,7 @@
 
 import { CheckCircleOutlined, DeleteOutlined, FormatPainterOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import { json } from "@codemirror/lang-json";
-import { App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
+import { Alert, App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
@@ -294,6 +294,11 @@ export default function AdminSettingsPage() {
           ) : activeMode === "visual" ? (
             <Form form={form} layout="vertical" initialValues={emptySettings} requiredMark={false}>
               <Flex vertical gap={12}>
+                <Alert
+                  showIcon
+                  type="warning"
+                  message="当前还没有完整用户体系，所有访问到站点的用户都可以无条件使用后端渠道 API。请不要公网部署，避免私有渠道额度被他人消耗。"
+                />
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => openChannelDrawer(null)}>新增渠道</Button>
                 <Table
                   rowKey={(_, index) => String(index)}

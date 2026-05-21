@@ -17,6 +17,7 @@ export enum CanvasNodeType {
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasGenerationMode = "text" | "image";
+export type CanvasImageGenerationType = "generation" | "edit";
 
 export type CanvasNodeMetadata = {
   content?: string;
@@ -25,15 +26,19 @@ export type CanvasNodeMetadata = {
   errorDetails?: string;
   fontSize?: number;
   generationMode?: CanvasGenerationMode;
+  generationType?: CanvasImageGenerationType;
   model?: string;
   size?: string;
+  quality?: string;
   count?: number;
+  references?: string[];
   naturalWidth?: number;
   naturalHeight?: number;
   freeResize?: boolean;
   isBatchRoot?: boolean;
   batchRootId?: string;
   batchChildIds?: string[];
+  batchUsesReferenceImages?: boolean;
   primaryImageId?: string;
   imageBatchExpanded?: boolean;
   inputOrder?: string[];

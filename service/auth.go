@@ -92,6 +92,9 @@ func Login(username string, password string) (model.AuthSession, error) {
 func ParseToken(tokenText string) (TokenClaims, error) {
 	claims := TokenClaims{}
 	token, err := jwt.ParseWithClaims(tokenText, &claims, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("登录状态无效")
+		}
 		return []byte(config.Cfg.JWTSecret), nil
 	})
 	if err != nil || !token.Valid {
@@ -214,8 +217,5 @@ func newID(prefix string) string {
 func WarnDefaultSecurityConfig() {
 	if config.Cfg.AdminUsername == "admin" && config.Cfg.AdminPassword == "infinite-canvas" {
 		log.Println("WARNING: using default admin credentials, please set ADMIN_USERNAME and ADMIN_PASSWORD to safer values before deployment")
-	}
-	if config.Cfg.JWTSecret == "infinite-canvas" {
-		log.Println("WARNING: using default JWT_SECRET, please set a long random value before deployment")
 	}
 }
