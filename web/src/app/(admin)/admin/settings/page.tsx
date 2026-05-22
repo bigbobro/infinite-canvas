@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircleOutlined, DeleteOutlined, FormatPainterOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
+import { CheckCircleOutlined, DeleteOutlined, FormatPainterOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import { json } from "@codemirror/lang-json";
 import { Alert, App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
@@ -102,11 +102,12 @@ export default function AdminSettingsPage() {
     setIsSaving(true);
     try {
       const saved = normalizeSettings(await saveAdminSettings(token, values));
-      form.setFieldsValue(saved);
-      setChannels(saved.private.channels);
+      const merged = mergeChannelApiKeys(values.private.channels, saved);
+      form.setFieldsValue(merged);
+      setChannels(merged.private.channels);
       setJsonText({
-        public: JSON.stringify(saved.public, null, 2),
-        private: JSON.stringify(saved.private, null, 2),
+        public: JSON.stringify(merged.public, null, 2),
+        private: JSON.stringify(merged.private, null, 2),
       });
       message.success("已保存");
     } catch (error) {
@@ -164,19 +165,23 @@ export default function AdminSettingsPage() {
     const nextChannels = [...channels];
     if (editingChannelIndex === null) nextChannels.push(channel);
     else nextChannels[editingChannelIndex] = channel;
-    setChannels(nextChannels);
-    form.setFieldValue(["private", "channels"], nextChannels);
+    await persistChannels(nextChannels);
     closeChannelDrawer();
   };
 
   const fetchChannelModelList = async () => {
+    if (!token) return;
     const channel = channelForm.getFieldsValue();
-    if (!channel?.baseUrl || !channel?.apiKey) {
-      message.warning("请先填写接口地址和 API Key");
+    if (!channel?.baseUrl) {
+      message.warning("请先填写接口地址");
+      return;
+    }
+    if (editingChannelIndex === null && !channel?.apiKey) {
+      message.warning("请先填写 API Key");
       return;
     }
     try {
-      const channelModels = await fetchChannelModels(channel);
+      const channelModels = await fetchChannelModels(token, { index: editingChannelIndex ?? undefined, channel: normalizeChannel(channel) });
       channelForm.setFieldValue("models", channelModels);
       message.success(`已获取 ${channelModels.length} 个模型`);
     } catch (error) {
@@ -186,8 +191,8 @@ export default function AdminSettingsPage() {
 
   const openTestDialog = (index: number) => {
     const channel = normalizeChannel(channels[index]);
-    if (!channel.baseUrl || !channel.apiKey || channel.models.length === 0) {
-      message.warning("请先填写接口地址、API Key 和至少一个模型");
+    if (!channel.baseUrl || channel.models.length === 0) {
+      message.warning("请先填写接口地址和至少一个模型");
       return;
     }
     setTestChannelIndex(index);
@@ -207,11 +212,12 @@ export default function AdminSettingsPage() {
 
   const testModelOnline = async (model: string) => {
     if (testChannelIndex === null) return;
+    if (!token) return;
     const channel = normalizeChannel(channels[testChannelIndex]);
     setTestingModels((current) => [...current, model]);
     try {
       const startedAt = performance.now();
-      const result = await testChannelModel(channel, model);
+      const result = await testChannelModel(token, { index: testChannelIndex, channel, model });
       setTestResults((current) => ({ ...current, [model]: { status: "success", duration: `${((performance.now() - startedAt) / 1000).toFixed(2)}s`, message: result } }));
     } catch (error) {
       setTestResults((current) => ({ ...current, [model]: { status: "error", message: error instanceof Error ? error.message : "测试失败" } }));
@@ -228,6 +234,24 @@ export default function AdminSettingsPage() {
 
   const testChannel = testChannelIndex === null ? null : normalizeChannel(channels[testChannelIndex]);
   const testModels = (testChannel?.models || []).filter((model) => model.toLowerCase().includes(testKeyword.trim().toLowerCase()));
+
+  async function persistChannels(nextChannels: AdminModelChannel[]) {
+    if (!token) return;
+    const values = normalizeSettings(form.getFieldsValue(true) as AdminSettings);
+    const nextSettings = normalizeSettings({
+      ...values,
+      private: { ...values.private, channels: nextChannels },
+    });
+    const saved = normalizeSettings(await saveAdminSettings(token, nextSettings));
+    const merged = mergeChannelApiKeys(nextChannels, saved);
+    setChannels(merged.private.channels);
+    form.setFieldsValue(merged);
+    setJsonText({
+      public: JSON.stringify(merged.public, null, 2),
+      private: JSON.stringify(merged.private, null, 2),
+    });
+    message.success("已保存");
+  }
 
   return (
     <main style={{ padding: 24 }}>
@@ -322,8 +346,7 @@ export default function AdminSettingsPage() {
                           <Button danger size="small" icon={<DeleteOutlined />} onClick={() => {
                             const nextChannels = [...channels];
                             nextChannels.splice(index, 1);
-                            setChannels(nextChannels);
-                            form.setFieldValue(["private", "channels"], nextChannels);
+                            void persistChannels(nextChannels);
                           }} />
                         </Space>
                       ),
@@ -394,7 +417,7 @@ export default function AdminSettingsPage() {
                   dataIndex: "model",
                   width: 260,
                   render: (value) => {
-                    if (testingModels.includes(value)) return <Tag color="processing">测试中</Tag>;
+                    if (testingModels.includes(value)) return <Tag icon={<LoadingOutlined className="animate-spin" />}>测试中</Tag>;
                     const result = testResults[value];
                     if (!result) return <Tag>未开始</Tag>;
                     return result.status === "success" ? (
@@ -460,6 +483,17 @@ function normalizeChannel(item: Partial<AdminModelChannel> = {}): AdminModelChan
     weight: Math.max(1, Number(item.weight) || 1),
     enabled: item.enabled !== false,
     remark: item.remark || "",
+  };
+}
+
+function mergeChannelApiKeys(currentChannels: AdminModelChannel[], saved: AdminSettings): AdminSettings {
+  const channels = saved.private.channels.map((item, index) => ({
+    ...item,
+    apiKey: currentChannels[index]?.apiKey || item.apiKey,
+  }));
+  return {
+    public: saved.public,
+    private: { channels },
   };
 }
 

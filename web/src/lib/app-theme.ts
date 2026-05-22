@@ -12,6 +12,8 @@ const neutral = {
     selectActiveBg: "#f5f5f5",
     selectSelectedBg: "#f0f0f0",
     selectText: "#171717",
+    tableSelectedBg: "rgba(17, 17, 17, 0.05)",
+    tableSelectedHoverBg: "rgba(17, 17, 17, 0.08)",
   },
   dark: {
     primary: "#fafafa",
@@ -22,6 +24,8 @@ const neutral = {
     selectActiveBg: "#262626",
     selectSelectedBg: "#333333",
     selectText: "#fafafa",
+    tableSelectedBg: "rgba(255, 255, 255, 0.08)",
+    tableSelectedHoverBg: "rgba(255, 255, 255, 0.12)",
   },
 };
 
@@ -64,6 +68,10 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
         optionActiveBg: color.selectActiveBg,
         optionSelectedBg: color.selectSelectedBg,
         optionSelectedColor: color.selectText,
+      },
+      Table: {
+        rowSelectedBg: color.tableSelectedBg,
+        rowSelectedHoverBg: color.tableSelectedHoverBg,
       },
     },
   };

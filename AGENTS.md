@@ -68,7 +68,7 @@
 - 详细功能介绍写到 `docs/features.md`。
 - 后续待办写到 `docs/todo.md`。
 - 已实现但还需要用户测试确认的事项写到 `docs/pending-test.md`。
-- 面向用户的新增、调整、修复等版本变更写到根目录 `CHANGELOG.md` 的 `Unreleased` 中。
+- `docs/pending-test.md` 用来记录这个版本实际做了哪些可测试变更；`CHANGELOG.md` 的 `Unreleased` 只保留对这些变更的版本级归纳，避免逐条照搬实现细节。
 - 每次 todo 事项完成后，先从 `docs/todo.md` 移到 `docs/pending-test.md`，不要直接写进正式功能说明；用户确认测试通过后再更新 `docs/features.md`。
 - 每次任务完成前，都要根据实际变更检查并更新 `docs/todo.md` 和 `docs/pending-test.md`；如果功能或待办没有变化，也要确认无需修改。
 - 接口响应规则写到 `docs/api-response.md`。
