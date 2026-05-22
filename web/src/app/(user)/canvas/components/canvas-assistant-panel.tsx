@@ -404,7 +404,7 @@ function AssistantComposer({
             {mode === "image" ? (
               <>
                 <ModelPicker config={config} value={config.imageModel || config.model} onChange={(model) => onConfigChange("imageModel", model)} onMissingConfig={onMissingConfig} />
-                <CanvasImageSettingsPopover config={config} onConfigChange={onConfigChange} onMissingConfig={onMissingConfig} />
+                <CanvasImageSettingsPopover config={config} placement="topRight" getPopupContainer={() => document.body} onConfigChange={onConfigChange} onMissingConfig={onMissingConfig} />
               </>
             ) : (
               <ModelPicker config={config} value={config.textModel || config.model} onChange={(model) => onConfigChange("textModel", model)} onMissingConfig={onMissingConfig} />

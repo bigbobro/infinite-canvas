@@ -152,7 +152,7 @@ function AspectIcon({ type, width, height, color }: { type: string; width: numbe
   const boxHeight = ratio >= 1 ? Math.max(12, 28 / ratio) : 28;
   return (
     <span className="grid h-8 w-10 place-items-center">
-      <span className="rounded-md border-2" style={{ width: boxWidth, height: boxHeight, borderColor: color }} />
+      <span className="border-2" style={{ width: boxWidth, height: boxHeight, borderColor: color }} />
     </span>
   );
 }
