@@ -10,12 +10,14 @@ import type { Prompt } from "@/services/api/prompts";
 import { useAdminPrompts } from "./use-admin-prompts";
 
 export default function AdminPromptsPage() {
-  const { categories, prompts, tags, keyword, category, tag, page, pageSize, total, isLoading, isSyncing, searchPrompts, changeCategory, changeTag, changePage, changePageSize, resetFilters, refreshPrompts, syncCategory, savePrompt: saveAdminPrompt, deletePrompt } = useAdminPrompts();
+  const { categories, prompts, tags, keyword, category, tag, page, pageSize, total, isLoading, isSyncing, searchPrompts, changeCategory, changeTag, changePage, changePageSize, resetFilters, refreshPrompts, syncCategory, savePrompt: saveAdminPrompt, deletePrompt, deletePrompts } = useAdminPrompts();
   const copyText = useCopyText();
   const [form] = Form.useForm<Partial<Prompt> & { tagText?: string }>();
   const [editingPrompt, setEditingPrompt] = useState<Partial<Prompt> | null>(null);
   const [detailPrompt, setDetailPrompt] = useState<Prompt | null>(null);
   const [deletingPrompt, setDeletingPrompt] = useState<Prompt | null>(null);
+  const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([]);
+  const [isBatchDeleteOpen, setIsBatchDeleteOpen] = useState(false);
   const [isSyncOpen, setIsSyncOpen] = useState(false);
   const defaultCategory = categories[0]?.category || "";
   const categoryName = (category: string) => categories.find((item) => item.category === category)?.name || category;
@@ -30,6 +32,12 @@ export default function AdminPromptsPage() {
     const value = await form.validateFields();
     await saveAdminPrompt({ ...editingPrompt, ...value, category: value.category || defaultCategory, tags: (value.tagText || "").split(",").map((item) => item.trim()).filter(Boolean) });
     setEditingPrompt(null);
+  };
+
+  const batchDeletePrompts = async () => {
+    await deletePrompts(selectedPromptIds);
+    setSelectedPromptIds([]);
+    setIsBatchDeleteOpen(false);
   };
 
   const columns: ProColumns<Prompt>[] = [
@@ -96,7 +104,12 @@ export default function AdminPromptsPage() {
           cardProps={{ variant: "borderless" }}
           headerTitle={<Space><Typography.Text strong>提示词列表</Typography.Text><Tag>{total} 条</Tag></Space>}
           options={{ density: true, setting: true, reload: () => void refreshPrompts() }}
-          toolBarRender={() => [<Button key="sync" icon={<SyncOutlined />} onClick={() => setIsSyncOpen(true)}>同步</Button>, <Button key="add" type="primary" icon={<PlusOutlined />} onClick={() => setEditingPrompt({ category: defaultCategory, tags: [] })}>新增</Button>]}
+          rowSelection={{ selectedRowKeys: selectedPromptIds, onChange: (keys) => setSelectedPromptIds(keys.map(String)) }}
+          toolBarRender={() => [
+            <Button key="batch-delete" danger icon={<DeleteOutlined />} disabled={!selectedPromptIds.length} onClick={() => setIsBatchDeleteOpen(true)}>批量删除{selectedPromptIds.length ? ` ${selectedPromptIds.length}` : ""}</Button>,
+            <Button key="sync" icon={<SyncOutlined />} onClick={() => setIsSyncOpen(true)}>同步</Button>,
+            <Button key="add" type="primary" icon={<PlusOutlined />} onClick={() => setEditingPrompt({ category: defaultCategory, tags: [] })}>新增</Button>,
+          ]}
           pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (value) => `共 ${value} 条`, onChange: (nextPage, nextPageSize) => nextPageSize !== pageSize ? changePageSize(nextPageSize) : changePage(nextPage) }}
         />
       </Flex>
@@ -145,6 +158,10 @@ export default function AdminPromptsPage() {
 
       <Modal title="删除提示词" open={Boolean(deletingPrompt)} onCancel={() => setDeletingPrompt(null)} onOk={async () => { if (!deletingPrompt) return; await deletePrompt(deletingPrompt.id); setDeletingPrompt(null); }} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
         确定删除「{deletingPrompt?.title}」吗？删除后会从当前分类中删除。
+      </Modal>
+
+      <Modal title="批量删除提示词" open={isBatchDeleteOpen} onCancel={() => setIsBatchDeleteOpen(false)} onOk={() => void batchDeletePrompts()} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
+        确定删除已选中的 {selectedPromptIds.length} 条提示词吗？删除后会从当前分类中删除。
       </Modal>
     </main>
   );

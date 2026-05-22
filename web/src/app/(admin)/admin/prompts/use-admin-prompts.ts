@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { deleteAdminPrompt, fetchAdminPrompts, fetchAdminPromptCategories, saveAdminPrompt, syncAdminPromptCategory, type AdminPromptCategory } from "@/services/api/admin";
+import { deleteAdminPrompt, deleteAdminPrompts, fetchAdminPrompts, fetchAdminPromptCategories, saveAdminPrompt, syncAdminPromptCategory, type AdminPromptCategory } from "@/services/api/admin";
 import type { Prompt } from "@/services/api/prompts";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -71,6 +71,18 @@ export function useAdminPrompts() {
     },
   });
 
+  const batchDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) => deleteAdminPrompts(token, ids),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin", "prompt-categories"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "prompts"] });
+      message.success("提示词已批量删除");
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : "批量删除失败");
+    },
+  });
+
   useEffect(() => {
     const error = categoriesQuery.error || promptsQuery.error;
     if (!error) return;
@@ -101,7 +113,7 @@ export function useAdminPrompts() {
     page,
     pageSize,
     total: data?.total || 0,
-    isLoading: categoriesQuery.isFetching || promptsQuery.isFetching || saveMutation.isPending || deleteMutation.isPending,
+    isLoading: categoriesQuery.isFetching || promptsQuery.isFetching || saveMutation.isPending || deleteMutation.isPending || batchDeleteMutation.isPending,
     isSyncing: syncMutation.isPending,
     syncCategory: (category: string) => syncMutation.mutateAsync(category),
     searchPrompts: (value = keyword) => updateFilters({ keyword: value }),
@@ -116,5 +128,6 @@ export function useAdminPrompts() {
     },
     savePrompt: (prompt: Partial<Prompt>) => saveMutation.mutateAsync(prompt),
     deletePrompt: (id: string) => deleteMutation.mutateAsync(id),
+    deletePrompts: (ids: string[]) => batchDeleteMutation.mutateAsync(ids),
   };
 }

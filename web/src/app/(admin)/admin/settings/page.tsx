@@ -35,7 +35,7 @@ const emptySettings: AdminSettings = {
       allowCustomChannel: true,
     },
   },
-  private: { channels: [] },
+  private: { channels: [], promptSync: { enabled: false, cron: "0 3 * * *" } },
 };
 const emptyChannel: AdminModelChannel = { protocol: "openai", name: "", baseUrl: "", apiKey: "", models: [], weight: 1, enabled: true, remark: "" };
 
@@ -62,6 +62,7 @@ export default function AdminSettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const publicModels = Form.useWatch(["public", "modelChannel", "availableModels"], form) || [];
   const channelModels = useMemo(() => collectChannelModels(channels), [channels]);
+  const channelTableData = useMemo(() => channels.map((channel, index) => ({ ...channel, _index: index, _rowKey: `${index}-${channel.name}-${channel.baseUrl}` })), [channels]);
   const modelOptions = useMemo(() => uniqueModels([...publicModels, ...channelModels]), [publicModels, channelModels]);
   const activeMode = editorMode[activeTab];
   const activeJsonText = jsonText[activeTab];
@@ -321,13 +322,19 @@ export default function AdminSettingsPage() {
                 <Alert
                   showIcon
                   type="warning"
-                  message="当前还没有完整用户体系，所有访问到站点的用户都可以无条件使用后端渠道 API。请不要公网部署，避免私有渠道额度被他人消耗。"
+                  title="当前还没有完整用户体系，所有访问到站点的用户都可以无条件使用后端渠道 API。请不要公网部署，避免私有渠道额度被他人消耗。"
                 />
+                <Card size="small" title="提示词定时同步">
+                  <Row gutter={16} align="middle">
+                    <Col xs={24} md={8}><Form.Item name={["private", "promptSync", "enabled"]} label="开启定时同步" valuePropName="checked"><Switch /></Form.Item></Col>
+                    <Col xs={24} md={16}><Form.Item name={["private", "promptSync", "cron"]} label="Cron 表达式" extra="默认每天 03:00 同步内置 GitHub 远程提示词源"><Input placeholder="0 3 * * *" /></Form.Item></Col>
+                  </Row>
+                </Card>
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => openChannelDrawer(null)}>新增渠道</Button>
                 <Table
-                  rowKey={(_, index) => String(index)}
+                  rowKey="_rowKey"
                   pagination={false}
-                  dataSource={channels}
+                  dataSource={channelTableData}
                   columns={[
                     { title: "名称", dataIndex: "name", render: (value) => value || "未命名渠道" },
                     { title: "协议", dataIndex: "protocol", width: 96, render: (value) => <Tag>{value || "openai"}</Tag> },
@@ -339,13 +346,13 @@ export default function AdminSettingsPage() {
                       key: "actions",
                       width: 220,
                       align: "right",
-                      render: (_, __, index) => (
+                      render: (_, item) => (
                         <Space size={4}>
-                          <Button size="small" onClick={() => openTestDialog(index)}>测试</Button>
-                          <Button size="small" onClick={() => openChannelDrawer(index)}>编辑</Button>
+                          <Button size="small" onClick={() => openTestDialog(item._index)}>测试</Button>
+                          <Button size="small" onClick={() => openChannelDrawer(item._index)}>编辑</Button>
                           <Button danger size="small" icon={<DeleteOutlined />} onClick={() => {
                             const nextChannels = [...channels];
-                            nextChannels.splice(index, 1);
+                            nextChannels.splice(item._index, 1);
                             void persistChannels(nextChannels);
                           }} />
                         </Space>
@@ -470,6 +477,10 @@ function normalizePublicSetting(setting: Partial<AdminSettings["public"]> = {}):
 function normalizePrivateSetting(setting: Partial<AdminSettings["private"]> = {}): AdminSettings["private"] {
   return {
     channels: (setting.channels || []).map(normalizeChannel),
+    promptSync: {
+      enabled: setting.promptSync?.enabled === true,
+      cron: setting.promptSync?.cron || "0 3 * * *",
+    },
   };
 }
 
@@ -493,7 +504,7 @@ function mergeChannelApiKeys(currentChannels: AdminModelChannel[], saved: AdminS
   }));
   return {
     public: saved.public,
-    private: { channels },
+    private: { ...saved.private, channels },
   };
 }
 

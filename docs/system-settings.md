@@ -59,13 +59,18 @@
       "enabled": true,
       "remark": ""
     }
-  ]
+  ],
+  "promptSync": {
+    "enabled": false,
+    "cron": "0 3 * * *"
+  }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `channels` | object[] | 模型渠道列表 |
+| `promptSync` | object | GitHub 远程提示词定时同步配置 |
 
 `channels` 每项字段：
 
@@ -81,3 +86,10 @@
 | `remark` | string | 备注 |
 
 后端调用模型时，会从已启用、已配置 `baseUrl` 和 `apiKey`、且 `models` 包含目标模型的渠道中选择一个。
+
+`promptSync` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `enabled` | boolean | 是否开启定时同步 |
+| `cron` | string | Cron 表达式，默认每天 03:00 |

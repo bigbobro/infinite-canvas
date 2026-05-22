@@ -129,6 +129,7 @@
 | 字段         | 类型       | 说明       |
 |------------|----------|----------|
 | `channels` | object[] | 模型渠道配置列表 |
+| `promptSync` | object | GitHub 远程提示词定时同步配置 |
 
 `channels` 每项字段：
 
@@ -142,6 +143,13 @@
 | `weight` | number   | 渠道权重，同一模型命中多个渠道时按权重随机 |
 | `enabled` | bool    | 是否启用     |
 | `remark` | string   | 备注       |
+
+`promptSync` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `enabled` | bool | 是否开启定时同步 |
+| `cron` | string | Cron 表达式，默认每天 03:00 |
 
 后端请求模型时，先按模型名筛选启用且包含该模型的渠道，再按 `weight` 加权随机选择一个渠道。
 

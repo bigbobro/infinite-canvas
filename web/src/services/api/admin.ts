@@ -58,6 +58,10 @@ export async function deleteAdminPrompt(token: string, id: string) {
   return apiDelete<boolean>(`/api/admin/prompts/${encodeURIComponent(id)}`, token);
 }
 
+export async function deleteAdminPrompts(token: string, ids: string[]) {
+  return apiPost<boolean>("/api/admin/prompts/batch-delete", { ids }, token);
+}
+
 export type AdminAssetQuery = {
   keyword?: string;
   type?: string;
@@ -108,6 +112,10 @@ export type AdminPublicSettings = {
 
 export type AdminPrivateSettings = {
   channels: AdminModelChannel[];
+  promptSync: {
+    enabled: boolean;
+    cron: string;
+  };
 };
 
 export type AdminSettings = {
