@@ -267,6 +267,7 @@ function InfiniteCanvasPage() {
   const [assetPickerTab, setAssetPickerTab] = useState<AssetPickerTab>("my-assets");
   const [projectLoaded, setProjectLoaded] = useState(false);
   const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
+  const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
   const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editRequestNonce, setEditRequestNonce] = useState(0);
@@ -373,6 +374,10 @@ function InfiniteCanvasPage() {
   }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, updateProject]);
 
   useEffect(() => {
+    if (!dialogNodeId) setNodeImageSettingsOpen(false);
+  }, [dialogNodeId]);
+
+  useEffect(() => {
     if (!projectLoaded) return;
     if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
     viewportSaveTimerRef.current = setTimeout(() => {
@@ -444,13 +449,13 @@ function InfiniteCanvasPage() {
   }, []);
 
   const keepNodeToolbar = useCallback((nodeId: string) => {
-    if (nodeDraggingRef.current) return;
+    if (nodeDraggingRef.current || nodeImageSettingsOpen) return;
     if (toolbarHideTimerRef.current) {
       clearTimeout(toolbarHideTimerRef.current);
       toolbarHideTimerRef.current = null;
     }
     setToolbarNodeId(nodeId);
-  }, []);
+  }, [nodeImageSettingsOpen]);
 
   const hideNodeToolbar = useCallback(() => {
     if (toolbarHideTimerRef.current) clearTimeout(toolbarHideTimerRef.current);
@@ -1891,6 +1896,10 @@ function InfiniteCanvasPage() {
                   onPromptChange={handleNodePromptChange}
                   onConfigChange={handleConfigNodeChange}
                   onGenerate={handleGenerateNode}
+                  onImageSettingsOpenChange={(open) => {
+                    setNodeImageSettingsOpen(open);
+                    if (open) setToolbarNodeId(null);
+                  }}
                 />
               )}
               renderNodeContent={(contentNode) => (
@@ -1955,7 +1964,7 @@ function InfiniteCanvasPage() {
         </InfiniteCanvas>
 
         <CanvasNodeHoverToolbar
-          node={isNodeDragging ? null : toolbarNode}
+          node={isNodeDragging || nodeImageSettingsOpen ? null : toolbarNode}
           viewport={viewport}
           onKeep={keepNodeToolbar}
           onLeave={hideNodeToolbar}
@@ -2370,7 +2379,7 @@ function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefine
   return {
     ...config,
     model: node?.metadata?.model || defaultModel || config.model || defaultConfig.model,
-    quality: config.quality || defaultConfig.quality,
+    quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
     size: node?.metadata?.size || config.size || defaultConfig.size,
     count: String(node?.metadata?.count || (mode === "image" ? 3 : config.count) || defaultConfig.count),
   };

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowUp, History, ImageIcon, LoaderCircle, MessageSquare, PanelRightClose, Plus, RotateCcw, Settings2, Sparkles, Trash2, X } from "lucide-react";
-import { Button, ConfigProvider, Input, InputNumber, Modal, Popover, Segmented, Tooltip } from "antd";
+import { Button, ConfigProvider, Modal, Segmented, Tooltip } from "antd";
 import { motion } from "motion/react";
 
 import { ImageGenerationPending } from "@/components/image-generation-pending";
@@ -17,6 +17,7 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import { DiaTextReveal } from "@/components/ui/dia-text-reveal";
+import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { CanvasNodeType, type CanvasAssistantImage, type CanvasAssistantMessage, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "../types";
 
@@ -401,7 +402,10 @@ function AssistantComposer({
               />
             </CanvasThemeProvider>
             {mode === "image" ? (
-              <ImageSettingsPopover config={config} onConfigChange={onConfigChange} onMissingConfig={onMissingConfig} />
+              <>
+                <ModelPicker config={config} value={config.imageModel || config.model} onChange={(model) => onConfigChange("imageModel", model)} onMissingConfig={onMissingConfig} />
+                <CanvasImageSettingsPopover config={config} onConfigChange={onConfigChange} onMissingConfig={onMissingConfig} />
+              </>
             ) : (
               <ModelPicker config={config} value={config.textModel || config.model} onChange={(model) => onConfigChange("textModel", model)} onMissingConfig={onMissingConfig} />
             )}
@@ -410,60 +414,6 @@ function AssistantComposer({
         </div>
       </div>
     </div>
-  );
-}
-
-function ImageSettingsPopover({ config, onConfigChange, onMissingConfig }: { config: AiConfig; onConfigChange: (key: keyof AiConfig, value: string) => void; onMissingConfig: () => void }) {
-  const theme = canvasThemes[useThemeStore((state) => state.theme)];
-  const quality = config.quality || "auto";
-  const count = String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1))));
-  const sizes = ["1:1", "3:2", "2:3", "16:9", "9:16", "auto"];
-  const customSize = sizes.includes(config.size || "auto") ? "" : config.size;
-  return (
-    <Popover
-      trigger="click"
-      placement="topLeft"
-      arrow={false}
-      overlayClassName="canvas-image-settings-popover"
-      color={theme.toolbar.panel}
-      content={(
-        <CanvasThemeProvider theme={theme}>
-          <div className="w-[330px] space-y-4" style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="text-base font-semibold">图像设置</div>
-            <div className="space-y-1.5">
-              <SettingTitle color={theme.node.muted}>模型</SettingTitle>
-              <ModelPicker className="!h-9 !w-full !max-w-none" config={config} value={config.imageModel || config.model} onChange={(model) => onConfigChange("imageModel", model)} onMissingConfig={onMissingConfig} fullWidth />
-            </div>
-            <div className="space-y-1.5">
-              <SettingTitle color={theme.node.muted}>质量</SettingTitle>
-              <Segmented block value={quality} onChange={(value) => onConfigChange("quality", String(value))} options={[{ value: "auto", label: "自动" }, { value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" }]} />
-            </div>
-            <div className="space-y-1.5">
-              <SettingTitle color={theme.node.muted}>宽高比</SettingTitle>
-              <div className="grid grid-cols-4 gap-1.5">
-                {sizes.map((size) => (
-                  <Button key={size} size="small" type={(config.size || "auto") === size ? "primary" : "default"} className="!h-7 !rounded-md !px-1.5" onClick={() => onConfigChange("size", size)}>
-                    {size}
-                  </Button>
-                ))}
-                <Input size="small" className="col-span-2 !h-7" placeholder="自定义比例" value={customSize} onChange={(event) => onConfigChange("size", event.target.value.trim() || "auto")} />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <SettingTitle color={theme.node.muted}>生成数量</SettingTitle>
-              <div className="grid grid-cols-[minmax(0,1fr)_92px] gap-2">
-                <Segmented block value={["1", "2", "3", "4"].includes(count) ? count : undefined} onChange={(value) => onConfigChange("count", String(value))} options={["1", "2", "3", "4"].map((value) => ({ value, label: `${value} 张` }))} />
-                <InputNumber min={1} max={15} size="small" className="canvas-control-number !h-8 !w-full" value={Number(count)} onChange={(value) => onConfigChange("count", String(value || 1))} />
-              </div>
-            </div>
-          </div>
-        </CanvasThemeProvider>
-      )}
-    >
-      <Button size="small" type="text" className="!h-8 !max-w-[180px] !justify-start !rounded-full !px-2.5" style={{ background: theme.node.fill, color: theme.node.text }} icon={<Settings2 className="size-3.5" />}>
-        <span className="truncate">{qualityLabel(quality)} · {config.size || "auto"} · {count} 张</span>
-      </Button>
-    </Popover>
   );
 }
 

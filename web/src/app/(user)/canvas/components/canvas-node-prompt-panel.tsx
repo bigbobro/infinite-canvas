@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { ArrowUp, LoaderCircle } from "lucide-react";
-import { Button, InputNumber } from "antd";
+import { Button } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
-import { CanvasSizePicker } from "./canvas-size-picker";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData } from "../types";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
@@ -20,9 +20,10 @@ type CanvasNodePromptPanelProps = {
   onPromptChange: (nodeId: string, prompt: string) => void;
   onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
   onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
+  onImageSettingsOpenChange?: (open: boolean) => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
   const globalConfig = useConfigStore((state) => state.config);
   const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
   const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -73,13 +74,21 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
       <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <CanvasPromptLibrary onSelect={updatePrompt} />
-          <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} onMissingConfig={() => openConfigDialog(true)} />
           {mode === "image" ? (
-            <CanvasSizePicker className="h-10 w-[92px] shrink-0" value={config.size} onChange={(value) => onConfigChange(node.id, { size: value })} />
-          ) : null}
-          {mode === "image" ? (
-            <InputNumber min={1} max={15} className="canvas-compact-control canvas-control-number h-10 shrink-0 !w-[58px]" value={Math.floor(Math.abs(Number(config.count)) || 1)} onChange={(value) => onConfigChange(node.id, { count: Number(value) || 1 })} />
-          ) : null}
+            <>
+              <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} onMissingConfig={() => openConfigDialog(true)} />
+              <CanvasImageSettingsPopover
+                config={config}
+                placement="topLeft"
+                buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
+                onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
+                onMissingConfig={() => openConfigDialog(true)}
+                onOpenChange={onImageSettingsOpenChange}
+              />
+            </>
+          ) : (
+            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} onMissingConfig={() => openConfigDialog(true)} />
+          )}
         </div>
         <Button
           type="primary"
@@ -104,7 +113,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
   return {
     ...globalConfig,
     model: node.metadata?.model || defaultModel || globalConfig.model || defaultConfig.model,
-    quality: globalConfig.quality || defaultConfig.quality,
+    quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
     size: node.metadata?.size || globalConfig.size || defaultConfig.size,
     count: String(node.metadata?.count || (mode === "image" ? 3 : globalConfig.count) || defaultConfig.count),
   };
