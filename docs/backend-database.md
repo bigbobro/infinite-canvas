@@ -122,7 +122,7 @@
 | `defaultImageModel` | string | 默认图片模型         |
 | `defaultTextModel` | string  | 默认文本模型         |
 | `systemPrompt`    | string   | 系统提示词          |
-| `allowCustomChannel` | bool    | 是否允许用户自定义渠道，允许时前端可提供走后端渠道和自定义 baseUrl 直连两种模式 |
+| `allowCustomChannel` | bool    | 是否允许用户自定义渠道，默认允许，关闭后前端只提供走后端渠道的模式 |
 
 `private.value` 当前字段：
 

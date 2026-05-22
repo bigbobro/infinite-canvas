@@ -17,7 +17,7 @@
     "defaultImageModel": "gpt-image-2",
     "defaultTextModel": "gpt-5.5",
     "systemPrompt": "",
-    "allowCustomChannel": false
+    "allowCustomChannel": true
   }
 }
 ```
@@ -35,14 +35,14 @@
 | `defaultImageModel` | string | 默认图片模型，从 `availableModels` 中选择 |
 | `defaultTextModel` | string | 默认文本模型，从 `availableModels` 中选择 |
 | `systemPrompt` | string | 系统提示词 |
-| `allowCustomChannel` | boolean | 是否允许用户在配置弹窗中切换为本地直连渠道 |
+| `allowCustomChannel` | boolean | 是否允许用户在配置弹窗中切换为本地直连渠道，默认允许 |
 
 用户侧请求模式：
 
 | 模式 | 说明 |
 | --- | --- |
 | 云端渠道 | 使用后端 `/api/v1/*` 代理接口，请求会按模型名匹配 `private.value.channels` 中的可用渠道 |
-| 本地直连 | 仅 `allowCustomChannel` 为 `true` 时可选，用户在浏览器本地配置 `baseUrl`、`apiKey` 和模型列表后直接请求模型接口 |
+| 本地直连 | 默认可选；`allowCustomChannel` 关闭后不可选，用户在浏览器本地配置 `baseUrl`、`apiKey` 和模型列表后直接请求模型接口 |
 
 ## private.value
 

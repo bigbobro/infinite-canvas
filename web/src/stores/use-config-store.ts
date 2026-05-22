@@ -24,7 +24,7 @@ export type AiConfig = {
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 
 export const defaultConfig: AiConfig = {
-  channelMode: "remote",
+  channelMode: "local",
   baseUrl: "https://api.openai.com",
   apiKey: "",
   model: "gpt-image-2",

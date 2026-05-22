@@ -32,7 +32,7 @@ const emptySettings: AdminSettings = {
       defaultImageModel: "",
       defaultTextModel: "",
       systemPrompt: "",
-      allowCustomChannel: false,
+      allowCustomChannel: true,
     },
   },
   private: { channels: [] },

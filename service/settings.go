@@ -33,6 +33,10 @@ func normalizePublicSetting(setting model.PublicSetting) model.PublicSetting {
 	if setting.ModelChannel.AvailableModels == nil {
 		setting.ModelChannel.AvailableModels = []string{}
 	}
+	if setting.ModelChannel.AllowCustomChannel == nil {
+		enabled := true
+		setting.ModelChannel.AllowCustomChannel = &enabled
+	}
 	return setting
 }
 

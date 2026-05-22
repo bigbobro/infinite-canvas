@@ -488,7 +488,7 @@ function InfiniteCanvasPage() {
     setConnections((prev) => [...prev, { id: nanoid(), ...connection }]);
     setSelectedNodeIds(new Set([newNode.id]));
     setSelectedConnectionId(null);
-    setDialogNodeId(newNode.id);
+    if (type !== CanvasNodeType.Text) setDialogNodeId(newNode.id);
     setPendingConnectionCreate(null);
     setConnecting(null);
   }, [effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, message, setConnecting]);
@@ -598,7 +598,7 @@ function InfiniteCanvasPage() {
       setNodes((prev) => [...prev, newNode]);
       setSelectedNodeIds(new Set([newNode.id]));
       setSelectedConnectionId(null);
-      setDialogNodeId(newNode.id);
+      if (type !== CanvasNodeType.Text) setDialogNodeId(newNode.id);
     },
     [effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, getCanvasCenter],
   );
@@ -1782,7 +1782,6 @@ function InfiniteCanvasPage() {
     setNodes((prev) => [...prev, node]);
     setSelectedNodeIds(new Set([node.id]));
     setSelectedConnectionId(null);
-    setDialogNodeId(node.id);
   }, [screenToCanvas, size.height, size.width]);
 
   const handleAssetInsert = useCallback((payload: InsertAssetPayload) => {

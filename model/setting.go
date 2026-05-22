@@ -28,7 +28,7 @@ type PublicModelChannelSetting struct {
 	DefaultImageModel  string   `json:"defaultImageModel"`
 	DefaultTextModel   string   `json:"defaultTextModel"`
 	SystemPrompt       string   `json:"systemPrompt"`
-	AllowCustomChannel bool     `json:"allowCustomChannel"`
+	AllowCustomChannel *bool    `json:"allowCustomChannel"`
 }
 
 // PublicSetting 公开配置。
