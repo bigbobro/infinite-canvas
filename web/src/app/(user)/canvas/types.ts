@@ -32,6 +32,8 @@ export type CanvasNodeMetadata = {
     size?: string;
     quality?: string;
     count?: number;
+    seconds?: string;
+    vquality?: string;
     references?: string[];
     naturalWidth?: number;
     naturalHeight?: number;

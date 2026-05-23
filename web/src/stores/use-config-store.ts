@@ -15,6 +15,8 @@ export type AiConfig = {
     imageModel: string;
     videoModel: string;
     textModel: string;
+    videoSeconds: string;
+    vquality: string;
     systemPrompt: string;
     models: string[];
     quality: string;
@@ -32,6 +34,8 @@ export const defaultConfig: AiConfig = {
     imageModel: "gpt-image-2",
     videoModel: "sora-2",
     textModel: "gpt-5.5",
+    videoSeconds: "6",
+    vquality: "auto",
     systemPrompt: "",
     models: [],
     quality: "auto",
@@ -107,7 +111,7 @@ export const useConfigStore = create<ConfigStore>()(
             partialize: (state) => ({ config: state.config }),
             merge: (persisted, current) => {
                 const config = { ...defaultConfig, ...((persisted as Partial<ConfigStore>).config || {}) };
-                return { ...current, config: { ...config, channelMode: config.channelMode || "remote", imageModel: config.imageModel || config.model, videoModel: config.videoModel || "sora-2", textModel: config.textModel || config.model } };
+                return { ...current, config: { ...config, channelMode: config.channelMode || "remote", imageModel: config.imageModel || config.model, videoModel: config.videoModel || "sora-2", textModel: config.textModel || config.model, videoSeconds: config.videoSeconds || "6", vquality: config.vquality || "auto" } };
             },
         },
     ),
