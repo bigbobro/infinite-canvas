@@ -49,7 +49,14 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
                 <ModelIcon model={current} />
                 <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current || placeholder}</span>
             </SelectTrigger>
-            <SelectContent className="z-50 w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl" position="popper" align="start">
+            <SelectContent
+                data-canvas-no-zoom
+                className="z-50 w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl"
+                position="popper"
+                align="start"
+                onPointerDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+            >
                 {options.length ? (
                     options.map((model) => (
                         <SelectItem key={model} value={model} textValue={model}>
@@ -77,7 +84,7 @@ function ModelLabel({ model }: { model: string }) {
 
 function ModelIcon({ model }: { model: string }) {
     const icon = resolveModelIcon(model);
-    return icon ? <img src={icon} alt="" className="size-4 shrink-0" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
+    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
 }
 
 function resolveModelIcon(model: string) {
