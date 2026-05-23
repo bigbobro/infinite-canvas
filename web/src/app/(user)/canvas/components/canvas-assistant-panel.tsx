@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowUp, History, ImageIcon, LoaderCircle, MessageSquare, PanelRightClose, Plus, RotateCcw, Settings2, Sparkles, Trash2, X } from "lucide-react";
-import { Button, ConfigProvider, Modal, Segmented, Tooltip } from "antd";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowUp, ChevronDown, Cpu, History, ImageIcon, LoaderCircle, MessageSquare, PanelRightClose, Plus, RotateCcw, Settings2, Sparkles, Trash2, X } from "lucide-react";
+import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { motion } from "motion/react";
 
 import { ImageGenerationPending } from "@/components/image-generation-pending";
-import { ModelPicker } from "@/components/model-picker";
 import { useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
@@ -417,41 +416,16 @@ function AssistantComposer({
                     placeholder={mode === "image" ? "描述你想生成或修改的图片" : "输入你想问的问题"}
                 />
                 <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <div className="canvas-composer-tools flex min-w-0 flex-1 items-center gap-1">
                         <CanvasPromptLibrary onSelect={onPromptChange} />
-                        <CanvasThemeProvider theme={theme}>
-                            <Segmented
-                                size="small"
-                                className="canvas-composer-mode !rounded-full !p-0.5"
-                                value={mode}
-                                onChange={(value) => onModeChange(value as AssistantMode)}
-                                options={[
-                                    {
-                                        value: "ask",
-                                        label: (
-                                            <Tooltip title="文本">
-                                                <MessageSquare className="size-4" />
-                                            </Tooltip>
-                                        ),
-                                    },
-                                    {
-                                        value: "image",
-                                        label: (
-                                            <Tooltip title="生图">
-                                                <ImageIcon className="size-4" />
-                                            </Tooltip>
-                                        ),
-                                    },
-                                ]}
-                            />
-                        </CanvasThemeProvider>
+                        <AssistantModeSwitch mode={mode} theme={theme} onChange={onModeChange} />
                         {mode === "image" ? (
                             <>
-                                <ModelPicker config={config} value={config.imageModel || config.model} onChange={(model) => onConfigChange("imageModel", model)} onMissingConfig={onMissingConfig} />
-                                <CanvasImageSettingsPopover config={config} placement="topRight" getPopupContainer={() => document.body} onConfigChange={onConfigChange} onMissingConfig={onMissingConfig} />
+                                <ComposerModelPill config={config} value={config.imageModel || config.model} onChange={(model) => onConfigChange("imageModel", model)} onMissingConfig={onMissingConfig} />
+                                <CanvasImageSettingsPopover config={config} placement="topRight" getPopupContainer={() => document.body} buttonClassName="canvas-composer-settings canvas-composer-icon !h-8 !min-w-8 !rounded-full !px-2" onConfigChange={onConfigChange} onMissingConfig={onMissingConfig} />
                             </>
                         ) : (
-                            <ModelPicker config={config} value={config.textModel || config.model} onChange={(model) => onConfigChange("textModel", model)} onMissingConfig={onMissingConfig} />
+                            <ComposerModelPill config={config} value={config.textModel || config.model} onChange={(model) => onConfigChange("textModel", model)} onMissingConfig={onMissingConfig} />
                         )}
                     </div>
                     <Button
@@ -469,21 +443,66 @@ function AssistantComposer({
     );
 }
 
-function CanvasThemeProvider({ theme, children }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; children: ReactNode }) {
+function ComposerModelPill({ config, value, onChange, onMissingConfig }: { config: AiConfig; value: string; onChange: (model: string) => void; onMissingConfig: () => void }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const options = Array.from(new Set([value, ...config.models].filter(Boolean)));
     return (
-        <ConfigProvider
-            theme={{
-                token: { colorBgContainer: theme.toolbar.panel, colorBgElevated: theme.toolbar.panel, colorBorder: theme.node.stroke, colorPrimary: theme.node.activeStroke, colorText: theme.node.text, colorTextLightSolid: theme.node.panel },
-                components: {
-                    Button: { defaultBg: theme.toolbar.panel, defaultBorderColor: theme.node.stroke, defaultColor: theme.node.text },
-                    Input: { activeBorderColor: theme.node.activeStroke, hoverBorderColor: theme.node.activeStroke },
-                    InputNumber: { activeBorderColor: theme.node.activeStroke, hoverBorderColor: theme.node.activeStroke },
-                    Segmented: { itemColor: theme.node.text, itemHoverBg: theme.node.fill, itemSelectedBg: theme.node.activeStroke, itemSelectedColor: theme.node.panel, trackBg: theme.toolbar.panel, trackPadding: 2 },
-                },
+        <Dropdown
+            trigger={["click"]}
+            overlayClassName="canvas-model-dropdown"
+            menu={{
+                items: options.map((model) => ({ key: model, label: <ModelMenuLabel model={model} /> })),
+                onClick: ({ key }) => onChange(String(key)),
+                selectable: true,
+                selectedKeys: value ? [value] : [],
             }}
+            onOpenChange={(open) => open && !options.length && onMissingConfig()}
         >
-            {children}
-        </ConfigProvider>
+            <button type="button" className="canvas-composer-model-pill" style={{ background: theme.node.fill, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                <ModelIcon model={value} />
+                <span className="canvas-composer-model-text truncate">{value || "模型"}</span>
+                <ChevronDown className="canvas-composer-model-arrow size-3.5 opacity-55" />
+            </button>
+        </Dropdown>
+    );
+}
+
+function ModelMenuLabel({ model }: { model: string }) {
+    return (
+        <span className="flex min-w-0 items-center gap-2">
+            <ModelIcon model={model} />
+            <span className="truncate">{model}</span>
+        </span>
+    );
+}
+
+function ModelIcon({ model }: { model: string }) {
+    const name = model.toLowerCase();
+    const icon = name.includes("claude") || name.includes("anthropic") ? "/icons/claude.svg" : name.includes("gemini") || name.includes("google") ? "/icons/gemini.svg" : name.includes("gpt") || name.includes("openai") ? "/icons/openai.svg" : "";
+    return icon ? <img src={icon} alt="" className="size-4 shrink-0" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
+}
+
+function AssistantModeSwitch({ mode, theme, onChange }: { mode: AssistantMode; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onChange: (mode: AssistantMode) => void }) {
+    return (
+        <div className="canvas-composer-mode-switch flex h-8 shrink-0 items-center rounded-full p-0.5" style={{ background: theme.node.fill }}>
+            {[
+                { value: "ask" as const, title: "对话", icon: <MessageSquare className="size-4" /> },
+                { value: "image" as const, title: "生图", icon: <ImageIcon className="size-4" /> },
+            ].map((item) => (
+                <Tooltip key={item.value} title={item.title}>
+                    <button
+                        type="button"
+                        className="canvas-composer-mode-button flex h-7 cursor-pointer items-center justify-center gap-1 rounded-full border-0 bg-transparent transition"
+                        style={{ background: mode === item.value ? theme.node.activeStroke : "transparent", color: mode === item.value ? theme.node.panel : theme.node.text }}
+                        onClick={() => onChange(item.value)}
+                        aria-label={item.title}
+                    >
+                        {item.icon}
+                        <span>{item.title}</span>
+                    </button>
+                </Tooltip>
+            ))}
+        </div>
     );
 }
 

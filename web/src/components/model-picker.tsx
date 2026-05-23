@@ -1,6 +1,7 @@
 "use client";
 
 import { Select } from "antd";
+import { Cpu } from "lucide-react";
 
 import styles from "./model-picker.module.css";
 import type { AiConfig } from "@/stores/use-config-store";
@@ -53,9 +54,9 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
 function ModelLabel({ model }: { model: string }) {
     const icon = resolveModelIcon(model);
     return (
-        <span className="flex min-w-0 items-center gap-2">
-            {icon && <img src={icon} alt="" className="size-4 shrink-0" />}
-            <span className="truncate">{model}</span>
+        <span className="model-picker-label flex min-w-0 items-center gap-2">
+            {icon ? <img src={icon} alt="" className="size-4 shrink-0" /> : <Cpu className="size-4 shrink-0 opacity-70" />}
+            <span className="model-picker-label-text truncate">{model}</span>
         </span>
     );
 }
