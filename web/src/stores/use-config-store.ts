@@ -63,7 +63,7 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
         models,
         model: models.includes(config.model) ? config.model : modelChannel.defaultModel,
         imageModel: models.includes(config.imageModel) ? config.imageModel : modelChannel.defaultImageModel || modelChannel.defaultModel,
-        videoModel: models.includes(config.videoModel) ? config.videoModel : "sora-2",
+        videoModel: models.includes(config.videoModel) ? config.videoModel : modelChannel.defaultVideoModel || modelChannel.defaultModel || "sora-2",
         textModel: models.includes(config.textModel) ? config.textModel : modelChannel.defaultTextModel || modelChannel.defaultModel,
         systemPrompt: modelChannel.systemPrompt,
     };

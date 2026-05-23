@@ -13,13 +13,14 @@ function aiHeaders(config: AiConfig) {
 }
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string) {
-    const created = await axios.post<VideoResponse>(aiApiUrl(config, "/videos"), { model: config.model, prompt, size: config.size || undefined }, { headers: { ...(aiHeaders(config) || {}), "Content-Type": "application/json" } });
+    const model = config.model || config.videoModel;
+    const created = await axios.post<VideoResponse>(aiApiUrl(config, "/videos"), { model, prompt, size: config.size || undefined }, { headers: { ...(aiHeaders(config) || {}), "Content-Type": "application/json" } });
     for (;;) {
-        const video = await axios.get<VideoResponse>(aiApiUrl(config, `/videos/${created.data.id}`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model: config.model } : undefined });
+        const video = await axios.get<VideoResponse>(aiApiUrl(config, `/videos/${created.data.id}`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined });
         if (video.data.status === "completed") break;
         if (video.data.status === "failed" || video.data.status === "cancelled") throw new Error(video.data.error?.message || "视频生成失败");
         await new Promise((resolve) => setTimeout(resolve, 2500));
     }
-    const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${created.data.id}/content`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model: config.model } : undefined, responseType: "blob" });
+    const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${created.data.id}/content`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined, responseType: "blob" });
     return content.data;
 }

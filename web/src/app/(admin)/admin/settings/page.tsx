@@ -30,6 +30,7 @@ const emptySettings: AdminSettings = {
             availableModels: [],
             defaultModel: "",
             defaultImageModel: "",
+            defaultVideoModel: "",
             defaultTextModel: "",
             systemPrompt: "",
             allowCustomChannel: true,
@@ -315,17 +316,22 @@ export default function AdminSettingsPage() {
                                             <Select mode="tags" tokenSeparators={[",", "\n"]} options={modelOptions.map((item) => ({ label: item, value: item }))} />
                                         </Form.Item>
                                     </Col>
-                                    <Col xs={24} md={8}>
+                                    <Col xs={24} md={6}>
                                         <Form.Item name={["public", "modelChannel", "defaultModel"]} label="默认模型">
                                             <Select showSearch allowClear options={publicModels.map((item) => ({ label: item, value: item }))} />
                                         </Form.Item>
                                     </Col>
-                                    <Col xs={24} md={8}>
+                                    <Col xs={24} md={6}>
                                         <Form.Item name={["public", "modelChannel", "defaultImageModel"]} label="默认图片模型">
                                             <Select showSearch allowClear options={publicModels.map((item) => ({ label: item, value: item }))} />
                                         </Form.Item>
                                     </Col>
-                                    <Col xs={24} md={8}>
+                                    <Col xs={24} md={6}>
+                                        <Form.Item name={["public", "modelChannel", "defaultVideoModel"]} label="默认视频模型">
+                                            <Select showSearch allowClear options={publicModels.map((item) => ({ label: item, value: item }))} />
+                                        </Form.Item>
+                                    </Col>
+                                    <Col xs={24} md={6}>
                                         <Form.Item name={["public", "modelChannel", "defaultTextModel"]} label="默认文本模型">
                                             <Select showSearch allowClear options={publicModels.map((item) => ({ label: item, value: item }))} />
                                         </Form.Item>

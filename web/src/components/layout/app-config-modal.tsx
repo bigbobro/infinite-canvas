@@ -26,7 +26,7 @@ export function AppConfigModal() {
     const finishConfig = () => {
         setConfigDialogOpen(false);
         if (effectiveMode === "local" && (!config.baseUrl.trim() || !config.apiKey.trim())) return;
-        if (!modelConfig.imageModel.trim() || !modelConfig.textModel.trim()) return;
+        if (!modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim()) return;
         if (!allowCustomChannel && config.channelMode !== "remote") updateConfig("channelMode", "remote");
         message.success(shouldPromptContinue ? "配置已保存，请继续刚才的请求" : "配置已保存");
         clearPromptContinue();
@@ -43,6 +43,7 @@ export function AppConfigModal() {
             const models = await fetchImageModels(config);
             updateConfig("models", models);
             if (models.length && !models.includes(config.imageModel)) updateConfig("imageModel", models[0]);
+            if (models.length && !models.includes(config.videoModel)) updateConfig("videoModel", models[0]);
             if (models.length && !models.includes(config.textModel)) updateConfig("textModel", models[0]);
             message.success("模型列表已更新");
         } catch (error) {
@@ -112,9 +113,12 @@ export function AppConfigModal() {
                             <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelChannel?.availableModels.length || 0} 个模型。</div>
                         </div>
                     )}
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-4 md:grid-cols-3">
                         <Form.Item label="默认生图模型" className="mb-4">
                             <ModelPicker config={modelConfig} value={modelConfig.imageModel} onChange={(model) => updateConfig("imageModel", model)} fullWidth />
+                        </Form.Item>
+                        <Form.Item label="默认视频模型" className="mb-4">
+                            <ModelPicker config={modelConfig} value={modelConfig.videoModel} onChange={(model) => updateConfig("videoModel", model)} fullWidth />
                         </Form.Item>
                         <Form.Item label="默认文本模型" className="mb-4">
                             <ModelPicker config={modelConfig} value={modelConfig.textModel} onChange={(model) => updateConfig("textModel", model)} fullWidth />

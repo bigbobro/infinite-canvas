@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Cpu } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
@@ -18,9 +18,18 @@ type ModelPickerProps = {
 };
 
 export function ModelPicker({ config, value, onChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig }: ModelPickerProps) {
+    const pickerId = useId();
     const [open, setOpen] = useState(false);
     const options = useMemo(() => Array.from(new Set([value, ...config.models].filter(Boolean))), [config.models, value]);
     const current = value || "";
+
+    useEffect(() => {
+        const closeOtherPicker = (event: Event) => {
+            if ((event as CustomEvent<string>).detail !== pickerId) setOpen(false);
+        };
+        window.addEventListener("model-picker-open", closeOtherPicker);
+        return () => window.removeEventListener("model-picker-open", closeOtherPicker);
+    }, [pickerId]);
 
     return (
         <Select
@@ -31,6 +40,7 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
                     onMissingConfig?.();
                     return;
                 }
+                if (nextOpen) window.dispatchEvent(new CustomEvent("model-picker-open", { detail: pickerId }));
                 setOpen(nextOpen);
             }}
             onValueChange={onChange}
@@ -51,9 +61,11 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
-                className="z-50 w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl"
+                className="z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl"
                 position="popper"
                 align="start"
+                side="bottom"
+                sideOffset={6}
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseDown={(event) => event.stopPropagation()}
             >
@@ -93,5 +105,7 @@ function resolveModelIcon(model: string) {
     if (name.includes("gemini") || name.includes("google")) return "/icons/gemini.svg";
     if (name.includes("gpt") || name.includes("openai")) return "/icons/openai.svg";
     if (name.includes("grok") || name.includes("grok")) return "/icons/grok.svg";
+    if (name.includes("deepseek") || name.includes("deepseek")) return "/icons/deepseek.svg";
+    if (name.includes("glm") || name.includes("glm")) return "/icons/glm.svg";
     return "";
 }
