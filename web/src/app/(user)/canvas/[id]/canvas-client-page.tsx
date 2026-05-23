@@ -251,6 +251,7 @@ function InfiniteCanvasPage() {
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
+    const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [assistantCollapsed, setAssistantCollapsed] = useState(true);
     const [assistantMounted, setAssistantMounted] = useState(false);
     const [titleEditing, setTitleEditing] = useState(false);
@@ -525,6 +526,7 @@ function InfiniteCanvasPage() {
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
     const angleNode = angleNodeId ? nodeById.get(angleNodeId) || null : null;
+    const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
     const batchChildCountById = useMemo(() => {
@@ -631,6 +633,7 @@ function InfiniteCanvasPage() {
             setInfoNodeId((current) => (current && allIds.has(current) ? null : current));
             setCropNodeId((current) => (current && allIds.has(current) ? null : current));
             setAngleNodeId((current) => (current && allIds.has(current) ? null : current));
+            setPreviewNodeId((current) => (current && allIds.has(current) ? null : current));
             setRunningNodeId((current) => (current && allIds.has(current) ? null : current));
             setContextMenu((current) => (current && allIds.has(current.nodeId) ? null : current));
             cleanupAssetImages({ projectId, nodes: nodesRef.current.filter((node) => !allIds.has(node.id)), chatSessions });
@@ -656,6 +659,7 @@ function InfiniteCanvasPage() {
         setInfoNodeId(null);
         setCropNodeId(null);
         setAngleNodeId(null);
+        setPreviewNodeId(null);
         setRunningNodeId(null);
         deselectCanvas();
         setClearConfirmOpen(false);
@@ -2084,6 +2088,7 @@ function InfiniteCanvasPage() {
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onAngle={(node) => setAngleNodeId(node.id)}
+                    onViewImage={(node) => setPreviewNodeId(node.id)}
                     onRetry={(node) => void handleRetryNode(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
@@ -2140,6 +2145,24 @@ function InfiniteCanvasPage() {
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 
                 {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
+
+                <Modal
+                    title="图片详情"
+                    open={Boolean(previewNode?.metadata?.content)}
+                    centered
+                    onCancel={() => setPreviewNodeId(null)}
+                    footer={null}
+                    width="auto"
+                    styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh" } }}
+                >
+                    {previewNode?.metadata?.content ? (
+                        <img
+                            src={previewNode.metadata.content}
+                            alt={previewNode.title || "图片"}
+                            style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }}
+                        />
+                    ) : null}
+                </Modal>
 
                 <Modal
                     title="清空画布？"
