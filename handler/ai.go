@@ -54,7 +54,7 @@ func proxyAIGetRequest(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
-	copyAIResponse(w, request)
+	copyAIResponse(w, request, nil)
 }
 
 func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
@@ -62,6 +62,21 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	if err != nil {
 		log.Printf("AI proxy request read failed: %v", err)
 		Fail(w, "AI 接口请求失败")
+		return
+	}
+	user, ok := service.UserFromContext(r.Context())
+	if !ok {
+		Fail(w, "未登录或权限不足")
+		return
+	}
+	credits, err := service.ModelCost(modelName)
+	if err != nil {
+		log.Printf("AI proxy read model cost failed: model=%s err=%v", modelName, err)
+		Fail(w, "AI 接口请求失败")
+		return
+	}
+	if err := service.EnsureUserCredits(user.ID, credits); err != nil {
+		FailError(w, err)
 		return
 	}
 	channel, err := service.SelectModelChannel(modelName)
@@ -80,10 +95,12 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
-	copyAIResponse(w, request)
+	copyAIResponse(w, request, func() error {
+		return service.ConsumeUserCredits(user.ID, modelName, credits, path)
+	})
 }
 
-func copyAIResponse(w http.ResponseWriter, request *http.Request) {
+func copyAIResponse(w http.ResponseWriter, request *http.Request, beforeWrite func() error) {
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		log.Printf("AI proxy request failed: url=%s err=%v", request.URL.String(), err)
@@ -97,6 +114,13 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request) {
 		log.Printf("AI upstream error: url=%s status=%d body=%s", request.URL.String(), response.StatusCode, strings.TrimSpace(string(payload)))
 		Fail(w, "AI 接口请求失败")
 		return
+	}
+	if beforeWrite != nil {
+		if err := beforeWrite(); err != nil {
+			log.Printf("AI proxy before write failed: url=%s err=%v", request.URL.String(), err)
+			FailError(w, err)
+			return
+		}
 	}
 
 	for key, values := range response.Header {

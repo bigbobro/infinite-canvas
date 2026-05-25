@@ -17,6 +17,10 @@ function aiHeaders(config: AiConfig) {
     return config.channelMode === "remote" ? (token ? { Authorization: `Bearer ${token}` } : undefined) : { Authorization: `Bearer ${config.apiKey}` };
 }
 
+function refreshRemoteUser(config: AiConfig) {
+    if (config.channelMode === "remote") void useUserStore.getState().hydrateUser();
+}
+
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = []) {
     const model = config.model || config.videoModel;
     const body = new FormData();
@@ -34,6 +38,7 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
         await new Promise((resolve) => setTimeout(resolve, 2500));
     }
     const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${created.data.id}/content`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined, responseType: "blob" });
+    refreshRemoteUser(config);
     return content.data;
 }
 

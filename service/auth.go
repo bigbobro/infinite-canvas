@@ -318,6 +318,45 @@ func AdjustUserCredits(id string, credits int) (model.User, error) {
 	return user, err
 }
 
+func EnsureUserCredits(userID string, credits int) error {
+	if credits <= 0 {
+		return nil
+	}
+	ok, err := repository.HasUserCredits(userID, credits)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return safeMessageError{message: "算力点不足"}
+	}
+	return nil
+}
+
+func ConsumeUserCredits(userID string, modelName string, credits int, path string) error {
+	if credits <= 0 {
+		return nil
+	}
+	user, ok, err := repository.ConsumeUserCredits(userID, credits, now())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return safeMessageError{message: "算力点不足"}
+	}
+	extra, _ := json.Marshal(map[string]string{"model": modelName, "path": path})
+	_, err = repository.SaveCreditLog(model.CreditLog{
+		ID:        newID("credit"),
+		UserID:    userID,
+		Type:      model.CreditLogTypeAIConsume,
+		Amount:    -credits,
+		Balance:   user.Credits,
+		Remark:    "调用模型 " + modelName,
+		Extra:     string(extra),
+		CreatedAt: now(),
+	})
+	return err
+}
+
 func ListCreditLogs(q model.Query) (model.CreditLogList, error) {
 	logs, total, err := repository.ListCreditLogs(q)
 	if err != nil {

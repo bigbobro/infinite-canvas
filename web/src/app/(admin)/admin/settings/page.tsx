@@ -7,7 +7,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 
-import { fetchAdminSettings, fetchChannelModels, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminSettings } from "@/services/api/admin";
+import { fetchAdminSettings, fetchChannelModels, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
@@ -28,6 +28,7 @@ const emptySettings: AdminSettings = {
     public: {
         modelChannel: {
             availableModels: [],
+            modelCosts: [],
             defaultModel: "",
             defaultImageModel: "",
             defaultVideoModel: "",
@@ -62,10 +63,12 @@ export default function AdminSettingsPage() {
     const [testResults, setTestResults] = useState<Record<string, { status: "success" | "error"; duration?: string; message: string }>>({});
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [modelCosts, setModelCosts] = useState<AdminModelCost[]>([]);
+    const [knownModels, setKnownModels] = useState<string[]>([]);
     const publicModels = Form.useWatch(["public", "modelChannel", "availableModels"], form) || [];
     const channelModels = useMemo(() => collectChannelModels(channels), [channels]);
     const channelTableData = useMemo(() => channels.map((channel, index) => ({ ...channel, _index: index, _rowKey: `${index}-${channel.name}-${channel.baseUrl}` })), [channels]);
-    const modelOptions = useMemo(() => uniqueModels([...publicModels, ...channelModels]), [publicModels, channelModels]);
+    const modelOptions = useMemo(() => uniqueModels([...knownModels, ...publicModels, ...channelModels, ...modelCosts.map((item) => item.model)]), [knownModels, publicModels, channelModels, modelCosts]);
     const activeMode = editorMode[activeTab];
     const activeJsonText = jsonText[activeTab];
     const jsonError = activeMode === "json" ? getJsonError(activeJsonText) : "";
@@ -77,6 +80,8 @@ export default function AdminSettingsPage() {
             const data = normalizeSettings(await fetchAdminSettings(token));
             form.setFieldsValue(data);
             setChannels(data.private.channels);
+            setModelCosts(data.public.modelChannel.modelCosts);
+            setKnownModels(collectKnownModels(data));
             setJsonText({
                 public: JSON.stringify(data.public, null, 2),
                 private: JSON.stringify(data.private, null, 2),
@@ -108,6 +113,8 @@ export default function AdminSettingsPage() {
             const merged = mergeChannelApiKeys(values.private.channels, saved);
             form.setFieldsValue(merged);
             setChannels(merged.private.channels);
+            setModelCosts(merged.public.modelChannel.modelCosts);
+            rememberKnownModels(merged);
             setJsonText({
                 public: JSON.stringify(merged.public, null, 2),
                 private: JSON.stringify(merged.private, null, 2),
@@ -136,6 +143,8 @@ export default function AdminSettingsPage() {
         }
         form.setFieldsValue({ [tab]: parsed } as Partial<AdminSettings>);
         if (tab === "private") setChannels((parsed as AdminSettings["private"]).channels);
+        if (tab === "public") setModelCosts((parsed as AdminSettings["public"]).modelChannel.modelCosts);
+        rememberKnownModels({ ...normalizeSettings(form.getFieldsValue(true) as AdminSettings), [tab]: parsed });
         setEditorMode((current) => ({ ...current, [tab]: nextMode }));
     };
 
@@ -145,6 +154,7 @@ export default function AdminSettingsPage() {
             message.error("JSON 格式不正确");
             return;
         }
+        if (tab === "public") setModelCosts((parsed as AdminSettings["public"]).modelChannel.modelCosts);
         setJsonText((current) => ({
             ...current,
             [tab]: JSON.stringify(parsed, null, 2),
@@ -154,7 +164,9 @@ export default function AdminSettingsPage() {
     const openChannelDrawer = (index: number | null) => {
         setEditingChannelIndex(index);
         setIsChannelDrawerOpen(true);
-        channelForm.setFieldsValue(index === null ? emptyChannel : normalizeChannel(channels[index]));
+        const channel = index === null ? emptyChannel : normalizeChannel(channels[index]);
+        channelForm.setFieldsValue(channel);
+        rememberModels(channel.models);
     };
 
     const closeChannelDrawer = () => {
@@ -165,6 +177,7 @@ export default function AdminSettingsPage() {
 
     const saveChannel = async () => {
         const channel = normalizeChannel(await channelForm.validateFields());
+        rememberModels(channel.models);
         const nextChannels = [...channels];
         if (editingChannelIndex === null) nextChannels.push(channel);
         else nextChannels[editingChannelIndex] = channel;
@@ -186,11 +199,20 @@ export default function AdminSettingsPage() {
         try {
             const channelModels = await fetchChannelModels(token, { index: editingChannelIndex ?? undefined, channel: normalizeChannel(channel) });
             channelForm.setFieldValue("models", channelModels);
+            rememberModels(channelModels);
             message.success(`已获取 ${channelModels.length} 个模型`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "读取模型失败");
         }
     };
+
+    function rememberModels(models: string[]) {
+        setKnownModels((current) => uniqueModels([...current, ...models]));
+    }
+
+    function rememberKnownModels(settings: AdminSettings) {
+        rememberModels(collectKnownModels(settings));
+    }
 
     const openTestDialog = (index: number) => {
         const channel = normalizeChannel(channels[index]);
@@ -248,6 +270,8 @@ export default function AdminSettingsPage() {
         const saved = normalizeSettings(await saveAdminSettings(token, nextSettings));
         const merged = mergeChannelApiKeys(nextChannels, saved);
         setChannels(merged.private.channels);
+        setModelCosts(merged.public.modelChannel.modelCosts);
+        rememberKnownModels(merged);
         form.setFieldsValue(merged);
         setJsonText({
             public: JSON.stringify(merged.public, null, 2),
@@ -313,7 +337,7 @@ export default function AdminSettingsPage() {
                             <Form form={form} layout="vertical" initialValues={emptySettings} requiredMark={false}>
                                 <Row gutter={16}>
                                     <Col span={24}>
-                                        <Form.Item name={["public", "modelChannel", "availableModels"]} label="系统可用模型(请先配置渠道)">
+                                        <Form.Item name={["public", "modelChannel", "availableModels"]} label="系统可用模型(请先在私有配置里配置渠道)">
                                             <Select mode="tags" tokenSeparators={[",", "\n"]} options={modelOptions.map((item) => ({ label: item, value: item }))} />
                                         </Form.Item>
                                     </Col>
@@ -346,6 +370,34 @@ export default function AdminSettingsPage() {
                                         <Form.Item name={["public", "modelChannel", "allowCustomChannel"]} label="是否允许用户自定义渠道" extra="开启后，前端可提供走后端渠道和用户自定义 baseUrl 直连两种模式" valuePropName="checked">
                                             <Switch />
                                         </Form.Item>
+                                    </Col>
+                                    <Col span={24}>
+                                        <Typography.Title level={5}>模型算力点</Typography.Title>
+                                        <Table
+                                            rowKey="model"
+                                            pagination={false}
+                                            size="small"
+                                            dataSource={publicModels.map((model) => ({ model, credits: modelCostCredits(modelCosts, model) }))}
+                                            columns={[
+                                                { title: "模型", dataIndex: "model" },
+                                                {
+                                                    title: "每次调用扣除",
+                                                    dataIndex: "credits",
+                                                    width: 220,
+                                                    render: (_, item) => (
+                                                        <InputNumber
+                                                            min={0}
+                                                            step={1}
+                                                            precision={0}
+                                                            className="!w-full"
+                                                            value={item.credits}
+                                                            addonAfter="点"
+                                                            onChange={(value) => setModelCost(form, setModelCosts, item.model, Number(value) || 0)}
+                                                        />
+                                                    ),
+                                                },
+                                            ]}
+                                        />
                                     </Col>
                                 </Row>
                             </Form>
@@ -530,7 +582,7 @@ export default function AdminSettingsPage() {
                                 <Form.Item label="渠道可用模型">
                                     <Space.Compact style={{ width: "100%" }}>
                                         <Form.Item name="models" noStyle>
-                                            <Select mode="tags" tokenSeparators={[",", "\n"]} />
+                                            <Select mode="tags" maxTagCount="responsive" tokenSeparators={[",", "\n"]} options={knownModels.map((model) => ({ label: model, value: model }))} />
                                         </Form.Item>
                                         <Button icon={<ReloadOutlined />} onClick={() => void fetchChannelModelList()}>
                                             获取模型列表
@@ -634,6 +686,7 @@ function normalizePublicSetting(setting: Partial<AdminSettings["public"]> = {}):
             ...emptySettings.public.modelChannel,
             ...(setting.modelChannel || {}),
             availableModels: setting.modelChannel?.availableModels || [],
+            modelCosts: normalizeModelCosts(setting.modelChannel?.modelCosts || []),
         },
         auth: {
             linuxDo: {
@@ -641,6 +694,10 @@ function normalizePublicSetting(setting: Partial<AdminSettings["public"]> = {}):
             },
         },
     };
+}
+
+function normalizeModelCosts(items: Partial<AdminSettings["public"]["modelChannel"]["modelCosts"][number]>[]) {
+    return items.filter((item) => item.model).map((item) => ({ model: item.model || "", credits: Math.max(0, Number(item.credits) || 0) }));
 }
 
 function normalizePrivateSetting(setting: Partial<AdminSettings["private"]> = {}): AdminSettings["private"] {
@@ -672,6 +729,18 @@ function normalizeChannel(item: Partial<AdminModelChannel> = {}): AdminModelChan
     };
 }
 
+function modelCostCredits(items: AdminSettings["public"]["modelChannel"]["modelCosts"], model: string) {
+    return items.find((item) => item.model === model)?.credits || 0;
+}
+
+function setModelCost(form: any, setModelCosts: (items: AdminModelCost[]) => void, model: string, credits: number) {
+    const current = (form.getFieldValue(["public", "modelChannel", "modelCosts"]) || []) as AdminSettings["public"]["modelChannel"]["modelCosts"];
+    const next = current.filter((item) => item.model !== model);
+    next.push({ model, credits: Math.max(0, credits) });
+    form.setFieldValue(["public", "modelChannel", "modelCosts"], next);
+    setModelCosts(next);
+}
+
 function mergeChannelApiKeys(currentChannels: AdminModelChannel[], saved: AdminSettings): AdminSettings {
     const channels = saved.private.channels.map((item, index) => ({
         ...item,
@@ -685,6 +754,14 @@ function mergeChannelApiKeys(currentChannels: AdminModelChannel[], saved: AdminS
 
 function collectChannelModels(channels: AdminModelChannel[]) {
     return uniqueModels(channels.filter((channel) => channel.enabled).flatMap((channel) => channel.models || []));
+}
+
+function collectKnownModels(settings: AdminSettings) {
+    return uniqueModels([
+        ...(settings.public.modelChannel.availableModels || []),
+        ...(settings.public.modelChannel.modelCosts || []).map((item) => item.model),
+        ...settings.private.channels.flatMap((channel) => channel.models || []),
+    ]);
 }
 
 function uniqueModels(models: string[]) {

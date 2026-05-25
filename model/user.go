@@ -79,6 +79,7 @@ type CreditLogType string
 
 const (
 	CreditLogTypeAdminAdjust CreditLogType = "admin_adjust"
+	CreditLogTypeAIConsume   CreditLogType = "ai_consume"
 )
 
 // CreditLog 用户算力点变更流水。

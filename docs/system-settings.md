@@ -13,6 +13,10 @@
 {
   "modelChannel": {
     "availableModels": ["gpt-5.5", "gpt-image-2"],
+    "modelCosts": [
+      { "model": "gpt-5.5", "credits": 1 },
+      { "model": "gpt-image-2", "credits": 10 }
+    ],
     "defaultModel": "gpt-image-2",
     "defaultImageModel": "gpt-image-2",
     "defaultTextModel": "gpt-5.5",
@@ -31,11 +35,19 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `availableModels` | string[] | 系统可用模型，由管理员手动选择；页面下拉选项可来自私有渠道模型 |
+| `modelCosts` | object[] | 模型算力点配置，后端模型接口调用成功后按模型扣除；未配置默认不扣除 |
 | `defaultModel` | string | 默认模型，从 `availableModels` 中选择 |
 | `defaultImageModel` | string | 默认图片模型，从 `availableModels` 中选择 |
 | `defaultTextModel` | string | 默认文本模型，从 `availableModels` 中选择 |
 | `systemPrompt` | string | 系统提示词 |
 | `allowCustomChannel` | boolean | 是否允许用户在配置弹窗中切换为本地直连渠道，默认允许 |
+
+`modelCosts` 每项字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `model` | string | 模型名称 |
+| `credits` | number | 每次成功调用扣除的算力点 |
 
 用户侧请求模式：
 

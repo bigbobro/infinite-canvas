@@ -120,12 +120,20 @@
 | 字段                | 类型       | 说明             |
 |-------------------|----------|----------------|
 | `availableModels` | string[] | 系统可用模型列表       |
+| `modelCosts` | object[] | 模型算力点配置       |
 | `defaultModel`    | string   | 默认模型           |
 | `defaultImageModel` | string | 默认图片模型         |
 | `defaultVideoModel` | string | 默认视频模型         |
 | `defaultTextModel` | string  | 默认文本模型         |
 | `systemPrompt`    | string   | 系统提示词          |
 | `allowCustomChannel` | bool    | 是否允许用户自定义渠道，默认允许，关闭后前端只提供走后端渠道的模式 |
+
+`modelCosts` 每项字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `model` | string | 模型名称 |
+| `credits` | number | 每次后端模型接口调用成功后扣除的算力点，未配置默认不扣除 |
 
 `auth.linuxDo` 当前字段：
 
@@ -200,6 +208,13 @@
 | `remark`     | string | 备注                       |
 | `extra`      | json   | 扩展信息                     |
 | `created_at` | string | 创建时间                     |
+
+`type` 当前取值：
+
+| 值 | 说明 |
+| --- | --- |
+| `admin_adjust` | 后台手动调整 |
+| `ai_consume` | 调用后端模型接口消费 |
 
 ### orders
 

@@ -121,6 +121,10 @@ function aiHeaders(config: AiConfig, contentType?: string) {
           };
 }
 
+function refreshRemoteUser(config: AiConfig) {
+    if (config.channelMode === "remote") void useUserStore.getState().hydrateUser();
+}
+
 function withSystemMessage(config: AiConfig, messages: ChatCompletionMessage[]) {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? [{ role: "system" as const, content: systemPrompt }, ...messages] : messages;
@@ -143,7 +147,9 @@ export async function requestGeneration(config: AiConfig, prompt: string) {
                 headers: aiHeaders(config, "application/json"),
             },
         );
-        return parseImagePayload(response.data);
+        const images = parseImagePayload(response.data);
+        refreshRemoteUser(config);
+        return images;
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
     }
@@ -166,7 +172,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 
     try {
         const response = await axios.post<ImageApiResponse>(aiApiUrl(config, "/images/edits"), formData, { headers: aiHeaders(config) });
-        return parseImagePayload(response.data);
+        const images = parseImagePayload(response.data);
+        refreshRemoteUser(config);
+        return images;
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
     }
@@ -230,6 +238,7 @@ export async function requestImageQuestion(config: AiConfig, messages: ChatCompl
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
     }
+    refreshRemoteUser(config);
     return answer || "没有返回内容";
 }
 

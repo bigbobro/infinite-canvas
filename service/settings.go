@@ -65,11 +65,34 @@ func normalizePublicSetting(setting model.PublicSetting) model.PublicSetting {
 	if setting.ModelChannel.AvailableModels == nil {
 		setting.ModelChannel.AvailableModels = []string{}
 	}
+	if setting.ModelChannel.ModelCosts == nil {
+		setting.ModelChannel.ModelCosts = []model.ModelCost{}
+	}
+	for i := range setting.ModelChannel.ModelCosts {
+		setting.ModelChannel.ModelCosts[i].Model = strings.TrimSpace(setting.ModelChannel.ModelCosts[i].Model)
+		if setting.ModelChannel.ModelCosts[i].Credits < 0 {
+			setting.ModelChannel.ModelCosts[i].Credits = 0
+		}
+	}
 	if setting.ModelChannel.AllowCustomChannel == nil {
 		enabled := true
 		setting.ModelChannel.AllowCustomChannel = &enabled
 	}
 	return setting
+}
+
+func ModelCost(modelName string) (int, error) {
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return 0, err
+	}
+	modelName = strings.TrimSpace(modelName)
+	for _, item := range normalizePublicSetting(settings.Public).ModelChannel.ModelCosts {
+		if item.Model == modelName {
+			return item.Credits, nil
+		}
+	}
+	return 0, nil
 }
 
 func normalizePrivateSetting(setting model.PrivateSetting) model.PrivateSetting {
