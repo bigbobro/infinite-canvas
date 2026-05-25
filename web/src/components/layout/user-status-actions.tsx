@@ -9,6 +9,7 @@ import Link from "next/link";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { GitHubLink } from "@/components/layout/github-link";
 import { VersionReleaseModal } from "@/components/layout/version-release-modal";
+import { CreditSymbol } from "@/constant/credits";
 import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useConfigStore } from "@/stores/use-config-store";
@@ -63,7 +64,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
             {variant === "canvas" ? (
                 <Tooltip title="当前算力点余额" placement="bottom">
                     <div className="flex h-8 shrink-0 items-center gap-1.5 px-1.5 text-xs font-medium tabular-nums opacity-75 transition hover:opacity-100" style={{ color: canvasTheme.node.text }}>
-                        <span className="text-sm leading-none">⚡️</span>
+                        <CreditSymbol className="text-sm leading-none" />
                         <span>{credits.toLocaleString()}</span>
                     </div>
                 </Tooltip>

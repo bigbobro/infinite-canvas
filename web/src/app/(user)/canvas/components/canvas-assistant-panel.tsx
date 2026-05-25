@@ -8,6 +8,7 @@ import { motion } from "motion/react";
 import { ImageGenerationPending } from "@/components/image-generation-pending";
 import { ModelPicker } from "@/components/model-picker";
 import { useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { cn } from "@/lib/utils";
@@ -41,8 +42,8 @@ type CanvasAssistantPanelProps = {
 
 export function CanvasAssistantPanel({ nodes, selectedNodeIds, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onInsertImage, onInsertText, onPasteImage, onCollapseStart, onCollapse }: CanvasAssistantPanelProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
+    const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
@@ -328,6 +329,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, sessions, activeS
                             if (selectedNodeIds.has(id)) onSelectNodeIds(new Set(Array.from(selectedNodeIds).filter((nodeId) => nodeId !== id)));
                         }}
                         onPasteImage={onPasteImage}
+                        modelCosts={modelCosts}
                     />
                 ) : null}
 
@@ -372,6 +374,7 @@ function AssistantComposer({
     onMissingConfig,
     onRemoveReference,
     onPasteImage,
+    modelCosts,
 }: {
     mode: AssistantMode;
     prompt: string;
@@ -385,8 +388,11 @@ function AssistantComposer({
     onMissingConfig: () => void;
     onRemoveReference: (id: string) => void;
     onPasteImage: (file: File) => void;
+    modelCosts?: { model: string; credits: number }[];
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const activeModel = mode === "image" ? config.imageModel || config.model : config.textModel || config.model;
+    const credits = requestCreditCost({ channelMode: config.channelMode, modelCosts, model: activeModel, count: mode === "image" ? config.count : 1 });
 
     return (
         <div className="px-2 pb-2" onWheelCapture={(event) => event.stopPropagation()}>
@@ -431,13 +437,19 @@ function AssistantComposer({
                     </div>
                     <Button
                         type="primary"
-                        shape="circle"
-                        className="!h-10 !w-10 !min-w-10 shrink-0"
-                        icon={isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                        className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
                         disabled={isRunning || !prompt.trim()}
                         onClick={() => void onSubmit()}
                         aria-label="发送"
-                    />
+                    >
+                        <span className="flex items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">
+                                <CreditSymbol />
+                                {credits.toLocaleString()}
+                            </span>
+                            {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                        </span>
+                    </Button>
                 </div>
             </div>
         </div>

@@ -6,7 +6,8 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Edit3, Eye, Image as ImageIc
 import { App, Button, Empty, Input, InputNumber, Modal, Segmented } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasSizePicker } from "./canvas-size-picker";
@@ -29,12 +30,14 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
     const [previewOpen, setPreviewOpen] = useState(false);
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
     const [editingText, setEditingText] = useState("");
-    const globalConfig = useConfigStore((state) => state.config);
+    const globalConfig = useEffectiveConfig();
+    const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode || "image";
     const config = buildNodeConfig(globalConfig, node, mode);
     const count = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(node.metadata?.count || 3)) || 1)));
+    const credits = requestCreditCost({ channelMode: config.channelMode, modelCosts, model: config.model, count: mode === "image" ? count : 1 });
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const textInputs = inputs.filter((input) => input.type === "text");
     const imageInputs = inputs.filter((input) => input.type === "image");
@@ -127,9 +130,15 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
                 disabled={isRunning || (!inputSummary.textCount && !inputSummary.imageCount)}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => onGenerate(node.id)}
-                icon={isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
             >
-                开始生成
+                <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1">
+                        <CreditSymbol />
+                        {credits.toLocaleString()}
+                    </span>
+                    {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
+                    <span>开始生成</span>
+                </span>
             </Button>
             <Modal
                 title="输入预览"

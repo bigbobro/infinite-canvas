@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -75,6 +76,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "AI 接口请求失败")
 		return
 	}
+	credits *= readAIRequestCount(body, contentType)
 	if err := service.EnsureUserCredits(user.ID, credits); err != nil {
 		FailError(w, err)
 		return
@@ -172,6 +174,34 @@ func readMultipartModel(body []byte, contentType string) string {
 		return values[0]
 	}
 	return ""
+}
+
+func readAIRequestCount(body []byte, contentType string) int {
+	count := 1
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		_, params, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			return count
+		}
+		form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(32 << 20)
+		if err != nil {
+			return count
+		}
+		defer form.RemoveAll()
+		if values := form.Value["n"]; len(values) > 0 {
+			_, _ = fmt.Sscan(values[0], &count)
+		}
+	} else {
+		var payload struct {
+			N int `json:"n"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		count = payload.N
+	}
+	if count < 1 {
+		return 1
+	}
+	return count
 }
 
 var errMissingModel = &aiError{"缺少模型名称"}

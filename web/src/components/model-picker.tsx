@@ -20,7 +20,7 @@ type ModelPickerProps = {
 export function ModelPicker({ config, value, onChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig }: ModelPickerProps) {
     const pickerId = useId();
     const [open, setOpen] = useState(false);
-    const options = useMemo(() => Array.from(new Set([value, ...config.models].filter(Boolean))), [config.models, value]);
+    const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" ? [value] : []), ...config.models].filter(Boolean))), [config.channelMode, config.models, value]);
     const current = value || "";
 
     useEffect(() => {
@@ -36,7 +36,7 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
             open={open}
             value={current}
             onOpenChange={(nextOpen) => {
-                if (nextOpen && !options.length) {
+                if (nextOpen && !options.length && config.channelMode === "local") {
                     onMissingConfig?.();
                     return;
                 }
@@ -77,7 +77,7 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
                     ))
                 ) : (
                     <SelectItem value="__empty__" disabled>
-                        请先到配置里拉取模型列表
+                        {config.channelMode === "remote" ? "暂无可用模型" : "请先到配置里拉取模型列表"}
                     </SelectItem>
                 )}
             </SelectContent>
