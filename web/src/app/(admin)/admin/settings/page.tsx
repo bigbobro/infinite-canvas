@@ -2,7 +2,7 @@
 
 import { CheckCircleOutlined, DeleteOutlined, FormatPainterOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import { json } from "@codemirror/lang-json";
-import { Alert, App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
+import { App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
@@ -37,7 +37,7 @@ const emptySettings: AdminSettings = {
         },
         auth: { linuxDo: { enabled: false } },
     },
-    private: { channels: [], promptSync: { enabled: true, cron: "*/5 * * * *" }, auth: { linuxDo: { clientId: "", clientSecret: "", redirectUri: "", minimumTrustLevel: 0 } } },
+    private: { channels: [], promptSync: { enabled: true, cron: "*/5 * * * *" }, auth: { linuxDo: { clientId: "", clientSecret: "" } } },
 };
 const emptyChannel: AdminModelChannel = { protocol: "openai", name: "", baseUrl: "", apiKey: "", models: [], weight: 1, enabled: true, remark: "" };
 
@@ -62,9 +62,7 @@ export default function AdminSettingsPage() {
     const [testResults, setTestResults] = useState<Record<string, { status: "success" | "error"; duration?: string; message: string }>>({});
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
-    const [linuxDoCallbackUrl, setLinuxDoCallbackUrl] = useState("");
     const publicModels = Form.useWatch(["public", "modelChannel", "availableModels"], form) || [];
-    const linuxDoRedirectUri = Form.useWatch(["private", "auth", "linuxDo", "redirectUri"], form);
     const channelModels = useMemo(() => collectChannelModels(channels), [channels]);
     const channelTableData = useMemo(() => channels.map((channel, index) => ({ ...channel, _index: index, _rowKey: `${index}-${channel.name}-${channel.baseUrl}` })), [channels]);
     const modelOptions = useMemo(() => uniqueModels([...publicModels, ...channelModels]), [publicModels, channelModels]);
@@ -93,16 +91,6 @@ export default function AdminSettingsPage() {
     useEffect(() => {
         void loadSettings();
     }, [token]);
-
-    useEffect(() => {
-        setLinuxDoCallbackUrl(`${window.location.origin}/api/auth/linux-do/callback`);
-    }, []);
-
-    useEffect(() => {
-        if (!linuxDoCallbackUrl) return;
-        if (linuxDoRedirectUri) return;
-        form.setFieldValue(["private", "auth", "linuxDo", "redirectUri"], linuxDoCallbackUrl);
-    }, [form, linuxDoCallbackUrl, linuxDoRedirectUri]);
 
     const changeTab = (nextTab: SettingsTabKey) => {
         setActiveTab(nextTab);
@@ -377,7 +365,6 @@ export default function AdminSettingsPage() {
                     ) : activeMode === "visual" ? (
                         <Form form={form} layout="vertical" initialValues={emptySettings} requiredMark={false}>
                             <Flex vertical gap={12}>
-                                <Alert showIcon type="warning" title="当前还没有完整用户体系，所有访问到站点的用户都可以无条件使用后端渠道 API。请不要公网部署，避免私有渠道额度被他人消耗。" />
                                 <Card
                                     size="small"
                                     title={
@@ -388,7 +375,12 @@ export default function AdminSettingsPage() {
                                     }
                                 >
                                     <Flex vertical gap={14}>
-                                        <Alert showIcon type="info" message={linuxDoCallbackUrl ? `回调 URL 填 ${linuxDoCallbackUrl}` : "回调 URL 使用当前站点的 /api/auth/linux-do/callback"} />
+                                        <Typography.Text type="secondary">
+                                            本项目接口回调地址是 /api/auth/linux-do/callback，请在 Linux.do 应用后台自行拼接站点前缀。
+                                            <Typography.Link href="https://connect.linux.do" target="_blank" rel="noreferrer">
+                                                点击此处管理你的 LinuxDO OAuth App
+                                            </Typography.Link>
+                                        </Typography.Text>
                                         <Row gutter={16}>
                                             <Col xs={24} md={6}>
                                                 <Form.Item name={["public", "auth", "linuxDo", "enabled"]} label="开启 Linux.do 登录" valuePropName="checked">
@@ -403,16 +395,6 @@ export default function AdminSettingsPage() {
                                             <Col xs={24} md={9}>
                                                 <Form.Item name={["private", "auth", "linuxDo", "clientSecret"]} label="Linux.do Client Secret">
                                                     <Input.Password placeholder="留空则沿用已保存的密钥" />
-                                                </Form.Item>
-                                            </Col>
-                                            <Col xs={24} md={18}>
-                                                <Form.Item name={["private", "auth", "linuxDo", "redirectUri"]} label="回调 URL">
-                                                    <Input placeholder={linuxDoCallbackUrl || "https://your-domain.com/api/auth/linux-do/callback"} />
-                                                </Form.Item>
-                                            </Col>
-                                            <Col xs={24} md={6}>
-                                                <Form.Item name={["private", "auth", "linuxDo", "minimumTrustLevel"]} label="最低信任等级">
-                                                    <InputNumber min={0} max={4} precision={0} className="!w-full" placeholder="0" />
                                                 </Form.Item>
                                             </Col>
                                         </Row>
@@ -672,8 +654,6 @@ function normalizePrivateSetting(setting: Partial<AdminSettings["private"]> = {}
             linuxDo: {
                 clientId: setting.auth?.linuxDo?.clientId || "",
                 clientSecret: setting.auth?.linuxDo?.clientSecret || "",
-                redirectUri: setting.auth?.linuxDo?.redirectUri || "",
-                minimumTrustLevel: Math.max(0, Number(setting.auth?.linuxDo?.minimumTrustLevel) || 0),
             },
         },
     };

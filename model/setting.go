@@ -64,10 +64,8 @@ type PrivateAuthSetting struct {
 }
 
 type PrivateLinuxDoAuthSetting struct {
-	ClientID          string `json:"clientId"`
-	ClientSecret      string `json:"clientSecret"`
-	RedirectURI       string `json:"redirectUri"`
-	MinimumTrustLevel int    `json:"minimumTrustLevel"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
 }
 
 // Setting 系统配置。

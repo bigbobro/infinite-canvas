@@ -167,8 +167,6 @@
 | --- | --- | --- |
 | `clientId` | string | Linux.do OAuth App Client ID |
 | `clientSecret` | string | Linux.do OAuth App Client Secret，后台返回时隐藏 |
-| `redirectUri` | string | Linux.do OAuth 回调 URL |
-| `minimumTrustLevel` | number | 允许登录的最低信任等级 |
 
 后端请求模型时，先按模型名筛选启用且包含该模型的渠道，再按 `weight` 加权随机选择一个渠道。
 

@@ -163,8 +163,6 @@ export type AdminPrivateSettings = {
         linuxDo: {
             clientId: string;
             clientSecret: string;
-            redirectUri: string;
-            minimumTrustLevel: number;
         };
     };
 };

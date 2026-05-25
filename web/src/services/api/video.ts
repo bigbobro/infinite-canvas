@@ -3,6 +3,7 @@ import axios from "axios";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { imageToDataUrl } from "@/services/image-storage";
 import { buildApiUrl, type AiConfig } from "@/stores/use-config-store";
+import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
 
 type VideoResponse = { id: string; status?: string; error?: { message?: string } };
@@ -12,7 +13,8 @@ function aiApiUrl(config: AiConfig, path: string) {
 }
 
 function aiHeaders(config: AiConfig) {
-    return config.channelMode === "remote" ? undefined : { Authorization: `Bearer ${config.apiKey}` };
+    const token = useUserStore.getState().token;
+    return config.channelMode === "remote" ? (token ? { Authorization: `Bearer ${token}` } : undefined) : { Authorization: `Bearer ${config.apiKey}` };
 }
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = []) {

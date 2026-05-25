@@ -55,7 +55,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func LinuxDoAuthorize(w http.ResponseWriter, r *http.Request) {
-	authURL, err := service.LinuxDoAuthorizeURL(r.URL.Query().Get("redirect"))
+	authURL, err := service.LinuxDoAuthorizeURL(r, r.URL.Query().Get("redirect"))
 	if err != nil {
 		FailError(w, err)
 		return
@@ -64,12 +64,12 @@ func LinuxDoAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func LinuxDoCallback(w http.ResponseWriter, r *http.Request) {
-	session, redirect, err := service.LoginWithLinuxDo(r.URL.Query().Get("code"), r.URL.Query().Get("state"))
+	session, redirect, err := service.LoginWithLinuxDo(r, r.URL.Query().Get("code"), r.URL.Query().Get("state"))
 	if err != nil {
-		http.Redirect(w, r, loginRedirect(redirect, "", err.Error()), http.StatusFound)
+		http.Redirect(w, r, loginRedirect(r, redirect, "", err.Error()), http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, loginRedirect(redirect, session.Token, ""), http.StatusFound)
+	http.Redirect(w, r, loginRedirect(r, redirect, session.Token, ""), http.StatusFound)
 }
 
 func AdminLogin(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +124,7 @@ func AdminSaveUser(w http.ResponseWriter, r *http.Request) {
 	OK(w, user)
 }
 
-func loginRedirect(redirect string, token string, message string) string {
+func loginRedirect(r *http.Request, redirect string, token string, message string) string {
 	values := url.Values{}
 	if strings.TrimSpace(token) != "" {
 		values.Set("token", token)
@@ -135,7 +135,7 @@ func loginRedirect(redirect string, token string, message string) string {
 	if strings.TrimSpace(redirect) != "" {
 		values.Set("redirect", redirect)
 	}
-	return "/login?" + values.Encode()
+	return service.RequestOrigin(r) + "/login?" + values.Encode()
 }
 
 func AdminDeleteUser(w http.ResponseWriter, r *http.Request, id string) {

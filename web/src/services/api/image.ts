@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import { buildApiUrl, type AiConfig } from "@/stores/use-config-store";
+import { useUserStore } from "@/stores/use-user-store";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { imageToDataUrl } from "@/services/image-storage";
@@ -77,10 +78,12 @@ function aiApiUrl(config: AiConfig, path: string) {
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
+    const token = useUserStore.getState().token;
     return config.channelMode === "remote"
-        ? contentType
-            ? { "Content-Type": contentType }
-            : undefined
+        ? {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              ...(contentType ? { "Content-Type": contentType } : {}),
+          }
         : {
               Authorization: `Bearer ${config.apiKey}`,
               ...(contentType ? { "Content-Type": contentType } : {}),

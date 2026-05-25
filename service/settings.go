@@ -77,9 +77,6 @@ func normalizePrivateSetting(setting model.PrivateSetting) model.PrivateSetting 
 		setting.Channels = []model.ModelChannel{}
 	}
 	setting.PromptSync = normalizePromptSyncSetting(setting.PromptSync)
-	if setting.Auth.LinuxDo.MinimumTrustLevel < 0 {
-		setting.Auth.LinuxDo.MinimumTrustLevel = 0
-	}
 	for i := range setting.Channels {
 		if setting.Channels[i].Protocol == "" {
 			setting.Channels[i].Protocol = "openai"

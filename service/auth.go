@@ -109,7 +109,7 @@ func Login(username string, password string) (model.AuthSession, error) {
 	return newSession(user)
 }
 
-func LinuxDoAuthorizeURL(redirect string) (string, error) {
+func LinuxDoAuthorizeURL(r *http.Request, redirect string) (string, error) {
 	settings, err := repository.GetSettings()
 	if err != nil {
 		return "", err
@@ -119,19 +119,19 @@ func LinuxDoAuthorizeURL(redirect string) (string, error) {
 	if !settings.Public.Auth.LinuxDo.Enabled {
 		return "", safeMessageError{message: "Linux.do 登录未开启"}
 	}
-	if strings.TrimSpace(linuxDo.ClientID) == "" || strings.TrimSpace(linuxDo.ClientSecret) == "" || strings.TrimSpace(linuxDo.RedirectURI) == "" {
+	if strings.TrimSpace(linuxDo.ClientID) == "" || strings.TrimSpace(linuxDo.ClientSecret) == "" {
 		return "", safeMessageError{message: "Linux.do 登录未配置"}
 	}
 	values := url.Values{}
 	values.Set("client_id", linuxDo.ClientID)
-	values.Set("redirect_uri", linuxDo.RedirectURI)
+	values.Set("redirect_uri", linuxDoRedirectURI(r))
 	values.Set("response_type", "code")
 	values.Set("scope", "read")
 	values.Set("state", base64.RawURLEncoding.EncodeToString([]byte(redirect)))
 	return config.Cfg.LinuxDoAuthorizeURL + "?" + values.Encode(), nil
 }
 
-func LoginWithLinuxDo(code string, state string) (model.AuthSession, string, error) {
+func LoginWithLinuxDo(r *http.Request, code string, state string) (model.AuthSession, string, error) {
 	redirect := decodeState(state)
 	settings, err := repository.GetSettings()
 	if err != nil {
@@ -142,7 +142,7 @@ func LoginWithLinuxDo(code string, state string) (model.AuthSession, string, err
 	if !settings.Public.Auth.LinuxDo.Enabled {
 		return model.AuthSession{}, redirect, safeMessageError{message: "Linux.do 登录未开启"}
 	}
-	token, err := linuxDoAccessToken(code, linuxDo)
+	token, err := linuxDoAccessToken(r, code, linuxDo)
 	if err != nil {
 		return model.AuthSession{}, redirect, err
 	}
@@ -153,9 +153,6 @@ func LoginWithLinuxDo(code string, state string) (model.AuthSession, string, err
 	linuxDoID := fmt.Sprint(profile.ID)
 	if strings.TrimSpace(linuxDoID) == "" || linuxDoID == "0" {
 		return model.AuthSession{}, redirect, safeMessageError{message: "Linux.do 用户信息无效"}
-	}
-	if profile.TrustLevel < linuxDo.MinimumTrustLevel {
-		return model.AuthSession{}, redirect, safeMessageError{message: "Linux.do 账号信任等级不足"}
 	}
 	user, ok, err := repository.GetUserByLinuxDoID(linuxDoID)
 	if err != nil {
@@ -211,6 +208,9 @@ func CurrentAuthUser(tokenText string) (model.AuthUser, bool) {
 	}
 	user, ok, err := repository.GetUserByID(claims.UserID)
 	if err != nil || !ok {
+		return model.AuthUser{}, false
+	}
+	if user.Status == model.UserStatusBan {
 		return model.AuthUser{}, false
 	}
 	return model.PublicUser(user), true
@@ -365,16 +365,15 @@ type linuxDoUserResponse struct {
 	Username       string `json:"username"`
 	Name           string `json:"name"`
 	AvatarTemplate string `json:"avatar_template"`
-	TrustLevel     int    `json:"trust_level"`
 }
 
-func linuxDoAccessToken(code string, setting model.PrivateLinuxDoAuthSetting) (string, error) {
+func linuxDoAccessToken(r *http.Request, code string, setting model.PrivateLinuxDoAuthSetting) (string, error) {
 	values := url.Values{}
 	values.Set("client_id", setting.ClientID)
 	values.Set("client_secret", setting.ClientSecret)
 	values.Set("grant_type", "authorization_code")
 	values.Set("code", code)
-	values.Set("redirect_uri", setting.RedirectURI)
+	values.Set("redirect_uri", linuxDoRedirectURI(r))
 	req, _ := http.NewRequest(http.MethodPost, config.Cfg.LinuxDoTokenURL, strings.NewReader(values.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	var payload linuxDoTokenResponse
@@ -385,6 +384,10 @@ func linuxDoAccessToken(code string, setting model.PrivateLinuxDoAuthSetting) (s
 		return "", safeMessageError{message: "Linux.do 登录失败"}
 	}
 	return payload.AccessToken, nil
+}
+
+func linuxDoRedirectURI(r *http.Request) string {
+	return RequestOrigin(r) + "/api/auth/linux-do/callback"
 }
 
 func linuxDoProfile(token string) (linuxDoUserResponse, error) {
@@ -442,6 +445,18 @@ func decodeState(state string) string {
 		return "/"
 	}
 	return redirect
+}
+
+func RequestOrigin(r *http.Request) string {
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if proto == "" {
+		proto = "http"
+	}
+	return proto + "://" + host
 }
 
 func firstNonEmpty(values ...string) string {

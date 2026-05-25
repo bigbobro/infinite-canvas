@@ -22,14 +22,15 @@ func New() *gin.Engine {
 	api.GET("/auth/linux-do/callback", gin.WrapF(handler.LinuxDoCallback))
 	api.GET("/auth/me", middleware.OptionalAuth, gin.WrapF(handler.CurrentUser))
 	api.GET("/settings", gin.WrapF(handler.Settings))
-	api.POST("/v1/images/generations", gin.WrapF(handler.AIImagesGenerations))
-	api.POST("/v1/images/edits", gin.WrapF(handler.AIImagesEdits))
-	api.POST("/v1/chat/completions", gin.WrapF(handler.AIChatCompletions))
-	api.POST("/v1/videos", gin.WrapF(handler.AIVideos))
-	api.GET("/v1/videos/:id", func(c *gin.Context) {
+	v1 := api.Group("/v1", middleware.UserAuth)
+	v1.POST("/images/generations", gin.WrapF(handler.AIImagesGenerations))
+	v1.POST("/images/edits", gin.WrapF(handler.AIImagesEdits))
+	v1.POST("/chat/completions", gin.WrapF(handler.AIChatCompletions))
+	v1.POST("/videos", gin.WrapF(handler.AIVideos))
+	v1.GET("/videos/:id", func(c *gin.Context) {
 		handler.AIVideo(c.Writer, c.Request, c.Param("id"))
 	})
-	api.GET("/v1/videos/:id/content", func(c *gin.Context) {
+	v1.GET("/videos/:id/content", func(c *gin.Context) {
 		handler.AIVideoContent(c.Writer, c.Request, c.Param("id"))
 	})
 	api.GET("/prompts", middleware.OptionalAuth, gin.WrapF(handler.Prompts))

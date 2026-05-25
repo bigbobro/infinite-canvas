@@ -12,6 +12,8 @@ function proxyHeaders(request: NextRequest) {
     headers.delete("host");
     headers.delete("content-length");
     headers.delete("connection");
+    headers.set("x-forwarded-host", request.nextUrl.host);
+    headers.set("x-forwarded-proto", request.nextUrl.protocol.replace(":", ""));
     return headers;
 }
 
