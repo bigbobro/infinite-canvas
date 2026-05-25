@@ -35,18 +35,39 @@ type PublicModelChannelSetting struct {
 // PublicSetting 公开配置。
 type PublicSetting struct {
 	ModelChannel PublicModelChannelSetting `json:"modelChannel"`
+	Auth         PublicAuthSetting         `json:"auth"`
+}
+
+type PublicAuthSetting struct {
+	LinuxDo PublicLinuxDoAuthSetting `json:"linuxDo"`
+}
+
+type PublicLinuxDoAuthSetting struct {
+	Enabled bool `json:"enabled"`
 }
 
 // PrivateSetting 私有配置。
 type PrivateSetting struct {
-	Channels   []ModelChannel    `json:"channels"`
-	PromptSync PromptSyncSetting `json:"promptSync"`
+	Channels   []ModelChannel     `json:"channels"`
+	PromptSync PromptSyncSetting  `json:"promptSync"`
+	Auth       PrivateAuthSetting `json:"auth"`
 }
 
 // PromptSyncSetting 提示词定时同步配置。
 type PromptSyncSetting struct {
 	Enabled *bool  `json:"enabled"`
 	Cron    string `json:"cron"`
+}
+
+type PrivateAuthSetting struct {
+	LinuxDo PrivateLinuxDoAuthSetting `json:"linuxDo"`
+}
+
+type PrivateLinuxDoAuthSetting struct {
+	ClientID          string `json:"clientId"`
+	ClientSecret      string `json:"clientSecret"`
+	RedirectURI       string `json:"redirectUri"`
+	MinimumTrustLevel int    `json:"minimumTrustLevel"`
 }
 
 // Setting 系统配置。

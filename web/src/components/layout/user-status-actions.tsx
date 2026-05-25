@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, RefObject } from "react";
-import { Dropdown } from "antd";
+import { Avatar, Dropdown } from "antd";
 import { Keyboard, LogOut, Settings2, Shield } from "lucide-react";
 import type { ItemType } from "antd/es/menu/interface";
 import Link from "next/link";
@@ -32,14 +32,15 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
     const logout = useUserStore((state) => state.clearSession);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const canvasTheme = canvasThemes[theme];
-    const userName = user?.username || "用户";
+    const userName = user?.displayName || user?.username || "用户";
+    const avatarUrl = user?.avatarUrl?.trim();
     const avatarText = (userName.trim()[0] || "U").toUpperCase();
     const naturalIconClass = "inline-flex size-8 shrink-0 items-center justify-center text-stone-600 transition hover:text-stone-950 dark:text-stone-300 dark:hover:text-white [&_svg]:size-4";
     const iconStyle: CSSProperties | undefined = variant === "canvas" ? { color: canvasTheme.node.text } : undefined;
     const versionStyle = iconStyle;
     const gitHubClassName = variant === "canvas" ? "size-11 text-base" : undefined;
     const gitHubStyle = iconStyle;
-    const avatarStyle: CSSProperties | undefined = variant === "canvas" ? { borderColor: canvasTheme.toolbar.border, color: canvasTheme.node.text } : undefined;
+    const avatarStyle: CSSProperties | undefined = variant === "canvas" ? { borderColor: canvasTheme.toolbar.border, color: canvasTheme.node.text, background: "transparent" } : undefined;
     const menuItems: ItemType[] = [
         { key: "user", disabled: true, label: <span className="font-medium text-current">{userName}</span> },
         ...(user?.role === "admin" ? [{ key: "admin", icon: <Shield className="size-4" />, label: <Link href="/admin">管理后台</Link> }] : []),
@@ -60,13 +61,16 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
             <GitHubLink className={cn("bg-transparent hover:bg-transparent dark:hover:bg-transparent", gitHubClassName)} style={gitHubStyle} />
             <div ref={accountRef}>
                 <Dropdown open={accountOpen} onOpenChange={onAccountOpenChange} trigger={["click"]} placement="bottomRight" getPopupContainer={getPopupContainer} styles={{ root: { minWidth: 150 } }} menu={{ items: menuItems }}>
-                    <button
-                        type="button"
-                        className="inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-stone-300 bg-transparent p-0 text-xs font-semibold leading-none text-stone-800 transition hover:border-stone-500 hover:text-stone-950 dark:border-stone-700 dark:text-stone-100 dark:hover:border-stone-400 dark:hover:text-white"
-                        style={avatarStyle}
-                        aria-label="账户菜单"
-                    >
-                        <span className="leading-none">{avatarText}</span>
+                    <button type="button" className="flex size-8 shrink-0 items-center justify-center rounded-full bg-transparent p-0 text-[0] leading-[0] transition" aria-label="账户菜单">
+                        <Avatar
+                            size={28}
+                            src={avatarUrl ? <img src={avatarUrl} alt={userName} referrerPolicy="no-referrer" /> : undefined}
+                            alt={userName}
+                            className="!flex !items-center !justify-center border border-stone-300 bg-transparent text-xs font-semibold text-stone-800 transition hover:border-stone-500 hover:text-stone-950 dark:border-stone-700 dark:text-stone-100 dark:hover:border-stone-400 dark:hover:text-white"
+                            style={avatarStyle}
+                        >
+                            {avatarText}
+                        </Avatar>
                     </button>
                 </Dropdown>
             </div>

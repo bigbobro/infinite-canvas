@@ -36,6 +36,7 @@ export default function AdminPromptsPage() {
     } = useAdminPrompts();
     const copyText = useCopyText();
     const [form] = Form.useForm<Partial<Prompt> & { tagText?: string }>();
+    const [keywordText, setKeywordText] = useState(keyword);
     const [editingPrompt, setEditingPrompt] = useState<Partial<Prompt> | null>(null);
     const [detailPrompt, setDetailPrompt] = useState<Prompt | null>(null);
     const [deletingPrompt, setDeletingPrompt] = useState<Prompt | null>(null);
@@ -50,6 +51,8 @@ export default function AdminPromptsPage() {
     useEffect(() => {
         if (editingPrompt) form.setFieldsValue({ ...editingPrompt, tagText: editingPrompt.tags?.join(", ") || "" });
     }, [editingPrompt, form]);
+
+    useEffect(() => setKeywordText(keyword), [keyword]);
 
     const savePrompt = async () => {
         const value = await form.validateFields();
@@ -135,7 +138,7 @@ export default function AdminPromptsPage() {
                         <Row gutter={16} align="bottom">
                             <Col flex="360px">
                                 <Form.Item label="关键词">
-                                    <Input.Search value={keyword} placeholder="搜索标题或提示词" allowClear enterButton={<SearchOutlined />} onSearch={searchPrompts} onChange={(event) => searchPrompts(event.target.value)} />
+                                    <Input.Search value={keywordText} placeholder="搜索标题或提示词" allowClear enterButton={<SearchOutlined />} onSearch={() => searchPrompts(keywordText)} onChange={(event) => setKeywordText(event.target.value)} />
                                 </Form.Item>
                             </Col>
                             <Col flex="220px">
@@ -151,8 +154,15 @@ export default function AdminPromptsPage() {
                             <Col flex="none">
                                 <Form.Item>
                                     <Space>
-                                        <Button onClick={resetFilters}>重置</Button>
-                                        <Button type="primary" icon={<ReloadOutlined />} onClick={refreshPrompts}>
+                                        <Button
+                                            onClick={() => {
+                                                setKeywordText("");
+                                                resetFilters();
+                                            }}
+                                        >
+                                            重置
+                                        </Button>
+                                        <Button type="primary" icon={<ReloadOutlined />} onClick={() => searchPrompts(keywordText)}>
                                             查询
                                         </Button>
                                     </Space>

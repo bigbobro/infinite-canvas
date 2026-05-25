@@ -7,7 +7,10 @@ export type UserRole = "guest" | "user" | "admin";
 export type AuthUser = {
     id: string;
     username: string;
+    displayName: string;
+    avatarUrl: string;
     role: UserRole;
+    credits: number;
     createdAt: string;
     updatedAt: string;
 };
@@ -23,7 +26,7 @@ export type AuthPayload = {
 };
 
 export async function login(payload: AuthPayload) {
-    return apiPost<AuthSession>("/api/admin/login", payload);
+    return apiPost<AuthSession>("/api/auth/login", payload);
 }
 
 export async function register(payload: AuthPayload) {

@@ -1,8 +1,15 @@
 package service
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -39,6 +46,8 @@ func EnsureDefaultAdmin() error {
 		Username:  strings.TrimSpace(config.Cfg.AdminUsername),
 		Password:  hash,
 		Role:      model.UserRoleAdmin,
+		AffCode:   newAffCode(),
+		Status:    model.UserStatusActive,
 		CreatedAt: now(),
 		UpdatedAt: now(),
 	})
@@ -46,19 +55,18 @@ func EnsureDefaultAdmin() error {
 }
 
 func Register(username string, password string) (model.AuthSession, error) {
-	return model.AuthSession{}, errors.New("注册功能暂时关闭")
 	username = strings.TrimSpace(username)
 	if strings.ContainsAny(username, " \t\r\n") {
-		return model.AuthSession{}, errors.New("用户名不能包含空格")
+		return model.AuthSession{}, safeMessageError{message: "用户名不能包含空格"}
 	}
 	if username == "" || password == "" {
-		return model.AuthSession{}, errors.New("用户名和密码不能为空")
+		return model.AuthSession{}, safeMessageError{message: "用户名和密码不能为空"}
 	}
 	if _, ok, err := repository.GetUserByUsername(username); err != nil || ok {
 		if err != nil {
 			return model.AuthSession{}, err
 		}
-		return model.AuthSession{}, errors.New("用户名已存在")
+		return model.AuthSession{}, safeMessageError{message: "用户名已存在"}
 	}
 	hash, err := hashPassword(password)
 	if err != nil {
@@ -69,6 +77,8 @@ func Register(username string, password string) (model.AuthSession, error) {
 		Username:  username,
 		Password:  hash,
 		Role:      model.UserRoleUser,
+		AffCode:   newAffCode(),
+		Status:    model.UserStatusActive,
 		CreatedAt: now(),
 		UpdatedAt: now(),
 	})
@@ -84,9 +94,100 @@ func Login(username string, password string) (model.AuthSession, error) {
 		return model.AuthSession{}, err
 	}
 	if !ok || bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) != nil {
-		return model.AuthSession{}, errors.New("用户名或密码错误")
+		return model.AuthSession{}, safeMessageError{message: "用户名或密码错误"}
+	}
+	if user.Status == model.UserStatusBan {
+		return model.AuthSession{}, safeMessageError{message: "账号已被禁用"}
+	}
+	normalizeUserDefaults(&user)
+	user.LastLoginAt = now()
+	user.UpdatedAt = now()
+	user, err = repository.SaveUser(user)
+	if err != nil {
+		return model.AuthSession{}, err
 	}
 	return newSession(user)
+}
+
+func LinuxDoAuthorizeURL(redirect string) (string, error) {
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return "", err
+	}
+	settings = normalizeSettings(settings)
+	linuxDo := settings.Private.Auth.LinuxDo
+	if !settings.Public.Auth.LinuxDo.Enabled {
+		return "", safeMessageError{message: "Linux.do 登录未开启"}
+	}
+	if strings.TrimSpace(linuxDo.ClientID) == "" || strings.TrimSpace(linuxDo.ClientSecret) == "" || strings.TrimSpace(linuxDo.RedirectURI) == "" {
+		return "", safeMessageError{message: "Linux.do 登录未配置"}
+	}
+	values := url.Values{}
+	values.Set("client_id", linuxDo.ClientID)
+	values.Set("redirect_uri", linuxDo.RedirectURI)
+	values.Set("response_type", "code")
+	values.Set("scope", "read")
+	values.Set("state", base64.RawURLEncoding.EncodeToString([]byte(redirect)))
+	return config.Cfg.LinuxDoAuthorizeURL + "?" + values.Encode(), nil
+}
+
+func LoginWithLinuxDo(code string, state string) (model.AuthSession, string, error) {
+	redirect := decodeState(state)
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return model.AuthSession{}, redirect, err
+	}
+	settings = normalizeSettings(settings)
+	linuxDo := settings.Private.Auth.LinuxDo
+	if !settings.Public.Auth.LinuxDo.Enabled {
+		return model.AuthSession{}, redirect, safeMessageError{message: "Linux.do 登录未开启"}
+	}
+	token, err := linuxDoAccessToken(code, linuxDo)
+	if err != nil {
+		return model.AuthSession{}, redirect, err
+	}
+	profile, err := linuxDoProfile(token)
+	if err != nil {
+		return model.AuthSession{}, redirect, err
+	}
+	linuxDoID := fmt.Sprint(profile.ID)
+	if strings.TrimSpace(linuxDoID) == "" || linuxDoID == "0" {
+		return model.AuthSession{}, redirect, safeMessageError{message: "Linux.do 用户信息无效"}
+	}
+	if profile.TrustLevel < linuxDo.MinimumTrustLevel {
+		return model.AuthSession{}, redirect, safeMessageError{message: "Linux.do 账号信任等级不足"}
+	}
+	user, ok, err := repository.GetUserByLinuxDoID(linuxDoID)
+	if err != nil {
+		return model.AuthSession{}, redirect, err
+	}
+	if !ok {
+		user = model.User{
+			ID:          newID("user"),
+			Username:    linuxDoUsername(profile.Username, linuxDoID),
+			DisplayName: strings.TrimSpace(profile.Name),
+			AvatarURL:   linuxDoAvatar(profile.AvatarTemplate),
+			Role:        model.UserRoleUser,
+			AffCode:     newAffCode(),
+			LinuxDoID:   linuxDoID,
+			Status:      model.UserStatusActive,
+			CreatedAt:   now(),
+		}
+	} else if user.Status == model.UserStatusBan {
+		return model.AuthSession{}, redirect, safeMessageError{message: "账号已被禁用"}
+	}
+	user.DisplayName = firstNonEmpty(profile.Name, user.DisplayName)
+	user.AvatarURL = firstNonEmpty(linuxDoAvatar(profile.AvatarTemplate), user.AvatarURL)
+	user.LastLoginAt = now()
+	user.UpdatedAt = now()
+	extra, _ := json.Marshal(profile)
+	user.Extra = string(extra)
+	user, err = repository.SaveUser(user)
+	if err != nil {
+		return model.AuthSession{}, redirect, err
+	}
+	session, err := newSession(user)
+	return session, redirect, err
 }
 
 func ParseToken(tokenText string) (TokenClaims, error) {
@@ -122,6 +223,7 @@ func ListUsers(q model.Query) (model.UserList, error) {
 	}
 	for i := range users {
 		users[i].Password = ""
+		normalizeUserDefaults(&users[i])
 	}
 	return model.UserList{Items: users, Total: int(total)}, nil
 }
@@ -129,27 +231,43 @@ func ListUsers(q model.Query) (model.UserList, error) {
 func SaveUser(user model.User, password string) (model.User, error) {
 	user.Username = strings.TrimSpace(user.Username)
 	if strings.ContainsAny(user.Username, " \t\r\n") {
-		return user, errors.New("用户名不能包含空格")
+		return user, safeMessageError{message: "用户名不能包含空格"}
 	}
 	if user.Username == "" {
-		return user, errors.New("用户名不能为空")
+		return user, safeMessageError{message: "用户名不能为空"}
 	}
 	if user.Role == "" || user.Role == model.UserRoleGuest {
 		user.Role = model.UserRoleUser
 	}
+	if user.Status == "" {
+		user.Status = model.UserStatusActive
+	}
 	if saved, ok, err := repository.GetUserByUsername(user.Username); err != nil {
 		return user, err
 	} else if ok && saved.ID != user.ID {
-		return user, errors.New("用户名已存在")
+		return user, safeMessageError{message: "用户名已存在"}
 	}
+	oldCredits := 0
 	if user.ID == "" {
 		user.ID = newID("user")
+		user.AffCode = newAffCode()
 		user.CreatedAt = now()
 	} else if saved, ok, err := repository.GetUserByID(user.ID); err != nil {
 		return user, err
 	} else if ok {
+		oldCredits = saved.Credits
 		user.CreatedAt = saved.CreatedAt
 		user.Password = saved.Password
+		if user.AffCode == "" {
+			user.AffCode = saved.AffCode
+		}
+		if user.AffCode == "" {
+			user.AffCode = newAffCode()
+		}
+		if user.LinuxDoID == "" {
+			user.LinuxDoID = saved.LinuxDoID
+		}
+		user.LastLoginAt = saved.LastLoginAt
 	}
 	if password != "" {
 		hash, err := hashPassword(password)
@@ -159,10 +277,21 @@ func SaveUser(user model.User, password string) (model.User, error) {
 		user.Password = hash
 	}
 	if user.Password == "" {
-		return user, errors.New("密码不能为空")
+		return user, safeMessageError{message: "密码不能为空"}
 	}
 	user.UpdatedAt = now()
 	user, err := repository.SaveUser(user)
+	if err == nil && user.Credits != oldCredits {
+		_, err = repository.SaveCreditLog(model.CreditLog{
+			ID:        newID("credit"),
+			UserID:    user.ID,
+			Type:      model.CreditLogTypeAdminAdjust,
+			Amount:    user.Credits - oldCredits,
+			Balance:   user.Credits,
+			Remark:    "后台手动调整",
+			CreatedAt: now(),
+		})
+	}
 	user.Password = ""
 	return user, err
 }
@@ -212,6 +341,116 @@ func now() string {
 
 func newID(prefix string) string {
 	return prefix + "-" + uuid.NewString()
+}
+
+func newAffCode() string {
+	return strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+}
+
+func normalizeUserDefaults(user *model.User) {
+	if user.Status == "" {
+		user.Status = model.UserStatusActive
+	}
+	if user.AffCode == "" {
+		user.AffCode = newAffCode()
+	}
+}
+
+type linuxDoTokenResponse struct {
+	AccessToken string `json:"access_token"`
+}
+
+type linuxDoUserResponse struct {
+	ID             int64  `json:"id"`
+	Username       string `json:"username"`
+	Name           string `json:"name"`
+	AvatarTemplate string `json:"avatar_template"`
+	TrustLevel     int    `json:"trust_level"`
+}
+
+func linuxDoAccessToken(code string, setting model.PrivateLinuxDoAuthSetting) (string, error) {
+	values := url.Values{}
+	values.Set("client_id", setting.ClientID)
+	values.Set("client_secret", setting.ClientSecret)
+	values.Set("grant_type", "authorization_code")
+	values.Set("code", code)
+	values.Set("redirect_uri", setting.RedirectURI)
+	req, _ := http.NewRequest(http.MethodPost, config.Cfg.LinuxDoTokenURL, strings.NewReader(values.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	var payload linuxDoTokenResponse
+	if err := doLinuxDoJSON(req, &payload); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		return "", safeMessageError{message: "Linux.do 登录失败"}
+	}
+	return payload.AccessToken, nil
+}
+
+func linuxDoProfile(token string) (linuxDoUserResponse, error) {
+	req, _ := http.NewRequest(http.MethodGet, config.Cfg.LinuxDoUserInfoURL, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	var payload linuxDoUserResponse
+	err := doLinuxDoJSON(req, &payload)
+	return payload, err
+}
+
+func doLinuxDoJSON(req *http.Request, payload any) error {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return safeMessageError{message: "Linux.do 登录失败"}
+	}
+	return json.NewDecoder(bytes.NewReader(body)).Decode(payload)
+}
+
+func linuxDoUsername(username string, id string) string {
+	base := strings.TrimSpace(username)
+	if base == "" {
+		base = "linuxdo-" + id
+	}
+	if _, ok, err := repository.GetUserByUsername(base); err != nil || !ok {
+		return base
+	}
+	return base + "-" + id
+}
+
+func linuxDoAvatar(template string) string {
+	if strings.TrimSpace(template) == "" {
+		return ""
+	}
+	if strings.HasPrefix(template, "//") {
+		template = "https:" + template
+	}
+	if strings.HasPrefix(template, "/") {
+		template = "https://linux.do" + template
+	}
+	return strings.ReplaceAll(template, "{size}", "120")
+}
+
+func decodeState(state string) string {
+	data, err := base64.RawURLEncoding.DecodeString(state)
+	if err != nil {
+		return "/"
+	}
+	redirect := string(data)
+	if !strings.HasPrefix(redirect, "/") {
+		return "/"
+	}
+	return redirect
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func WarnDefaultSecurityConfig() {

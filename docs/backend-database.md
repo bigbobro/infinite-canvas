@@ -15,6 +15,7 @@
 当前启动时执行 `AutoMigrate`，自动维护以下表：
 
 - `users`
+- `credit_logs`
 - `prompts`
 - `assets`
 - `settings`
@@ -34,14 +35,14 @@
 | `display_name`  | string | 昵称                       |
 | `avatar_url`    | string | 头像地址                     |
 | `role`          | string | 角色：`user`、`admin`        |
-| `credits`       | number | 算力点余额，规划字段               |
-| `aff_code`      | string | 用户自己的邀请码，唯一索引，规划字段       |
-| `aff_count`     | number | 已邀请用户数量，冗余统计字段，规划字段      |
-| `inviter_id`    | string | 邀请人用户 ID，规划字段            |
+| `credits`       | number | 算力点余额                    |
+| `aff_code`      | string | 用户自己的邀请码，唯一索引            |
+| `aff_count`     | number | 已邀请用户数量，冗余统计字段           |
+| `inviter_id`    | string | 邀请人用户 ID                 |
 | `github_id`     | string | GitHub 用户 ID，规划字段        |
-| `linux_do_id`   | string | Linux.do 用户 ID，规划字段      |
+| `linux_do_id`   | string | Linux.do 用户 ID            |
 | `wechat_id`     | string | 微信用户 ID，规划字段             |
-| `status`        | string | 用户状态：`active`、`ban`，规划字段 |
+| `status`        | string | 用户状态：`active`、`ban`       |
 | `last_login_at` | string | 最近登录时间                   |
 | `extra`         | json   | 扩展信息                     |
 | `created_at`    | string | 创建时间                     |
@@ -112,6 +113,7 @@
 | 字段                | 类型       | 说明             |
 |-------------------|----------|----------------|
 | `modelChannel` | object | 模型渠道公开配置组 |
+| `auth` | object | 公开登录配置 |
 
 `modelChannel` 当前字段：
 
@@ -125,12 +127,19 @@
 | `systemPrompt`    | string   | 系统提示词          |
 | `allowCustomChannel` | bool    | 是否允许用户自定义渠道，默认允许，关闭后前端只提供走后端渠道的模式 |
 
+`auth.linuxDo` 当前字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `enabled` | bool | 是否开启 Linux.do 登录 |
+
 `private.value` 当前字段：
 
 | 字段         | 类型       | 说明       |
 |------------|----------|----------|
 | `channels` | object[] | 模型渠道配置列表 |
 | `promptSync` | object | GitHub 远程提示词定时同步配置 |
+| `auth` | object | 私有登录配置 |
 
 `channels` 每项字段：
 
@@ -151,6 +160,15 @@
 | --- | --- | --- |
 | `enabled` | bool | 是否开启定时同步，默认开启 |
 | `cron` | string | Cron 表达式，默认每 5 分钟 |
+
+`auth.linuxDo` 当前字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `clientId` | string | Linux.do OAuth App Client ID |
+| `clientSecret` | string | Linux.do OAuth App Client Secret，后台返回时隐藏 |
+| `redirectUri` | string | Linux.do OAuth 回调 URL |
+| `minimumTrustLevel` | number | 允许登录的最低信任等级 |
 
 后端请求模型时，先按模型名筛选启用且包含该模型的渠道，再按 `weight` 加权随机选择一个渠道。
 

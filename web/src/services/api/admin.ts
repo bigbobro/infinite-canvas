@@ -10,6 +10,47 @@ export type AdminPromptCategory = {
     remote: boolean;
 };
 
+export type AdminUser = {
+    id: string;
+    username: string;
+    email: string;
+    displayName: string;
+    avatarUrl: string;
+    role: "user" | "admin";
+    credits: number;
+    affCode: string;
+    affCount: number;
+    inviterId: string;
+    linuxDoId: string;
+    status: "active" | "ban";
+    lastLoginAt: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type AdminUserListResponse = {
+    items: AdminUser[];
+    total: number;
+};
+
+export type AdminUserQuery = {
+    keyword?: string;
+    page?: number;
+    pageSize?: number;
+};
+
+export async function fetchAdminUsers(token: string, query: AdminUserQuery = {}) {
+    return apiGet<AdminUserListResponse>("/api/admin/users", compactApiParams(query), token);
+}
+
+export async function saveAdminUser(token: string, user: Partial<AdminUser> & { password?: string }) {
+    return apiPost<AdminUser>("/api/admin/users", user, token);
+}
+
+export async function deleteAdminUser(token: string, id: string) {
+    return apiDelete<boolean>(`/api/admin/users/${encodeURIComponent(id)}`, token);
+}
+
 export async function fetchAdminPromptCategories(token: string) {
     return apiGet<AdminPromptCategory[]>("/api/admin/prompt-categories", undefined, token);
 }
@@ -105,6 +146,11 @@ export type AdminPublicModelChannelSettings = {
 
 export type AdminPublicSettings = {
     modelChannel: AdminPublicModelChannelSettings;
+    auth: {
+        linuxDo: {
+            enabled: boolean;
+        };
+    };
 };
 
 export type AdminPrivateSettings = {
@@ -112,6 +158,14 @@ export type AdminPrivateSettings = {
     promptSync: {
         enabled: boolean;
         cron: string;
+    };
+    auth: {
+        linuxDo: {
+            clientId: string;
+            clientSecret: string;
+            redirectUri: string;
+            minimumTrustLevel: number;
+        };
     };
 };
 

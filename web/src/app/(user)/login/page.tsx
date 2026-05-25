@@ -1,10 +1,12 @@
 "use client";
 
 import { LockOutlined, UserOutlined } from "@ant-design/icons";
-import { App, Button, Form, Input } from "antd";
+import { App, Button, Form, Input, Segmented, Space } from "antd";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 
+import { fetchCurrentUser } from "@/services/api/auth";
+import { useConfigStore } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 type LoginFormValues = {
@@ -26,13 +28,35 @@ function LoginContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const login = useUserStore((state) => state.login);
+    const register = useUserStore((state) => state.register);
+    const setSession = useUserStore((state) => state.setSession);
     const isLoading = useUserStore((state) => state.isLoading);
+    const linuxDoEnabled = useConfigStore((state) => state.publicSettings?.auth?.linuxDo?.enabled === true);
+    const [mode, setMode] = useState<"login" | "register">("login");
     const redirect = searchParams.get("redirect") || "/";
+
+    useEffect(() => {
+        const token = searchParams.get("token");
+        const error = searchParams.get("error");
+        if (error) message.error(error);
+        if (!token) return;
+        void fetchCurrentUser(token).then((user) => {
+            setSession(token, user);
+            message.success("登录成功");
+            router.replace(redirect.startsWith("/") ? redirect : "/");
+            router.refresh();
+        });
+    }, [message, redirect, router, searchParams, setSession]);
 
     const submit = async (values: LoginFormValues) => {
         try {
-            const user = await login({ username: values.username, password: values.password });
-            message.success("登录成功");
+            if (mode === "register" && values.password !== values.confirmPassword) {
+                message.error("两次输入的密码不一致");
+                return;
+            }
+            const action = mode === "register" ? register : login;
+            const user = await action({ username: values.username, password: values.password });
+            message.success(mode === "register" ? "注册成功" : "登录成功");
             router.replace(redirect.startsWith("/") ? redirect : "/");
             router.refresh();
             if (user.role !== "admin") router.replace("/");
@@ -53,20 +77,43 @@ function LoginContent() {
                         }}
                         aria-label="无限画布"
                     />
-                    <h1 className="text-3xl font-semibold tracking-normal text-stone-950 dark:text-stone-100">管理员登录</h1>
-                    <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">当前暂时关闭注册，仅允许管理员账号登录。</p>
+                    <h1 className="text-3xl font-semibold tracking-normal text-stone-950 dark:text-stone-100">账号登录</h1>
+                    <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">支持账号密码和 Linux.do 登录。</p>
                 </div>
 
                 <Form<LoginFormValues> layout="vertical" size="large" requiredMark={false} onFinish={submit}>
+                    <Form.Item>
+                        <Segmented
+                            block
+                            value={mode}
+                            onChange={(value) => setMode(value as "login" | "register")}
+                            options={[
+                                { label: "登录", value: "login" },
+                                { label: "注册", value: "register" },
+                            ]}
+                        />
+                    </Form.Item>
                     <Form.Item name="username" label={<span className="font-medium text-stone-800 dark:text-stone-200">用户名</span>} rules={[{ required: true, message: "请输入用户名" }]}>
                         <Input prefix={<UserOutlined />} autoComplete="username" />
                     </Form.Item>
                     <Form.Item name="password" label={<span className="font-medium text-stone-800 dark:text-stone-200">密码</span>} rules={[{ required: true, message: "请输入密码" }]}>
                         <Input.Password prefix={<LockOutlined />} autoComplete="current-password" />
                     </Form.Item>
-                    <Button block type="primary" htmlType="submit" loading={isLoading}>
-                        登录
-                    </Button>
+                    {mode === "register" ? (
+                        <Form.Item name="confirmPassword" label={<span className="font-medium text-stone-800 dark:text-stone-200">确认密码</span>} rules={[{ required: true, message: "请再次输入密码" }]}>
+                            <Input.Password prefix={<LockOutlined />} autoComplete="new-password" />
+                        </Form.Item>
+                    ) : null}
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <Button block type="primary" htmlType="submit" loading={isLoading}>
+                            {mode === "register" ? "注册" : "登录"}
+                        </Button>
+                        {linuxDoEnabled ? (
+                            <Button block href={`/api/auth/linux-do/authorize?redirect=${encodeURIComponent(redirect)}`} icon={<img src="/icons/linuxdo.svg" alt="" width={18} height={18} />}>
+                                使用 Linux.do 登录
+                            </Button>
+                        ) : null}
+                    </Space>
                 </Form>
             </section>
         </main>

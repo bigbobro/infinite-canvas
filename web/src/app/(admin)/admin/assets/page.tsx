@@ -23,6 +23,7 @@ export default function AdminAssetsPage() {
     const { assets, tags, keyword, kind, tag, page, pageSize, total, isLoading, searchAssets, changeKind, changeTag, changePage, changePageSize, resetFilters, refreshAssets, saveAsset: saveAdminAsset, deleteAsset } = useAdminAssets();
     const copyText = useCopyText();
     const [form] = Form.useForm<AssetFormValues>();
+    const [keywordText, setKeywordText] = useState(keyword);
     const [editingAsset, setEditingAsset] = useState<Partial<AdminAsset> | null>(null);
     const [detailAsset, setDetailAsset] = useState<AdminAsset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<AdminAsset | null>(null);
@@ -32,6 +33,8 @@ export default function AdminAssetsPage() {
     useEffect(() => {
         if (editingAsset) form.setFieldsValue({ ...editingAsset, tagText: editingAsset.tags?.join(", ") || "" });
     }, [editingAsset, form]);
+
+    useEffect(() => setKeywordText(keyword), [keyword]);
 
     const saveAsset = async () => {
         const value = await form.validateFields();
@@ -119,7 +122,7 @@ export default function AdminAssetsPage() {
                         <Row gutter={16} align="bottom">
                             <Col flex="360px">
                                 <Form.Item label="关键词">
-                                    <Input.Search value={keyword} placeholder="搜索标题、内容或标签" allowClear enterButton={<SearchOutlined />} onSearch={searchAssets} onChange={(event) => searchAssets(event.target.value)} />
+                                    <Input.Search value={keywordText} placeholder="搜索标题、内容或标签" allowClear enterButton={<SearchOutlined />} onSearch={() => searchAssets(keywordText)} onChange={(event) => setKeywordText(event.target.value)} />
                                 </Form.Item>
                             </Col>
                             <Col flex="180px">
@@ -135,8 +138,15 @@ export default function AdminAssetsPage() {
                             <Col flex="none">
                                 <Form.Item>
                                     <Space>
-                                        <Button onClick={resetFilters}>重置</Button>
-                                        <Button type="primary" icon={<ReloadOutlined />} onClick={refreshAssets}>
+                                        <Button
+                                            onClick={() => {
+                                                setKeywordText("");
+                                                resetFilters();
+                                            }}
+                                        >
+                                            重置
+                                        </Button>
+                                        <Button type="primary" icon={<ReloadOutlined />} onClick={() => searchAssets(keywordText)}>
                                             查询
                                         </Button>
                                     </Space>
