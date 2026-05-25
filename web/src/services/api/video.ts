@@ -33,22 +33,27 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
     body.append("preset", "normal");
     const files = await Promise.all(references.slice(0, 7).map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     files.forEach((file) => body.append("input_reference[]", file));
-    const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config) })).data);
-    if (!created.id) throw new Error("视频接口没有返回任务 ID");
-    for (;;) {
-        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${created.id}`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined })).data);
-        if (video.status === "completed") break;
-        if (video.status === "failed" || video.status === "cancelled") throw new Error(video.error?.message || "视频生成失败");
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+    try {
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config) })).data);
+        if (!created.id) throw new Error("视频接口没有返回任务 ID");
+        for (;;) {
+            const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${created.id}`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined })).data);
+            if (video.status === "completed") break;
+            if (video.status === "failed" || video.status === "cancelled") throw new Error(video.error?.message || "视频生成失败");
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+        }
+        const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${created.id}/content`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined, responseType: "blob" });
+        await assertVideoBlob(content.data);
+        refreshRemoteUser(config);
+        return content.data;
+    } catch (error) {
+        throw new Error(readAxiosError(error, "视频生成失败"));
     }
-    const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${created.id}/content`), { headers: aiHeaders(config), params: config.channelMode === "remote" ? { model } : undefined, responseType: "blob" });
-    await assertVideoBlob(content.data);
-    refreshRemoteUser(config);
-    return content.data;
 }
 
 function normalizeVideoSeconds(value: string) {
-    return String(Math.max(1, Math.floor(Number(value) || 6)));
+    const seconds = Math.floor(Number(value) || 6);
+    return String([6, 10, 12, 16, 20].includes(seconds) ? seconds : 6);
 }
 
 function normalizeVideoSize(value: string) {
@@ -72,6 +77,14 @@ function unwrapVideoResponse(payload: ApiVideoResponse) {
         return payload.data;
     }
     return payload;
+}
+
+function readAxiosError(error: unknown, fallback: string) {
+    if (axios.isAxiosError<{ error?: { message?: string }; msg?: string; code?: number }>(error)) {
+        const responseData = error.response?.data;
+        return responseData?.msg || responseData?.error?.message || (error.response?.status ? `${fallback}：${error.response.status}` : fallback);
+    }
+    return error instanceof Error ? error.message : fallback;
 }
 
 async function assertVideoBlob(blob: Blob) {

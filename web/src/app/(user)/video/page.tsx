@@ -173,7 +173,7 @@ export default function VideoPage() {
             openConfigDialog(true);
             return null;
         }
-        return { text, config: { ...effectiveConfig, model }, references: [...references] };
+        return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references] };
     };
 
     const retryResult = () => {
@@ -306,7 +306,7 @@ export default function VideoPage() {
 
                             <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
                                 <span className="truncate text-stone-500 dark:text-stone-400">
-                                    {model} · {effectiveConfig.vquality}p · {effectiveConfig.size} · {effectiveConfig.videoSeconds}s
+                                    {model} · {normalizeResolution(effectiveConfig.vquality)}p · {normalizeVideoSize(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s
                                 </span>
                                 <Button size="small" type="text" icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
                                     调整
@@ -567,6 +567,26 @@ function buildLog({ prompt, model, config, durationMs, status, video, error }: {
         video,
         error,
     };
+}
+
+function buildVideoConfig(config: AiConfig, model: string): AiConfig {
+    return {
+        ...config,
+        model,
+        videoModel: model,
+        size: normalizeVideoSize(config.size),
+        videoSeconds: normalizeVideoSeconds(config.videoSeconds),
+        vquality: normalizeResolution(config.vquality),
+    };
+}
+
+function normalizeVideoSeconds(value: string) {
+    const seconds = Math.floor(Number(value) || 6);
+    return String([6, 10, 12, 16, 20].includes(seconds) ? seconds : 6);
+}
+
+function normalizeVideoSize(value: string) {
+    return /^\d+x\d+$/.test(value || "") ? value : "1280x720";
 }
 
 function normalizeResolution(value: string) {
