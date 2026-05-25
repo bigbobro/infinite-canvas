@@ -11,6 +11,12 @@ import { useAdminCreditLogs } from "./use-admin-credit-logs";
 
 type CreditLogFormValues = Partial<AdminCreditLog>;
 
+const creditLogTypeLabels: Record<string, string> = {
+    admin_adjust: "后台调整",
+    ai_consume: "模型消费",
+    ai_refund: "失败返还",
+};
+
 export default function AdminCreditLogsPage() {
     const { logs, keyword, page, pageSize, total, isLoading, searchLogs, changePage, changePageSize, resetFilters, refreshLogs, saveLog: saveAdminLog, deleteLog } = useAdminCreditLogs();
     const [form] = Form.useForm<CreditLogFormValues>();
@@ -41,7 +47,7 @@ export default function AdminCreditLogsPage() {
             title: "类型",
             dataIndex: "type",
             width: 140,
-            render: (_, item) => <Tag>{item.type || "-"}</Tag>,
+            render: (_, item) => <Tag>{creditLogTypeLabels[item.type] || item.type || "-"}</Tag>,
         },
         {
             title: "变动",

@@ -77,10 +77,6 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	credits *= readAIRequestCount(body, contentType)
-	if err := service.EnsureUserCredits(user.ID, credits); err != nil {
-		FailError(w, err)
-		return
-	}
 	channel, err := service.SelectModelChannel(modelName)
 	if err != nil {
 		log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
@@ -97,15 +93,24 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
-	copyAIResponse(w, request, func() error {
-		return service.ConsumeUserCredits(user.ID, modelName, credits, path)
+	if err := service.ConsumeUserCredits(user.ID, modelName, credits, path); err != nil {
+		FailError(w, err)
+		return
+	}
+	copyAIResponse(w, request, func() {
+		if err := service.RefundUserCredits(user.ID, modelName, credits, path); err != nil {
+			log.Printf("AI proxy refund credits failed: user=%s model=%s credits=%d err=%v", user.ID, modelName, credits, err)
+		}
 	})
 }
 
-func copyAIResponse(w http.ResponseWriter, request *http.Request, beforeWrite func() error) {
+func copyAIResponse(w http.ResponseWriter, request *http.Request, onFailure func()) {
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		log.Printf("AI proxy request failed: url=%s err=%v", request.URL.String(), err)
+		if onFailure != nil {
+			onFailure()
+		}
 		Fail(w, "AI 接口请求失败")
 		return
 	}
@@ -114,15 +119,11 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, beforeWrite fu
 	if response.StatusCode >= http.StatusBadRequest {
 		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		log.Printf("AI upstream error: url=%s status=%d body=%s", request.URL.String(), response.StatusCode, strings.TrimSpace(string(payload)))
+		if onFailure != nil {
+			onFailure()
+		}
 		Fail(w, "AI 接口请求失败")
 		return
-	}
-	if beforeWrite != nil {
-		if err := beforeWrite(); err != nil {
-			log.Printf("AI proxy before write failed: url=%s err=%v", request.URL.String(), err)
-			FailError(w, err)
-			return
-		}
 	}
 
 	for key, values := range response.Header {
