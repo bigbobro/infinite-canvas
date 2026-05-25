@@ -26,10 +26,12 @@ type saveUserRequest struct {
 	Password    string           `json:"password"`
 	Email       string           `json:"email"`
 	DisplayName string           `json:"displayName"`
-	AvatarURL   string           `json:"avatarUrl"`
 	Role        model.UserRole   `json:"role"`
-	Credits     int              `json:"credits"`
 	Status      model.UserStatus `json:"status"`
+}
+
+type adjustUserCreditsRequest struct {
+	Credits int `json:"credits"`
 }
 
 func Register(w http.ResponseWriter, r *http.Request) {
@@ -112,9 +114,7 @@ func AdminSaveUser(w http.ResponseWriter, r *http.Request) {
 		Username:    request.Username,
 		Email:       request.Email,
 		DisplayName: request.DisplayName,
-		AvatarURL:   request.AvatarURL,
 		Role:        request.Role,
-		Credits:     request.Credits,
 		Status:      request.Status,
 	}, request.Password)
 	if err != nil {
@@ -122,6 +122,45 @@ func AdminSaveUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	OK(w, user)
+}
+
+func AdminAdjustUserCredits(w http.ResponseWriter, r *http.Request, id string) {
+	var request adjustUserCreditsRequest
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	user, err := service.AdjustUserCredits(id, request.Credits)
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, user)
+}
+
+func AdminCreditLogs(w http.ResponseWriter, r *http.Request) {
+	logs, err := service.ListCreditLogs(parseQuery(r))
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, logs)
+}
+
+func AdminSaveCreditLog(w http.ResponseWriter, r *http.Request) {
+	var log model.CreditLog
+	_ = json.NewDecoder(r.Body).Decode(&log)
+	result, err := service.SaveCreditLog(log)
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, result)
+}
+
+func AdminDeleteCreditLog(w http.ResponseWriter, r *http.Request, id string) {
+	if err := service.DeleteCreditLog(id); err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, true)
 }
 
 func loginRedirect(r *http.Request, redirect string, token string, message string) string {

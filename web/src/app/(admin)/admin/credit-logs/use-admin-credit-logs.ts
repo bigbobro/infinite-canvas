@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { adjustAdminUserCredits, deleteAdminUser, fetchAdminUsers, saveAdminUser, type AdminUser } from "@/services/api/admin";
+import { deleteAdminCreditLog, fetchAdminCreditLogs, saveAdminCreditLog, type AdminCreditLog } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
 const defaultPageSize = 10;
 
-export function useAdminUsers() {
+export function useAdminCreditLogs() {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const token = useUserStore((state) => state.token);
@@ -19,42 +19,33 @@ export function useAdminUsers() {
     const [pageSize, setPageSize] = useState(defaultPageSize);
 
     const query = useQuery({
-        queryKey: ["admin", "users", token, keyword, page, pageSize],
-        queryFn: () => fetchAdminUsers(token, { keyword, page, pageSize }),
+        queryKey: ["admin", "credit-logs", token, keyword, page, pageSize],
+        queryFn: () => fetchAdminCreditLogs(token, { keyword, page, pageSize }),
         enabled: Boolean(token),
         retry: false,
     });
 
     const saveMutation = useMutation({
-        mutationFn: (user: Partial<AdminUser> & { password?: string }) => saveAdminUser(token, user),
-        onSuccess: async (_, user) => {
-            await queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
-            message.success(user.id ? "用户已保存" : "用户已新增");
+        mutationFn: (log: Partial<AdminCreditLog>) => saveAdminCreditLog(token, log),
+        onSuccess: async (_, log) => {
+            await queryClient.invalidateQueries({ queryKey: ["admin", "credit-logs"] });
+            message.success(log.id ? "日志已保存" : "日志已新增");
         },
         onError: (error) => message.error(error instanceof Error ? error.message : "保存失败"),
     });
 
     const deleteMutation = useMutation({
-        mutationFn: (id: string) => deleteAdminUser(token, id),
+        mutationFn: (id: string) => deleteAdminCreditLog(token, id),
         onSuccess: async () => {
-            await queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
-            message.success("用户已删除");
+            await queryClient.invalidateQueries({ queryKey: ["admin", "credit-logs"] });
+            message.success("日志已删除");
         },
         onError: (error) => message.error(error instanceof Error ? error.message : "删除失败"),
     });
 
-    const creditMutation = useMutation({
-        mutationFn: ({ id, credits }: { id: string; credits: number }) => adjustAdminUserCredits(token, id, credits),
-        onSuccess: async () => {
-            await queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
-            message.success("算力点已调整");
-        },
-        onError: (error) => message.error(error instanceof Error ? error.message : "调整失败"),
-    });
-
     useEffect(() => {
         if (query.isError) {
-            const errorMessage = query.error instanceof Error ? query.error.message : "读取用户失败";
+            const errorMessage = query.error instanceof Error ? query.error.message : "读取日志失败";
             message.error(errorMessage);
             if (errorMessage.includes("未登录") || errorMessage.includes("权限不足") || errorMessage.includes("登录状态无效")) clearSession();
         }
@@ -71,19 +62,18 @@ export function useAdminUsers() {
     const data = query.data;
 
     return {
-        users: data?.items || [],
+        logs: data?.items || [],
         keyword,
         page,
         pageSize,
         total: data?.total || 0,
-        isLoading: query.isFetching || saveMutation.isPending || deleteMutation.isPending || creditMutation.isPending,
-        searchUsers: (value = keyword) => updateFilters({ keyword: value }),
+        isLoading: query.isFetching || saveMutation.isPending || deleteMutation.isPending,
+        searchLogs: (value = keyword) => updateFilters({ keyword: value }),
         changePage: (value: number) => updateFilters({ page: value }),
         changePageSize: (value: number) => updateFilters({ pageSize: value }),
         resetFilters: () => updateFilters({ keyword: "", page: 1, pageSize: defaultPageSize }),
-        refreshUsers: () => query.refetch(),
-        saveUser: (user: Partial<AdminUser> & { password?: string }) => saveMutation.mutateAsync(user),
-        adjustCredits: (id: string, credits: number) => creditMutation.mutateAsync({ id, credits }),
-        deleteUser: (id: string) => deleteMutation.mutateAsync(id),
+        refreshLogs: () => query.refetch(),
+        saveLog: (log: Partial<AdminCreditLog>) => saveMutation.mutateAsync(log),
+        deleteLog: (id: string) => deleteMutation.mutateAsync(id),
     };
 }

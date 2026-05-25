@@ -44,7 +44,7 @@
 | `wechat_id`     | string | 微信用户 ID，规划字段             |
 | `status`        | string | 用户状态：`active`、`ban`       |
 | `last_login_at` | string | 最近登录时间                   |
-| `extra`         | json   | 扩展信息                     |
+| `extra`         | json   | 扩展信息，第三方资料按平台命名空间保存，如 `linuxDo` |
 | `created_at`    | string | 创建时间                     |
 | `updated_at`    | string | 更新时间                     |
 

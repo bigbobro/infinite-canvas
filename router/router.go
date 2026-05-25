@@ -40,8 +40,16 @@ func New() *gin.Engine {
 	admin := api.Group("/admin", middleware.AdminAuth)
 	admin.GET("/users", gin.WrapF(handler.AdminUsers))
 	admin.POST("/users", gin.WrapF(handler.AdminSaveUser))
+	admin.POST("/users/:id/credits", func(c *gin.Context) {
+		handler.AdminAdjustUserCredits(c.Writer, c.Request, c.Param("id"))
+	})
 	admin.DELETE("/users/:id", func(c *gin.Context) {
 		handler.AdminDeleteUser(c.Writer, c.Request, c.Param("id"))
+	})
+	admin.GET("/credit-logs", gin.WrapF(handler.AdminCreditLogs))
+	admin.POST("/credit-logs", gin.WrapF(handler.AdminSaveCreditLog))
+	admin.DELETE("/credit-logs/:id", func(c *gin.Context) {
+		handler.AdminDeleteCreditLog(c.Writer, c.Request, c.Param("id"))
 	})
 	admin.GET("/settings", gin.WrapF(handler.AdminSettings))
 	admin.POST("/settings", gin.WrapF(handler.AdminSaveSettings))

@@ -28,6 +28,10 @@ type TokenClaims struct {
 	jwt.RegisteredClaims
 }
 
+type userExtra struct {
+	LinuxDo any `json:"linuxDo,omitempty"`
+}
+
 func EnsureDefaultAdmin() error {
 	if strings.TrimSpace(config.Cfg.AdminUsername) == "" || strings.TrimSpace(config.Cfg.AdminPassword) == "" {
 		return nil
@@ -177,7 +181,7 @@ func LoginWithLinuxDo(r *http.Request, code string, state string) (model.AuthSes
 	user.AvatarURL = firstNonEmpty(linuxDoAvatar(profile.AvatarTemplate), user.AvatarURL)
 	user.LastLoginAt = now()
 	user.UpdatedAt = now()
-	extra, _ := json.Marshal(profile)
+	extra, _ := json.Marshal(userExtra{LinuxDo: profile})
 	user.Extra = string(extra)
 	user, err = repository.SaveUser(user)
 	if err != nil {
@@ -247,17 +251,19 @@ func SaveUser(user model.User, password string) (model.User, error) {
 	} else if ok && saved.ID != user.ID {
 		return user, safeMessageError{message: "用户名已存在"}
 	}
-	oldCredits := 0
-	if user.ID == "" {
+	isCreate := user.ID == ""
+	if isCreate {
 		user.ID = newID("user")
 		user.AffCode = newAffCode()
 		user.CreatedAt = now()
 	} else if saved, ok, err := repository.GetUserByID(user.ID); err != nil {
 		return user, err
 	} else if ok {
-		oldCredits = saved.Credits
 		user.CreatedAt = saved.CreatedAt
 		user.Password = saved.Password
+		user.AvatarURL = saved.AvatarURL
+		user.Credits = saved.Credits
+		user.Extra = saved.Extra
 		if user.AffCode == "" {
 			user.AffCode = saved.AffCode
 		}
@@ -276,24 +282,60 @@ func SaveUser(user model.User, password string) (model.User, error) {
 		}
 		user.Password = hash
 	}
-	if user.Password == "" {
+	if isCreate && user.Password == "" {
 		return user, safeMessageError{message: "密码不能为空"}
 	}
 	user.UpdatedAt = now()
 	user, err := repository.SaveUser(user)
-	if err == nil && user.Credits != oldCredits {
+	user.Password = ""
+	return user, err
+}
+
+func AdjustUserCredits(id string, credits int) (model.User, error) {
+	user, ok, err := repository.GetUserByID(id)
+	if err != nil || !ok {
+		if err != nil {
+			return user, err
+		}
+		return user, safeMessageError{message: "用户不存在"}
+	}
+	oldCredits := user.Credits
+	user.Credits = credits
+	user.UpdatedAt = now()
+	user, err = repository.SaveUser(user)
+	if err == nil && oldCredits != credits {
 		_, err = repository.SaveCreditLog(model.CreditLog{
 			ID:        newID("credit"),
 			UserID:    user.ID,
 			Type:      model.CreditLogTypeAdminAdjust,
-			Amount:    user.Credits - oldCredits,
-			Balance:   user.Credits,
+			Amount:    credits - oldCredits,
+			Balance:   credits,
 			Remark:    "后台手动调整",
 			CreatedAt: now(),
 		})
 	}
 	user.Password = ""
 	return user, err
+}
+
+func ListCreditLogs(q model.Query) (model.CreditLogList, error) {
+	logs, total, err := repository.ListCreditLogs(q)
+	if err != nil {
+		return model.CreditLogList{}, err
+	}
+	return model.CreditLogList{Items: logs, Total: int(total)}, nil
+}
+
+func SaveCreditLog(log model.CreditLog) (model.CreditLog, error) {
+	if log.ID == "" {
+		log.ID = newID("credit")
+		log.CreatedAt = now()
+	}
+	return repository.SaveCreditLog(log)
+}
+
+func DeleteCreditLog(id string) error {
+	return repository.DeleteCreditLog(id)
 }
 
 func DeleteUser(id string) error {

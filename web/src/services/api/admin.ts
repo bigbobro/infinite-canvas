@@ -33,6 +33,23 @@ export type AdminUserListResponse = {
     total: number;
 };
 
+export type AdminCreditLog = {
+    id: string;
+    userId: string;
+    type: string;
+    amount: number;
+    balance: number;
+    relatedId: string;
+    remark: string;
+    extra: string;
+    createdAt: string;
+};
+
+export type AdminCreditLogListResponse = {
+    items: AdminCreditLog[];
+    total: number;
+};
+
 export type AdminUserQuery = {
     keyword?: string;
     page?: number;
@@ -47,8 +64,24 @@ export async function saveAdminUser(token: string, user: Partial<AdminUser> & { 
     return apiPost<AdminUser>("/api/admin/users", user, token);
 }
 
+export async function adjustAdminUserCredits(token: string, id: string, credits: number) {
+    return apiPost<AdminUser>(`/api/admin/users/${encodeURIComponent(id)}/credits`, { credits }, token);
+}
+
 export async function deleteAdminUser(token: string, id: string) {
     return apiDelete<boolean>(`/api/admin/users/${encodeURIComponent(id)}`, token);
+}
+
+export async function fetchAdminCreditLogs(token: string, query: AdminUserQuery = {}) {
+    return apiGet<AdminCreditLogListResponse>("/api/admin/credit-logs", compactApiParams(query), token);
+}
+
+export async function saveAdminCreditLog(token: string, log: Partial<AdminCreditLog>) {
+    return apiPost<AdminCreditLog>("/api/admin/credit-logs", log, token);
+}
+
+export async function deleteAdminCreditLog(token: string, id: string) {
+    return apiDelete<boolean>(`/api/admin/credit-logs/${encodeURIComponent(id)}`, token);
 }
 
 export async function fetchAdminPromptCategories(token: string) {

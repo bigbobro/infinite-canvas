@@ -93,3 +93,8 @@ type CreditLog struct {
 	Extra     string        `json:"extra" gorm:"type:text"`
 	CreatedAt string        `json:"createdAt"`
 }
+
+type CreditLogList struct {
+	Items []CreditLog `json:"items"`
+	Total int         `json:"total"`
+}

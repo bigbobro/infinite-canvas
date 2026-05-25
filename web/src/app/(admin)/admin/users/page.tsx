@@ -2,7 +2,8 @@
 
 import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { ProTable, type ProColumns } from "@ant-design/pro-components";
-import { Avatar, Button, Card, Col, Flex, Form, Input, InputNumber, Modal, Row, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { Avatar, Button, Card, Col, Divider, Flex, Form, Input, InputNumber, Modal, Row, Select, Space, Tag, Tooltip, Typography } from "antd";
+import dayjs from "dayjs";
 import { useEffect, useState } from "react";
 
 import type { AdminUser } from "@/services/api/admin";
@@ -21,7 +22,7 @@ const statusOptions = [
 ];
 
 export default function AdminUsersPage() {
-    const { users, keyword, page, pageSize, total, isLoading, searchUsers, changePage, changePageSize, resetFilters, refreshUsers, saveUser: saveAdminUser, deleteUser } = useAdminUsers();
+    const { users, keyword, page, pageSize, total, isLoading, searchUsers, changePage, changePageSize, resetFilters, refreshUsers, saveUser: saveAdminUser, adjustCredits, deleteUser } = useAdminUsers();
     const [form] = Form.useForm<UserFormValues>();
     const [keywordText, setKeywordText] = useState(keyword);
     const [editingUser, setEditingUser] = useState<Partial<AdminUser> | null>(null);
@@ -30,13 +31,20 @@ export default function AdminUsersPage() {
     useEffect(() => setKeywordText(keyword), [keyword]);
 
     useEffect(() => {
-        if (editingUser) form.setFieldsValue({ role: "user", status: "active", credits: 0, ...editingUser, password: "" });
+        if (editingUser) form.setFieldsValue({ role: "user", status: "active", ...editingUser, password: "" });
     }, [editingUser, form]);
 
     const saveUser = async () => {
         const value = await form.validateFields();
-        await saveAdminUser({ ...editingUser, ...value, password: value.password || undefined });
+        const userValue = { ...value };
+        delete userValue.credits;
+        await saveAdminUser({ ...editingUser, ...userValue, password: value.password || undefined });
         setEditingUser(null);
+    };
+
+    const saveCredits = async () => {
+        if (!editingUser?.id) return;
+        await adjustCredits(editingUser.id, form.getFieldValue("credits") || 0);
     };
 
     const columns: ProColumns<AdminUser>[] = [
@@ -46,7 +54,7 @@ export default function AdminUsersPage() {
             width: 260,
             render: (_, item) => (
                 <Flex align="center" gap={10} style={{ minWidth: 0 }}>
-                    <Avatar src={item.avatarUrl}>{(item.displayName || item.username || "U").slice(0, 1).toUpperCase()}</Avatar>
+                    <Avatar src={item.avatarUrl || undefined}>{(item.displayName || item.username || "U").slice(0, 1).toUpperCase()}</Avatar>
                     <Flex vertical style={{ minWidth: 0 }}>
                         <Typography.Text strong ellipsis>
                             {item.displayName || item.username}
@@ -86,7 +94,7 @@ export default function AdminUsersPage() {
             title: "最近登录",
             dataIndex: "lastLoginAt",
             width: 180,
-            render: (_, item) => <Typography.Text type="secondary">{item.lastLoginAt || "-"}</Typography.Text>,
+            render: (_, item) => <Typography.Text type="secondary">{item.lastLoginAt ? dayjs(item.lastLoginAt).format("YYYY-MM-DD HH:mm:ss") : "-"}</Typography.Text>,
         },
         {
             title: "操作",
@@ -161,7 +169,7 @@ export default function AdminUsersPage() {
                     }
                     options={{ density: true, setting: true, reload: () => void refreshUsers() }}
                     toolBarRender={() => [
-                        <Button key="add" type="primary" icon={<PlusOutlined />} onClick={() => setEditingUser({ role: "user", status: "active", credits: 0 })}>
+                        <Button key="add" type="primary" icon={<PlusOutlined />} onClick={() => setEditingUser({ role: "user", status: "active" })}>
                             新增
                         </Button>,
                     ]}
@@ -179,6 +187,7 @@ export default function AdminUsersPage() {
 
             <Modal title={editingUser?.id ? "编辑用户" : "新增用户"} open={Boolean(editingUser)} width={680} onCancel={() => setEditingUser(null)} onOk={() => void saveUser()} okText="保存" cancelText="取消" destroyOnHidden>
                 <Form form={form} layout="vertical" requiredMark={false}>
+                    <Typography.Text strong>基础信息</Typography.Text>
                     <Row gutter={14}>
                         <Col span={12}>
                             <Form.Item name="username" label="用户名" rules={[{ required: true, message: "请输入用户名" }]}>
@@ -210,17 +219,25 @@ export default function AdminUsersPage() {
                                 <Select options={statusOptions} />
                             </Form.Item>
                         </Col>
-                        <Col span={12}>
-                            <Form.Item name="credits" label="算力点">
-                                <InputNumber min={0} precision={0} style={{ width: "100%" }} />
-                            </Form.Item>
-                        </Col>
-                        <Col span={12}>
-                            <Form.Item name="avatarUrl" label="头像 URL">
-                                <Input />
-                            </Form.Item>
-                        </Col>
                     </Row>
+                    {editingUser?.id ? (
+                        <>
+                            <Divider style={{ margin: "4px 0 16px" }} />
+                            <Typography.Text strong>算力点调整</Typography.Text>
+                            <Row gutter={14}>
+                                <Col span={12}>
+                                    <Form.Item label="算力点">
+                                        <Space.Compact style={{ width: "100%" }}>
+                                            <Form.Item name="credits" noStyle>
+                                                <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+                                            </Form.Item>
+                                            <Button onClick={() => void saveCredits()}>调整</Button>
+                                        </Space.Compact>
+                                    </Form.Item>
+                                </Col>
+                            </Row>
+                        </>
+                    ) : null}
                 </Form>
             </Modal>
 
