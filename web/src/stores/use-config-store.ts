@@ -32,10 +32,10 @@ export const defaultConfig: AiConfig = {
     apiKey: "",
     model: "gpt-image-2",
     imageModel: "gpt-image-2",
-    videoModel: "sora-2",
+    videoModel: "grok-imagine-video",
     textModel: "gpt-5.5",
     videoSeconds: "6",
-    vquality: "auto",
+    vquality: "720",
     systemPrompt: "",
     models: [],
     quality: "auto",
@@ -112,7 +112,7 @@ export const useConfigStore = create<ConfigStore>()(
             partialize: (state) => ({ config: state.config }),
             merge: (persisted, current) => {
                 const config = { ...defaultConfig, ...((persisted as Partial<ConfigStore>).config || {}) };
-                return { ...current, config: { ...config, channelMode: config.channelMode || "remote", imageModel: config.imageModel || config.model, videoModel: config.videoModel || "sora-2", textModel: config.textModel || config.model, videoSeconds: config.videoSeconds || "6", vquality: config.vquality || "auto" } };
+                return { ...current, config: { ...config, channelMode: config.channelMode || "remote", imageModel: config.imageModel || config.model, videoModel: config.videoModel || "grok-imagine-video", textModel: config.textModel || config.model, videoSeconds: config.videoSeconds || "6", vquality: config.vquality || "720" } };
             },
         },
     ),
