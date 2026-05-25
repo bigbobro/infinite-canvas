@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useRef, useState } from "react";
-import { Button, Segmented } from "antd";
-import { CircleDot, Eraser, FolderOpen, Grid2x2, Hand, Image as ImageIcon, Library, Moon, Palette, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
+import { Button, Segmented, Switch } from "antd";
+import { CircleDot, Eraser, FolderOpen, Grid2x2, Hand, Image as ImageIcon, Info, Library, Moon, Palette, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
 
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -12,6 +12,7 @@ export function CanvasToolbar({
     canUndo,
     canRedo,
     backgroundMode,
+    showImageInfo,
     onAddImage,
     onAddVideo,
     onAddText,
@@ -23,6 +24,7 @@ export function CanvasToolbar({
     onClear,
     onDeselect,
     onBackgroundModeChange,
+    onShowImageInfoChange,
     onOpenAssetLibrary,
     onOpenMyAssets,
 }: {
@@ -30,6 +32,7 @@ export function CanvasToolbar({
     canUndo: boolean;
     canRedo: boolean;
     backgroundMode: CanvasBackgroundMode;
+    showImageInfo: boolean;
     onAddImage: () => void;
     onAddVideo: () => void;
     onAddText: () => void;
@@ -41,6 +44,7 @@ export function CanvasToolbar({
     onClear: () => void;
     onDeselect: () => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
+    onShowImageInfoChange: (show: boolean) => void;
     onOpenAssetLibrary: () => void;
     onOpenMyAssets: () => void;
 }) {
@@ -174,6 +178,13 @@ export function CanvasToolbar({
                             },
                         ]}
                     />
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg px-1.5 py-1">
+                        <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] font-medium opacity-65">
+                            <Info className="size-3.5" />
+                            图片信息
+                        </span>
+                        <Switch size="small" checked={showImageInfo} onChange={onShowImageInfoChange} />
+                    </div>
                 </div>
             ) : null}
         </div>

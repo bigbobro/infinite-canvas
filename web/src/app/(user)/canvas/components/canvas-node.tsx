@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { ChevronRight, Image as ImageIcon, RefreshCw, Star, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { formatBytes } from "@/lib/image-utils";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "../types";
 
@@ -21,6 +22,7 @@ type CanvasNodeProps = {
     isConnecting: boolean;
     editRequestNonce?: number;
     showPanel: boolean;
+    showImageInfo: boolean;
     renderPanel?: (node: CanvasNodeData) => ReactNode;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     batchCount?: number;
@@ -71,6 +73,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     isConnecting,
     editRequestNonce = 0,
     showPanel,
+    showImageInfo,
     renderPanel,
     renderNodeContent,
     batchCount = 0,
@@ -295,6 +298,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onSetBatchPrimary={() => onSetBatchPrimary?.(data)}
                     />
                 </div>
+
+                {showImageInfo && hasImageContent ? <ImageInfoBar node={data} /> : null}
 
                 {!hasImageContent && !hasVideoContent ? <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12" style={{ background: `linear-gradient(to top, ${theme.canvas.background}66, transparent)` }} /> : null}
 
@@ -534,6 +539,20 @@ function ImageContent({
                 </button>
             ) : null}
         </BatchFrame>
+    );
+}
+
+function ImageInfoBar({ node }: { node: CanvasNodeData }) {
+    const width = Math.round(node.metadata?.naturalWidth || node.width);
+    const height = Math.round(node.metadata?.naturalHeight || node.height);
+    const size = formatBytes(node.metadata?.bytes || 0);
+    return (
+        <div className="pointer-events-none absolute bottom-3 right-3 z-40 max-w-[calc(100%-24px)]">
+            <span className="max-w-full truncate rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium leading-none text-white backdrop-blur-sm">
+                {width} x {height}
+                {size ? ` · ${size}` : ""}
+            </span>
+        </div>
     );
 }
 

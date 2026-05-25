@@ -66,6 +66,7 @@ type CanvasHistoryEntry = Pick<CanvasClipboard, "nodes" | "connections"> & {
     chatSessions: CanvasAssistantSession[];
     activeChatId: string | null;
     backgroundMode: CanvasBackgroundMode;
+    showImageInfo: boolean;
 };
 
 const VIDEO_NODE_MAX_WIDTH = 420;
@@ -246,6 +247,7 @@ function InfiniteCanvasPage() {
     const [runningNodeId, setRunningNodeId] = useState<string | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
+    const [showImageInfo, setShowImageInfo] = useState(false);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [assetPickerTab, setAssetPickerTab] = useState<AssetPickerTab>("my-assets");
@@ -284,8 +286,9 @@ function InfiniteCanvasPage() {
             chatSessions,
             activeChatId,
             backgroundMode,
+            showImageInfo,
         }),
-        [activeChatId, backgroundMode, chatSessions],
+        [activeChatId, backgroundMode, chatSessions, showImageInfo],
     );
 
     useEffect(() => {
@@ -305,6 +308,7 @@ function InfiniteCanvasPage() {
             setChatSessions(restoredSessions);
             setActiveChatId(project.activeChatId || null);
             setBackgroundMode(project.backgroundMode);
+            setShowImageInfo(project.showImageInfo || false);
             setViewport(project.viewport);
             historyRef.current = { past: [], future: [] };
             if (historyCommitTimerRef.current) {
@@ -317,6 +321,7 @@ function InfiniteCanvasPage() {
                 chatSessions: restoredSessions,
                 activeChatId: project.activeChatId || null,
                 backgroundMode: project.backgroundMode,
+                showImageInfo: project.showImageInfo || false,
             };
             setHistoryState({ canUndo: false, canRedo: false });
             setProjectLoaded(true);
@@ -328,7 +333,7 @@ function InfiniteCanvasPage() {
         if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
         const next = createHistoryEntry();
         const previous = lastHistoryRef.current;
-        if (previous?.nodes === next.nodes && previous.connections === next.connections && previous.chatSessions === next.chatSessions && previous.activeChatId === next.activeChatId && previous.backgroundMode === next.backgroundMode) return;
+        if (previous?.nodes === next.nodes && previous.connections === next.connections && previous.chatSessions === next.chatSessions && previous.activeChatId === next.activeChatId && previous.backgroundMode === next.backgroundMode && previous.showImageInfo === next.showImageInfo) return;
 
         if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
         historyCommitTimerRef.current = setTimeout(() => {
@@ -348,12 +353,12 @@ function InfiniteCanvasPage() {
                 historyCommitTimerRef.current = null;
             }
         };
-    }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded]);
+    }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded, showImageInfo]);
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode });
-    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, updateProject]);
+        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
+    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);
@@ -795,6 +800,7 @@ function InfiniteCanvasPage() {
         setChatSessions(entry.chatSessions);
         setActiveChatId(entry.activeChatId);
         setBackgroundMode(entry.backgroundMode);
+        setShowImageInfo(entry.showImageInfo);
         setSelectedNodeIds(new Set());
         setSelectedConnectionId(null);
         setContextMenu(null);
@@ -2085,6 +2091,7 @@ function InfiniteCanvasPage() {
                             batchOpening={openingBatchIds.has(node.id)}
                             batchRecovering={collapsingBatchIds.has(node.id)}
                             batchMotion={batchMotionById.get(node.id)}
+                            showImageInfo={showImageInfo}
                             renderPanel={(panelNode) => (
                                 <CanvasNodePromptPanel
                                     node={panelNode}
@@ -2180,6 +2187,7 @@ function InfiniteCanvasPage() {
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
                     backgroundMode={backgroundMode}
+                    showImageInfo={showImageInfo}
                     onAddImage={() => createNode(CanvasNodeType.Image)}
                     onAddVideo={() => createNode(CanvasNodeType.Video)}
                     onAddText={() => createNode(CanvasNodeType.Text)}
@@ -2191,6 +2199,7 @@ function InfiniteCanvasPage() {
                     onClear={() => setClearConfirmOpen(true)}
                     onDeselect={deselectCanvas}
                     onBackgroundModeChange={setBackgroundMode}
+                    onShowImageInfoChange={setShowImageInfo}
                     onOpenAssetLibrary={() => {
                         setAssetPickerTab("library");
                         setAssetPickerOpen(true);
