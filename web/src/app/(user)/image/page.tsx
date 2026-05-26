@@ -16,17 +16,19 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { requestEdit, requestGeneration } from "@/services/api/image";
-import { uploadImage } from "@/services/image-storage";
+import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import type { ReferenceImage } from "@/types/image";
 
 type GeneratedImage = {
     id: string;
     dataUrl: string;
+    storageKey?: string;
     durationMs: number;
     width: number;
     height: number;
     bytes: number;
+    mimeType?: string;
 };
 
 type GenerationResult = {
@@ -40,8 +42,11 @@ type GenerationLog = {
     id: string;
     createdAt: number;
     title: string;
+    prompt: string;
     time: string;
     model: string;
+    config: GenerationLogConfig;
+    references: ReferenceImage[];
     durationMs: number;
     successCount: number;
     failCount: number;
@@ -49,13 +54,15 @@ type GenerationLog = {
     size: string;
     quality: string;
     status: "成功" | "失败";
+    images: GeneratedImage[];
     thumbnails: string[];
 };
+
+type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "size" | "count">;
 
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
-const LOG_STORE_PREFIX = `${LOG_STORE_KEY}:`;
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 
 export default function ImagePage() {
@@ -159,16 +166,23 @@ export default function ImagePage() {
         const failed = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
 
         try {
+            const logImages = await Promise.all(
+                successImages.map(async (image) => {
+                    const stored = await uploadImage(image.dataUrl);
+                    return { ...image, dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
+                }),
+            );
             saveLog(
                 buildLog({
                     prompt: text,
                     model,
                     config: { ...snapshot.config, count: String(generationCount) },
+                    references: snapshot.references,
                     durationMs: performance.now() - batchStartedAt,
                     successCount,
                     failCount,
                     status: successCount ? "成功" : "失败",
-                    thumbnails: successImages.map((image) => image.dataUrl),
+                    images: logImages,
                 }),
             );
             successCount ? message.success("图片已生成") : message.error(failed?.reason instanceof Error ? failed.reason.message : "生成失败");
@@ -222,7 +236,8 @@ export default function ImagePage() {
     };
 
     const deleteSelectedLogs = () => {
-        void Promise.all(selectedLogIds.map((id) => logStore.removeItem(id))).then(refreshLogs);
+        const imageKeys = logs.filter((log) => selectedLogIds.includes(log.id)).flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
+        void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(refreshLogs);
         if (previewLog && selectedLogIds.includes(previewLog.id)) {
             setPreviewLog(null);
             setResults([]);
@@ -232,7 +247,7 @@ export default function ImagePage() {
     };
 
     const saveLog = (log: GenerationLog) => {
-        void logStore.setItem(log.id, log).then(refreshLogs);
+        void logStore.setItem(log.id, serializeLog(log)).then(refreshLogs);
     };
 
     const refreshLogs = async () => setLogs(await readStoredLogs());
@@ -240,13 +255,13 @@ export default function ImagePage() {
     const previewGenerationLog = async (log: GenerationLog) => {
         setPreviewLog(log);
         setLogsOpen(false);
-        const images = await Promise.all(
-            log.thumbnails.map(async (dataUrl, index) => {
-                const meta = await readImageMeta(dataUrl);
-                return { id: `${log.id}-${index}`, dataUrl, durationMs: log.durationMs, width: meta.width, height: meta.height, bytes: getDataUrlByteSize(dataUrl) };
-            }),
-        );
-        setResults(images.map((image) => ({ id: image.id, status: "success", image })));
+        setPrompt(log.prompt);
+        setReferences(log.references || []);
+        if (log.config.imageModel || log.model) updateConfig("imageModel", log.config.imageModel || log.model);
+        if (log.config.quality) updateConfig("quality", log.config.quality);
+        if (log.config.size) updateConfig("size", log.config.size);
+        if (log.config.count) updateConfig("count", log.config.count);
+        setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
     };
 
     const buildRequestSnapshot = () => {
@@ -660,47 +675,68 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
 async function readStoredLogs() {
     if (typeof window === "undefined") return [];
     try {
-        const legacyValue = window.localStorage.getItem(LOG_STORE_KEY);
-        if (legacyValue) {
-            await Promise.all((JSON.parse(legacyValue) as GenerationLog[]).map((log) => logStore.setItem(log.id, normalizeLog(log))));
-            window.localStorage.removeItem(LOG_STORE_KEY);
-        }
-        const legacyKeys = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index)).filter((key): key is string => Boolean(key?.startsWith(LOG_STORE_PREFIX)));
-        await Promise.all(
-            legacyKeys.map(async (key) => {
-                try {
-                    const log = normalizeLog(JSON.parse(window.localStorage.getItem(key) || ""));
-                    await logStore.setItem(log.id, log);
-                    window.localStorage.removeItem(key);
-                } catch {}
-            }),
-        );
-
-        const logs: GenerationLog[] = [];
+        const values: GenerationLog[] = [];
         await logStore.iterate<GenerationLog, void>((value) => {
-            logs.push(normalizeLog(value));
+            values.push(value);
         });
+        const logs = await Promise.all(values.map(normalizeLog));
         return logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     } catch {
         return [];
     }
 }
 
-function normalizeLog(log: Partial<GenerationLog>): GenerationLog {
+async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
+    const references = await Promise.all(
+        (log.references || []).map(async (item) => ({
+            ...item,
+            dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl),
+        })),
+    );
+    const images = await Promise.all(
+        (log.images || []).map(async (item) => ({
+            ...item,
+            dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl),
+        })),
+    );
+    const config = normalizeLogConfig(log);
     return {
         id: log.id || nanoid(),
         createdAt: log.createdAt || Date.now(),
         title: log.title || log.model || "未命名",
+        prompt: log.prompt || log.title || "",
         time: log.time || new Date().toLocaleString("zh-CN", { hour12: false }),
-        model: log.model || "",
+        model: log.model || config.imageModel || "",
+        config,
+        references,
         durationMs: log.durationMs || 0,
         successCount: log.successCount ?? log.imageCount ?? 0,
         failCount: log.failCount || 0,
         imageCount: log.imageCount || log.successCount || 0,
-        size: log.size || "",
-        quality: log.quality || "",
+        size: log.size || config.size || "",
+        quality: log.quality || config.quality || "",
         status: log.status || "成功",
-        thumbnails: log.thumbnails || [],
+        images,
+        thumbnails: images.map((image) => image.dataUrl),
+    };
+}
+
+function serializeLog(log: GenerationLog): GenerationLog {
+    return {
+        ...log,
+        references: log.references.map((item) => ({ ...item, dataUrl: item.storageKey ? "" : item.dataUrl })),
+        images: log.images.map((image) => ({ ...image, dataUrl: image.storageKey ? "" : image.dataUrl })),
+        thumbnails: [],
+    };
+}
+
+function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
+    return {
+        model: log.config?.model || log.model || "",
+        imageModel: log.config?.imageModel || log.model || "",
+        quality: log.config?.quality || log.quality || "",
+        size: log.config?.size || log.size || "",
+        count: log.config?.count || String(log.imageCount || log.successCount || 1),
     };
 }
 
@@ -708,34 +744,47 @@ function buildLog({
     prompt,
     model,
     config,
+    references,
     durationMs,
     successCount,
     failCount,
     status,
-    thumbnails,
+    images,
 }: {
     prompt: string;
     model: string;
-    config: { size: string; quality: string; count?: string };
+    config: GenerationLogConfig;
+    references: ReferenceImage[];
     durationMs: number;
     successCount: number;
     failCount: number;
     status: GenerationLog["status"];
-    thumbnails: string[];
+    images: GeneratedImage[];
 }): GenerationLog {
+    const logConfig = {
+        model: config.model,
+        imageModel: config.imageModel,
+        quality: config.quality,
+        size: config.size,
+        count: config.count,
+    };
     return {
         id: nanoid(),
         createdAt: Date.now(),
         title: prompt.slice(0, 12) || "未命名",
+        prompt,
         time: new Date().toLocaleString("zh-CN", { hour12: false }),
         model,
+        config: logConfig,
+        references,
         durationMs,
         successCount,
         failCount,
-        imageCount: Number(config.count) || successCount,
-        size: config.size,
-        quality: config.quality,
+        imageCount: Number(logConfig.count) || successCount,
+        size: logConfig.size,
+        quality: logConfig.quality,
         status,
-        thumbnails,
+        images,
+        thumbnails: images.map((image) => image.dataUrl),
     };
 }
