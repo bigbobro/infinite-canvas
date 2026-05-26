@@ -2,13 +2,16 @@
 
 import { BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { App, AutoComplete, Button, Checkbox, Drawer, Empty, Image, Input, InputNumber, Modal, Select, Tag, Typography } from "antd";
+import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Typography } from "antd";
 import localforage from "localforage";
 
+import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/app/(user)/canvas/components/asset-picker-modal";
+import { canvasThemes } from "@/lib/canvas-theme";
 import { useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { requestEdit, requestGeneration } from "@/services/api/image";
@@ -50,13 +53,6 @@ type GenerationLog = {
 
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
-const sizeOptions = ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"].map((value) => ({ label: value, value }));
-const qualityOptions = [
-    { label: "auto", value: "auto" },
-    { label: "low / 1K", value: "low" },
-    { label: "medium / 2K", value: "medium" },
-    { label: "high / 4K", value: "high" },
-];
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
 const LOG_STORE_PREFIX = `${LOG_STORE_KEY}:`;
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
@@ -450,8 +446,8 @@ export default function ImagePage() {
                     onPreviewLog={(log) => void previewGenerationLog(log)}
                 />
             </Drawer>
-            <Drawer title="参数" placement="bottom" size="default" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-                <div className="grid grid-cols-2 gap-3">
+            <Drawer title="参数" placement="bottom" height="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
+                <div className="grid grid-cols-2 gap-3 pb-4">
                     <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
                 </div>
             </Drawer>
@@ -465,24 +461,17 @@ export default function ImagePage() {
 }
 
 function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+
     return (
         <>
             <label className="col-span-2 block min-w-0 sm:col-span-1">
                 <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">模型</span>
                 <ModelPicker config={config} value={model} onChange={(value) => updateConfig("imageModel", value)} fullWidth onMissingConfig={() => openConfigDialog(false)} />
             </label>
-            <label className="block">
-                <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">生成次数</span>
-                <InputNumber className="canvas-control-number !w-full" min={1} max={10} value={Number(config.count) || 1} onChange={(value) => updateConfig("count", String(value || 1))} />
-            </label>
-            <label className="block">
-                <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">尺寸</span>
-                <AutoComplete className="canvas-control-select w-full" value={config.size} options={sizeOptions} placeholder="例如 1:1、3:2" onChange={(value) => updateConfig("size", value)} />
-            </label>
-            <label className="block">
-                <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">质量</span>
-                <Select className="canvas-control-select w-full" value={config.quality} options={qualityOptions} onChange={(value) => updateConfig("quality", value)} />
-            </label>
+            <div className="col-span-2">
+                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
+            </div>
         </>
     );
 }
