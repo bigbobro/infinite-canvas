@@ -33,7 +33,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
     const logout = useUserStore((state) => state.clearSession);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const canvasTheme = canvasThemes[theme];
-    const userName = user?.displayName || user?.username || "用户";
+    const userName = user?.displayName || user?.username || "";
     const credits = user?.credits ?? 0;
     const avatarUrl = user?.avatarUrl?.trim();
     const avatarText = (userName.trim()[0] || "U").toUpperCase();
@@ -61,7 +61,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
             <AnimatedThemeToggler theme={theme} onThemeChange={setTheme} className={naturalIconClass} style={iconStyle} aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} />
             <VersionReleaseModal style={versionStyle} />
             <GitHubLink className={cn("bg-transparent hover:bg-transparent dark:hover:bg-transparent", gitHubClassName)} style={gitHubStyle} />
-            {variant === "canvas" ? (
+            {variant === "canvas" && user ? (
                 <Tooltip title="当前算力点余额" placement="bottom">
                     <div className="flex h-8 shrink-0 items-center gap-1.5 px-1.5 text-xs font-medium tabular-nums opacity-75 transition hover:opacity-100" style={{ color: canvasTheme.node.text }}>
                         <CreditSymbol className="text-sm leading-none" />
@@ -69,21 +69,33 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
                     </div>
                 </Tooltip>
             ) : null}
-            <div ref={accountRef}>
-                <Dropdown open={accountOpen} onOpenChange={onAccountOpenChange} trigger={["click"]} placement="bottomRight" getPopupContainer={getPopupContainer} styles={{ root: { minWidth: 150 } }} menu={{ items: menuItems }}>
-                    <button type="button" className="flex size-8 shrink-0 items-center justify-center rounded-full bg-transparent p-0 text-[0] leading-[0] transition" aria-label="账户菜单">
-                        <Avatar
-                            size={28}
-                            src={avatarUrl ? <img src={avatarUrl} alt={userName} referrerPolicy="no-referrer" /> : undefined}
-                            alt={userName}
-                            className="!flex !items-center !justify-center border border-stone-300 bg-transparent text-xs font-semibold text-stone-800 transition hover:border-stone-500 hover:text-stone-950 dark:border-stone-700 dark:text-stone-100 dark:hover:border-stone-400 dark:hover:text-white"
-                            style={avatarStyle}
-                        >
-                            {avatarText}
-                        </Avatar>
-                    </button>
-                </Dropdown>
-            </div>
+            {!user && onOpenShortcuts ? (
+                <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenShortcuts} aria-label="快捷键" title="快捷键">
+                    <Keyboard className="size-4" />
+                </button>
+            ) : null}
+            {!user ? (
+                <Link href="/login" className="px-1.5 text-sm font-medium text-stone-600 underline-offset-4 transition hover:text-stone-950 hover:underline dark:text-stone-300 dark:hover:text-stone-100" style={iconStyle}>
+                    登录
+                </Link>
+            ) : null}
+            {user ? (
+                <div ref={accountRef}>
+                    <Dropdown open={accountOpen} onOpenChange={onAccountOpenChange} trigger={["click"]} placement="bottomRight" getPopupContainer={getPopupContainer} styles={{ root: { minWidth: 150 } }} menu={{ items: menuItems }}>
+                        <button type="button" className="flex size-8 shrink-0 items-center justify-center rounded-full bg-transparent p-0 text-[0] leading-[0] transition" aria-label="账户菜单">
+                            <Avatar
+                                size={28}
+                                src={avatarUrl ? <img src={avatarUrl} alt={userName} referrerPolicy="no-referrer" /> : undefined}
+                                alt={userName}
+                                className="!flex !items-center !justify-center border border-stone-300 bg-transparent text-xs font-semibold text-stone-800 transition hover:border-stone-500 hover:text-stone-950 dark:border-stone-700 dark:text-stone-100 dark:hover:border-stone-400 dark:hover:text-white"
+                                style={avatarStyle}
+                            >
+                                {avatarText}
+                            </Avatar>
+                        </button>
+                    </Dropdown>
+                </div>
+            ) : null}
         </div>
     );
 }
