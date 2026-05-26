@@ -292,6 +292,13 @@ function InfiniteCanvasPage() {
         [activeChatId, backgroundMode, chatSessions, showImageInfo],
     );
 
+    const cleanupCanvasFiles = useCallback(
+        (extra?: unknown) => {
+            cleanupAssetImages({ extra, history: historyRef.current, lastHistory: lastHistoryRef.current });
+        },
+        [cleanupAssetImages],
+    );
+
     useEffect(() => {
         if (!hydrated) return;
         setProjectLoaded(false);
@@ -649,9 +656,9 @@ function InfiniteCanvasPage() {
             setPreviewNodeId((current) => (current && allIds.has(current) ? null : current));
             setRunningNodeId((current) => (current && allIds.has(current) ? null : current));
             setContextMenu((current) => (current && allIds.has(current.nodeId) ? null : current));
-            cleanupAssetImages({ projectId, nodes: nodesRef.current.filter((node) => !allIds.has(node.id)), chatSessions });
+            cleanupCanvasFiles({ projectId, nodes: nodesRef.current.filter((node) => !allIds.has(node.id)), chatSessions });
         },
-        [chatSessions, cleanupAssetImages, projectId],
+        [chatSessions, cleanupCanvasFiles, projectId],
     );
 
     const deselectCanvas = useCallback(() => {
@@ -676,8 +683,8 @@ function InfiniteCanvasPage() {
         setRunningNodeId(null);
         deselectCanvas();
         setClearConfirmOpen(false);
-        cleanupAssetImages({ projectId, nodes: [], chatSessions: [] });
-    }, [cleanupAssetImages, deselectCanvas, projectId]);
+        cleanupCanvasFiles({ projectId, nodes: [], chatSessions: [] });
+    }, [cleanupCanvasFiles, deselectCanvas, projectId]);
 
     const duplicateNode = useCallback((nodeId: string) => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
