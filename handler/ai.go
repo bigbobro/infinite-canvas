@@ -49,6 +49,7 @@ func proxyAIGetRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "AI 接口请求失败")
 		return
 	}
+	path = resolveAIProxyPath(channel.BaseURL, modelName, path)
 	request, err := http.NewRequest(http.MethodGet, service.BuildModelChannelURL(channel, path), nil)
 	if err != nil {
 		Fail(w, "AI 接口请求失败")
@@ -83,6 +84,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "AI 接口请求失败")
 		return
 	}
+	path = resolveAIProxyPath(channel.BaseURL, modelName, path)
 	request, err := http.NewRequest(http.MethodPost, service.BuildModelChannelURL(channel, path), bytes.NewReader(body))
 	if err != nil {
 		log.Printf("AI proxy build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, path), err)
@@ -117,12 +119,12 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, onFailure func
 	defer response.Body.Close()
 
 	if response.StatusCode >= http.StatusBadRequest {
-		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		log.Printf("AI upstream error: url=%s status=%d body=%s", request.URL.String(), response.StatusCode, strings.TrimSpace(string(payload)))
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		log.Printf("AI upstream error: url=%s status=%d", request.URL.String(), response.StatusCode)
 		if onFailure != nil {
 			onFailure()
 		}
-		Fail(w, "AI 接口请求失败")
+		Fail(w, aiStatusMessage(response.StatusCode))
 		return
 	}
 
@@ -206,6 +208,36 @@ func readAIRequestCount(body []byte, contentType string) int {
 }
 
 var errMissingModel = &aiError{"缺少模型名称"}
+
+func resolveAIProxyPath(baseURL string, modelName string, path string) string {
+	if !isArkSeedanceVideo(baseURL, modelName) {
+		return path
+	}
+	if path == "/videos" {
+		return "/contents/generations/tasks"
+	}
+	if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
+		return "/contents/generations/tasks/" + strings.TrimPrefix(path, "/videos/")
+	}
+	return path
+}
+
+func isArkSeedanceVideo(baseURL string, modelName string) bool {
+	base := strings.ToLower(baseURL)
+	model := strings.ToLower(modelName)
+	return strings.Contains(model, "seedance") || strings.Contains(model, "doubao-seedance") || strings.Contains(base, "/api/plan/v3")
+}
+
+func aiStatusMessage(statusCode int) string {
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "AI 接口鉴权失败，请检查 API Key、套餐权限或模型权限"
+	case http.StatusTooManyRequests:
+		return "AI 接口限流或额度不足，请稍后重试或检查额度"
+	default:
+		return "AI 接口请求失败"
+	}
+}
 
 type aiError struct {
 	message string

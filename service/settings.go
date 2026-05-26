@@ -180,7 +180,7 @@ func SelectModelChannel(modelName string) (model.ModelChannel, error) {
 
 func BuildModelChannelURL(channel model.ModelChannel, path string) string {
 	baseURL := strings.TrimRight(channel.BaseURL, "/")
-	if !strings.HasSuffix(baseURL, "/v1") {
+	if !strings.HasSuffix(baseURL, "/v1") && !strings.HasSuffix(baseURL, "/api/v3") && !strings.HasSuffix(baseURL, "/api/plan/v3") {
 		baseURL += "/v1"
 	}
 	return baseURL + path
