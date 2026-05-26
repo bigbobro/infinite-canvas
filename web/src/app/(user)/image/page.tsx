@@ -4,6 +4,7 @@ import { BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, I
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Typography } from "antd";
 import localforage from "localforage";
+import { saveAs } from "file-saver";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
@@ -177,10 +178,7 @@ export default function ImagePage() {
     };
 
     const downloadImage = (image: GeneratedImage, index: number) => {
-        const link = document.createElement("a");
-        link.href = image.dataUrl;
-        link.download = `image-${index + 1}.png`;
-        link.click();
+        saveAs(image.dataUrl, `image-${index + 1}.png`);
     };
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {

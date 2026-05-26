@@ -3,6 +3,7 @@
 import { Copy, Download, PencilLine, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
+import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
@@ -149,10 +150,7 @@ export default function AssetsPage() {
 
     const downloadImage = (asset: Asset) => {
         if (asset.kind !== "image" && asset.kind !== "video") return;
-        const link = document.createElement("a");
-        link.href = asset.kind === "video" ? asset.data.url : asset.data.dataUrl;
-        link.download = `${asset.title || "asset"}.${asset.data.mimeType.split("/")[1] || "png"}`;
-        link.click();
+        saveAs(asset.kind === "video" ? asset.data.url : asset.data.dataUrl, `${asset.title || "asset"}.${asset.data.mimeType.split("/")[1] || "png"}`);
     };
 
     const exportAllAssets = async () => {

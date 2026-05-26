@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
 import localforage from "localforage";
 import { nanoid } from "nanoid";
+import { saveAs } from "file-saver";
 
 import { AssetPickerModal, type InsertAssetPayload } from "@/app/(user)/canvas/components/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
@@ -181,10 +182,7 @@ export default function VideoPage() {
     };
 
     const downloadVideo = (video: GeneratedVideo) => {
-        const link = document.createElement("a");
-        link.href = video.url;
-        link.download = "video.mp4";
-        link.click();
+        saveAs(video.url, "video.mp4");
     };
 
     const saveResultToAssets = (video: GeneratedVideo) => {
