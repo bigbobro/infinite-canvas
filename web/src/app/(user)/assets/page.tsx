@@ -9,6 +9,7 @@ import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { cn } from "@/lib/utils";
 import { useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
+import { exportAssets, readAssetPackage } from "./asset-transfer";
 
 type AssetFormValues = {
     kind: AssetKind;
@@ -35,6 +36,7 @@ export default function AssetsPage() {
     const [form] = Form.useForm<AssetFormValues>();
     const coverInputRef = useRef<HTMLInputElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
+    const assetInputRef = useRef<HTMLInputElement>(null);
     const assets = useAssetStore((state) => state.assets);
     const addAsset = useAssetStore((state) => state.addAsset);
     const updateAsset = useAssetStore((state) => state.updateAsset);
@@ -153,6 +155,33 @@ export default function AssetsPage() {
         link.click();
     };
 
+    const exportAllAssets = async () => {
+        if (!validAssets.length) {
+            message.warning("暂无素材可导出");
+            return;
+        }
+        await exportAssets(validAssets);
+    };
+
+    const importAssetZip = async (file?: File) => {
+        if (!file) return;
+        try {
+            const importedAssets = await readAssetPackage(file);
+            importedAssets.forEach((asset) => {
+                const payload = { ...asset } as Record<string, unknown>;
+                delete payload.id;
+                delete payload.createdAt;
+                delete payload.updatedAt;
+                addAsset(payload as Parameters<typeof addAsset>[0]);
+            });
+            message.success(`已导入 ${importedAssets.length} 个素材`);
+        } catch {
+            message.error("导入失败，请选择有效的素材压缩包");
+        } finally {
+            if (assetInputRef.current) assetInputRef.current.value = "";
+        }
+    };
+
     const confirmDelete = () => {
         if (!deletingAsset) return;
         removeAsset(deletingAsset.id);
@@ -208,13 +237,29 @@ export default function AssetsPage() {
                                     ))}
                                 </div>
                             </div>
-                            <button
-                                type="button"
-                                className="cursor-pointer self-start text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline sm:self-center dark:text-stone-300"
-                                onClick={openCreate}
-                            >
-                                新增素材
-                            </button>
+                            <div className="flex flex-wrap gap-4">
+                                <button
+                                    type="button"
+                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
+                                    onClick={() => void exportAllAssets()}
+                                >
+                                    导出素材
+                                </button>
+                                <button
+                                    type="button"
+                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
+                                    onClick={() => assetInputRef.current?.click()}
+                                >
+                                    导入素材
+                                </button>
+                                <button
+                                    type="button"
+                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
+                                    onClick={openCreate}
+                                >
+                                    新增素材
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -351,6 +396,8 @@ export default function AssetsPage() {
             </Modal>
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadImage} />
+
+            <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
 
             <Modal title="删除素材" open={Boolean(deletingAsset)} onCancel={() => setDeletingAsset(null)} onOk={confirmDelete} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 确定删除「{deletingAsset?.title}」吗？删除后会从我的素材中移除。
