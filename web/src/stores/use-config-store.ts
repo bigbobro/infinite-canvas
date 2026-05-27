@@ -125,7 +125,9 @@ export function useEffectiveConfig() {
 }
 
 export function buildApiUrl(baseUrl: string, path: string) {
-    const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+    let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+    const arkPlanIndex = normalizedBaseUrl.toLowerCase().indexOf("/api/plan/v3");
+    if (arkPlanIndex >= 0) normalizedBaseUrl = normalizedBaseUrl.slice(0, arkPlanIndex + "/api/plan/v3".length);
     const apiBaseUrl = normalizedBaseUrl.endsWith("/v1") || normalizedBaseUrl.endsWith("/api/v3") || normalizedBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
 }

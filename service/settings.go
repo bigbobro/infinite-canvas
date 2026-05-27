@@ -185,15 +185,24 @@ func SelectModelChannel(modelName string) (model.ModelChannel, error) {
 }
 
 func BuildModelChannelURL(channel model.ModelChannel, path string) string {
-	baseURL := strings.TrimRight(channel.BaseURL, "/")
+	baseURL := normalizeModelChannelBaseURL(channel.BaseURL)
 	if !strings.HasSuffix(baseURL, "/v1") && !strings.HasSuffix(baseURL, "/api/v3") && !strings.HasSuffix(baseURL, "/api/plan/v3") {
 		baseURL += "/v1"
 	}
 	return baseURL + path
 }
 
+func normalizeModelChannelBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	lowerBaseURL := strings.ToLower(baseURL)
+	if index := strings.Index(lowerBaseURL, "/api/plan/v3"); index >= 0 {
+		return baseURL[:index+len("/api/plan/v3")]
+	}
+	return baseURL
+}
+
 func isArkAgentPlanChannel(channel model.ModelChannel) bool {
-	baseURL := strings.TrimRight(strings.ToLower(strings.TrimSpace(channel.BaseURL)), "/")
+	baseURL := strings.ToLower(normalizeModelChannelBaseURL(channel.BaseURL))
 	return strings.HasSuffix(baseURL, "/api/plan/v3")
 }
 
