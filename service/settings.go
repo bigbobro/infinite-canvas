@@ -10,10 +10,13 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/basketikun/infinite-canvas/model"
 	"github.com/basketikun/infinite-canvas/repository"
 )
+
+var adminModelHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func PublicSettings() (model.PublicSetting, error) {
 	settings, err := repository.GetSettings()
@@ -274,9 +277,9 @@ func fetchAdminChannelModels(channel model.ModelChannel) ([]string, error) {
 		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
-	response, err := http.DefaultClient.Do(request)
+	response, err := adminModelHTTPClient.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, safeMessageError{message: "读取模型失败：上游接口无响应或网络不可达"}
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
@@ -319,9 +322,9 @@ func testAdminChannelModel(channel model.ModelChannel, modelName string) (string
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	response, err := adminModelHTTPClient.Do(request)
 	if err != nil {
-		return "", err
+		return "", safeMessageError{message: "测试失败：上游接口无响应或网络不可达"}
 	}
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(response.Body)
