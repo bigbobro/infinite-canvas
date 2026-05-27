@@ -263,6 +263,9 @@ func aiUpstreamErrorDetail(body []byte) string {
 	}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		if payload.Error.Message != "" {
+			if detail := friendlyUpstreamError(payload.Error.Code, payload.Error.Message); detail != "" {
+				return safeUpstreamText(detail)
+			}
 			if payload.Error.Code != "" {
 				return safeUpstreamText(payload.Error.Code + " " + payload.Error.Message)
 			}
@@ -276,6 +279,14 @@ func aiUpstreamErrorDetail(body []byte) string {
 		}
 	}
 	return safeUpstreamText(text)
+}
+
+func friendlyUpstreamError(code string, message string) string {
+	lowerCode := strings.ToLower(strings.TrimSpace(code))
+	if strings.Contains(lowerCode, "inputvideosensitivecontentdetected") || strings.Contains(lowerCode, "privacyinformation") {
+		return strings.TrimSpace(code + " 参考视频疑似包含真人或隐私信息，火山方舟拒绝使用普通 URL 作为真人视频参考；请改用不含真人的视频、官方允许的模型产物，或已授权的 asset:// 素材。原始错误：" + message)
+	}
+	return ""
 }
 
 func safeUpstreamText(text string) string {
