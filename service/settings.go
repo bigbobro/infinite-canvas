@@ -44,6 +44,9 @@ func AdminChannelModels(index *int, channel model.ModelChannel) ([]string, error
 	if err != nil {
 		return nil, err
 	}
+	if isArkAgentPlanChannel(resolved) {
+		return []string{"doubao-seedance-2.0"}, nil
+	}
 	return fetchAdminChannelModels(resolved)
 }
 
@@ -51,6 +54,9 @@ func AdminTestChannelModel(index *int, channel model.ModelChannel, modelName str
 	resolved, err := resolveAdminChannel(index, channel)
 	if err != nil {
 		return "", err
+	}
+	if isArkAgentPlanChannel(resolved) || isSeedanceModelName(modelName) {
+		return testArkSeedanceChannelModel(resolved, modelName)
 	}
 	return testAdminChannelModel(resolved, modelName)
 }
@@ -186,6 +192,16 @@ func BuildModelChannelURL(channel model.ModelChannel, path string) string {
 	return baseURL + path
 }
 
+func isArkAgentPlanChannel(channel model.ModelChannel) bool {
+	baseURL := strings.TrimRight(strings.ToLower(strings.TrimSpace(channel.BaseURL)), "/")
+	return strings.HasSuffix(baseURL, "/api/plan/v3")
+}
+
+func isSeedanceModelName(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(modelName, "seedance") || strings.Contains(modelName, "doubao-seedance")
+}
+
 func normalizeModelChannel(channel model.ModelChannel) model.ModelChannel {
 	if channel.Protocol == "" {
 		channel.Protocol = "openai"
@@ -302,6 +318,22 @@ func testAdminChannelModel(channel model.ModelChannel, modelName string) (string
 		return payload.Choices[0].Message.Content, nil
 	}
 	return "ok", nil
+}
+
+func testArkSeedanceChannelModel(channel model.ModelChannel, modelName string) (string, error) {
+	if strings.TrimSpace(modelName) == "" {
+		return "", errors.New("缺少模型名称")
+	}
+	if strings.TrimSpace(channel.BaseURL) == "" {
+		return "", safeMessageError{message: "缺少接口地址"}
+	}
+	if strings.TrimSpace(channel.APIKey) == "" {
+		return "", safeMessageError{message: "缺少 API Key"}
+	}
+	if !isArkAgentPlanChannel(channel) {
+		return "", safeMessageError{message: "Seedance 2.0 请使用火山方舟 Agent Plan Base URL：https://ark.cn-beijing.volces.com/api/plan/v3"}
+	}
+	return "Agent Plan / Seedance 视频模型配置格式已通过。后台测试不会调用视频生成接口，请在画布中使用视频生成验证模型权限。", nil
 }
 
 func readAdminChannelError(body []byte, statusCode int, fallback string) error {
