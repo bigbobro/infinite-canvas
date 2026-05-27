@@ -62,7 +62,7 @@ OpenAI 兼容图像和文本能力继续复用现有接口：
 - `/v1/images/generations`：文生图。
 - `/v1/images/edits`：图生图/参考图编辑。
 - `/v1/chat/completions`：文本问答和带图问答。
-- `/v1/models`：读取模型列表。
+- `/v1/models`：读取模型列表；火山方舟 Agent Plan 专属 `/api/plan/v3` 当前未提供 OpenAI `/models` 模型列表接口，需要手动填写模型名。
 
 视频能力支持两类接口：
 
@@ -70,6 +70,8 @@ OpenAI 兼容图像和文本能力继续复用现有接口：
 - 火山方舟 Agent Plan / Seedance 2.0：Base URL 使用 `https://ark.cn-beijing.volces.com/api/plan/v3`，创建任务为 `POST /contents/generations/tasks`，查询任务为 `GET /contents/generations/tasks/{id}`，成功结果读取 `content.video_url`。
 
 Base URL 如果已经以 `/v1`、`/api/v3` 或 `/api/plan/v3` 结尾，系统不会再追加 `/v1`。因此 cpa 反代或火山方舟 Agent Plan 可以继续通过现有 Base URL + API Key + Model 方式配置，不需要新增火山生图 Provider。
+
+后台“拉取模型列表”会尝试真实请求 OpenAI `/models`，不会为 Agent Plan 伪造模型结果。如果火山方舟 Agent Plan 返回 404，请手动增加 `doubao-seedance-2.0` 或文档列出的其他模型名。
 
 可配置项：
 

@@ -126,8 +126,26 @@ export function useEffectiveConfig() {
 
 export function buildApiUrl(baseUrl: string, path: string) {
     let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
-    const arkPlanIndex = normalizedBaseUrl.toLowerCase().indexOf("/api/plan/v3");
-    if (arkPlanIndex >= 0) normalizedBaseUrl = normalizedBaseUrl.slice(0, arkPlanIndex + "/api/plan/v3".length);
-    const apiBaseUrl = normalizedBaseUrl.endsWith("/v1") || normalizedBaseUrl.endsWith("/api/v3") || normalizedBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
+    normalizedBaseUrl = normalizeArkPlanBaseUrl(normalizedBaseUrl);
+    const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
+    const apiBaseUrl = lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
+}
+
+function normalizeArkPlanBaseUrl(baseUrl: string) {
+    try {
+        const url = new URL(baseUrl);
+        const path = url.pathname.replace(/\/+$/, "");
+        const lowerPath = path.toLowerCase();
+        const arkPlanIndex = lowerPath.indexOf("/api/plan/v3");
+        if (arkPlanIndex < 0) return baseUrl;
+        const end = arkPlanIndex + "/api/plan/v3".length;
+        if (lowerPath.length !== end && lowerPath[end] !== "/") return baseUrl;
+        url.pathname = path.slice(0, end);
+        url.search = "";
+        url.hash = "";
+        return url.toString().replace(/\/+$/, "");
+    } catch {
+        return baseUrl;
+    }
 }

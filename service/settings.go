@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -43,9 +44,6 @@ func AdminChannelModels(index *int, channel model.ModelChannel) ([]string, error
 	resolved, err := resolveAdminChannel(index, channel)
 	if err != nil {
 		return nil, err
-	}
-	if isArkAgentPlanChannel(resolved) {
-		return []string{"doubao-seedance-2.0"}, nil
 	}
 	return fetchAdminChannelModels(resolved)
 }
@@ -186,7 +184,8 @@ func SelectModelChannel(modelName string) (model.ModelChannel, error) {
 
 func BuildModelChannelURL(channel model.ModelChannel, path string) string {
 	baseURL := normalizeModelChannelBaseURL(channel.BaseURL)
-	if !strings.HasSuffix(baseURL, "/v1") && !strings.HasSuffix(baseURL, "/api/v3") && !strings.HasSuffix(baseURL, "/api/plan/v3") {
+	lowerBaseURL := strings.ToLower(baseURL)
+	if !strings.HasSuffix(lowerBaseURL, "/v1") && !strings.HasSuffix(lowerBaseURL, "/api/v3") && !strings.HasSuffix(lowerBaseURL, "/api/plan/v3") {
 		baseURL += "/v1"
 	}
 	return baseURL + path
@@ -194,9 +193,20 @@ func BuildModelChannelURL(channel model.ModelChannel, path string) string {
 
 func normalizeModelChannelBaseURL(baseURL string) string {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	lowerBaseURL := strings.ToLower(baseURL)
-	if index := strings.Index(lowerBaseURL, "/api/plan/v3"); index >= 0 {
-		return baseURL[:index+len("/api/plan/v3")]
+	parsed, err := url.Parse(baseURL)
+	if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		path := strings.TrimRight(parsed.Path, "/")
+		lowerPath := strings.ToLower(path)
+		if index := strings.Index(lowerPath, "/api/plan/v3"); index >= 0 {
+			end := index + len("/api/plan/v3")
+			if len(lowerPath) == end || lowerPath[end] == '/' {
+				parsed.Path = path[:end]
+				parsed.RawPath = ""
+				parsed.RawQuery = ""
+				parsed.Fragment = ""
+				return strings.TrimRight(parsed.String(), "/")
+			}
+		}
 	}
 	return baseURL
 }
@@ -271,6 +281,9 @@ func fetchAdminChannelModels(channel model.ModelChannel) ([]string, error) {
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode >= http.StatusBadRequest {
+		if response.StatusCode == http.StatusNotFound && isArkAgentPlanChannel(channel) {
+			return nil, safeMessageError{message: "火山方舟 Agent Plan 未提供 OpenAI /models 模型列表接口，请手动填写模型名称，例如 doubao-seedance-2.0。"}
+		}
 		return nil, readAdminChannelError(body, response.StatusCode, "读取模型失败")
 	}
 	var payload struct {
@@ -340,9 +353,9 @@ func testArkSeedanceChannelModel(channel model.ModelChannel, modelName string) (
 		return "", safeMessageError{message: "缺少 API Key"}
 	}
 	if !isArkAgentPlanChannel(channel) {
-		return "", safeMessageError{message: "Seedance 2.0 请使用火山方舟 Agent Plan Base URL：https://ark.cn-beijing.volces.com/api/plan/v3"}
+		return "Seedance 视频模型不会发送 /chat/completions 文本测试。已检查 Base URL、API Key 和模型名非空；未调用视频生成接口，因此未验证套餐额度或模型权限。", nil
 	}
-	return "Agent Plan / Seedance 视频模型配置格式已通过。后台测试不会调用视频生成接口，请在画布中使用视频生成验证模型权限。", nil
+	return "Agent Plan / Seedance 视频模型配置格式已通过。后台测试不会调用视频生成接口，因此未验证 API Key、套餐额度或模型权限；请在画布中使用视频生成验证。", nil
 }
 
 func readAdminChannelError(body []byte, statusCode int, fallback string) error {
@@ -360,8 +373,11 @@ func readAdminChannelError(body []byte, statusCode int, fallback string) error {
 			return safeMessageError{message: payload.Msg}
 		}
 	}
-	if statusCode == http.StatusUnauthorized {
-		return safeMessageError{message: "上游接口认证失败（401），请检查 API Key"}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return safeMessageError{message: fmt.Sprintf("上游接口鉴权失败（%d），请检查 API Key、套餐权限或模型权限", statusCode)}
+	}
+	if statusCode == http.StatusTooManyRequests {
+		return safeMessageError{message: "上游接口限流或额度不足（429），请稍后重试或检查额度"}
 	}
 	if statusCode > 0 {
 		return safeMessageError{message: fmt.Sprintf("%s：%d", fallback, statusCode)}
