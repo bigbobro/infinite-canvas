@@ -9,6 +9,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
@@ -303,7 +304,7 @@ function ImageSortCard({
         <div className="w-24 shrink-0 overflow-hidden rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
             <div className="relative">
                 <img src={input.image.dataUrl} alt={input.title} className="aspect-square w-full object-cover" />
-                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{imageIndex + 1}</span>
+                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{seedanceReferenceLabel("image", imageIndex)}</span>
                 <HorizontalOrderButtons index={imageIndex} total={imageTotal} onMove={(offset) => onMove(input, offset)} />
             </div>
         </div>
@@ -328,7 +329,7 @@ function VideoSortCard({
         <div className="w-32 shrink-0 overflow-hidden rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
             <div className="relative">
                 <video src={input.video.url} className="aspect-video w-full bg-black object-cover" muted preload="metadata" />
-                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{videoIndex + 1}</span>
+                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{seedanceReferenceLabel("video", videoIndex)}</span>
                 <HorizontalOrderButtons index={videoIndex} total={videoTotal} onMove={(offset) => onMove(input, offset)} />
             </div>
         </div>
@@ -358,7 +359,7 @@ function AudioSortCard({
             <audio src={input.audio.url} controls className="h-8 w-full" preload="metadata" />
             <div className="mt-1 flex justify-between">
                 <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !p-0" icon={<ArrowLeft className="size-3" />} disabled={audioIndex <= 0} onClick={() => onMove(input, -1)} />
-                <span className="text-[10px] opacity-45">{audioIndex + 1}</span>
+                <span className="text-[10px] opacity-45">{seedanceReferenceLabel("audio", audioIndex)}</span>
                 <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !p-0" icon={<ArrowRight className="size-3" />} disabled={audioIndex >= audioTotal - 1} onClick={() => onMove(input, 1)} />
             </div>
         </div>

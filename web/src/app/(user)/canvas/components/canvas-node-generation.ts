@@ -102,6 +102,10 @@ function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {
         type: node.metadata.mimeType || "video/mp4",
         url: node.metadata.content,
         storageKey: node.metadata.storageKey,
+        bytes: node.metadata.bytes,
+        width: node.metadata.naturalWidth,
+        height: node.metadata.naturalHeight,
+        durationMs: node.metadata.durationMs,
     };
 }
 

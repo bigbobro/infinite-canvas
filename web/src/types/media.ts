@@ -4,6 +4,9 @@ export type ReferenceVideo = {
     type: string;
     url: string;
     storageKey?: string;
+    bytes?: number;
+    width?: number;
+    height?: number;
     durationMs?: number;
 };
 

@@ -119,12 +119,12 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, onFailure func
 	defer response.Body.Close()
 
 	if response.StatusCode >= http.StatusBadRequest {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		log.Printf("AI upstream error: url=%s status=%d", request.URL.String(), response.StatusCode)
 		if onFailure != nil {
 			onFailure()
 		}
-		Fail(w, aiStatusMessage(response.StatusCode))
+		Fail(w, aiUpstreamStatusMessage(response.StatusCode, body))
 		return
 	}
 
@@ -237,6 +237,54 @@ func aiStatusMessage(statusCode int) string {
 	default:
 		return "AI 接口请求失败"
 	}
+}
+
+func aiUpstreamStatusMessage(statusCode int, body []byte) string {
+	base := aiStatusMessage(statusCode)
+	detail := aiUpstreamErrorDetail(body)
+	if detail == "" {
+		return base
+	}
+	return base + "：" + detail
+}
+
+func aiUpstreamErrorDetail(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return ""
+	}
+	var payload struct {
+		Msg     string `json:"msg"`
+		Message string `json:"message"`
+		Error   struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if payload.Error.Message != "" {
+			if payload.Error.Code != "" {
+				return safeUpstreamText(payload.Error.Code + " " + payload.Error.Message)
+			}
+			return safeUpstreamText(payload.Error.Message)
+		}
+		if payload.Msg != "" {
+			return safeUpstreamText(payload.Msg)
+		}
+		if payload.Message != "" {
+			return safeUpstreamText(payload.Message)
+		}
+	}
+	return safeUpstreamText(text)
+}
+
+func safeUpstreamText(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	runes := []rune(text)
+	if len(runes) > 300 {
+		return string(runes[:300]) + "..."
+	}
+	return text
 }
 
 type aiError struct {
