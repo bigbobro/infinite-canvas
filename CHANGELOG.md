@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-+ [新增] 支持New API跳转并自动填入Base URL和API Key配置。
+## v0.1.1 - 2026-05-30
 
-## v0.1.0 - 2026-05-30
++ [新增] 支持New API跳转并自动填入Base URL和API Key配置。
 
 ## v0.1.0 - 2026-05-26
 
