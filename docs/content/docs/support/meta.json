@@ -1,0 +1,9 @@
+{
+  "title": "赞助支持",
+  "root": true,
+  "defaultOpen": true,
+  "pages": [
+    "donate",
+    "sponsor"
+  ]
+}

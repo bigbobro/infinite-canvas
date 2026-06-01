@@ -4,6 +4,17 @@
 
 <h1 align="center">无限画布 (infinite-canvas)</h1>
 
+<p align="center">
+  <a href="https://linux.do/"><img src="https://img.shields.io/badge/Linux.do-Community-2b6de8?style=flat-square" alt="Linux.do"></a>
+  <a href="https://render.com/deploy?repo=https://github.com/basketikun/infinite-canvas"><img src="https://img.shields.io/badge/Render-Deploy-46e3b7?style=flat-square&logo=render&logoColor=111111" alt="Deploy to Render"></a>
+  <a href="https://github.com/basketikun/infinite-canvas"><img src="https://img.shields.io/github/stars/basketikun/infinite-canvas?style=flat-square&logo=github" alt="GitHub stars"></a>
+  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.2.0-2563eb?style=flat-square" alt="Version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-f97316?style=flat-square" alt="License"></a>
+  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Docker ready"></a>
+  <a href="https://nextjs.org/"><img src="https://img.shields.io/badge/Next.js-16.2-000000?style=flat-square&logo=nextdotjs" alt="Next.js"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25-00add8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
+</p>
+
 无限画布是一款面向图片创作的开源工作台。它把画布编排、AI 图片生成、参考图编辑、对话助手、提示词库和素材沉淀放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果。
 
 > [!CAUTION]
@@ -18,7 +29,7 @@
 - 画布助手：围绕选中节点和上游节点对话、生图，并把结果插回画布。
 - 提示词库：抓取多个 GitHub 开源项目，按案例整理数百个图片提示词。
 
-完整功能说明见 [docs/features.md](docs/features.md)。
+完整功能说明见 [docs/features.md](docs2/features.md)。
 
 如果你在为担心没有合适的生图API来发愁，可以查看该免费生图项目：[chatgpt2api](https://github.com/basketikun/chatgpt2api)
 
@@ -81,14 +92,14 @@ https://infinite-canvas-cpco.onrender.com?apiKey={key}&baseUrl={address}
 
 ## 文档
 
-- [功能介绍](docs/features.md)
-- [部署说明](docs/deployment.md)
-- [画布节点操作手册](docs/canvas-node-manual.md)
-- [画布快捷键](docs/canvas-shortcuts.md)
-- [待办事项](docs/todo.md)
-- [后端数据库说明](docs/backend-database.md)
-- [系统配置数据结构](docs/system-settings.md)
-- [接口响应约定](docs/api-response.md)
+- [功能介绍](docs2/features.md)
+- [部署说明](docs2/deployment.md)
+- [画布节点操作手册](docs2/canvas-node-manual.md)
+- [画布快捷键](docs2/canvas-shortcuts.md)
+- [待办事项](docs2/todo.md)
+- [后端数据库说明](docs2/backend-database.md)
+- [系统配置数据结构](docs2/system-settings.md)
+- [接口响应约定](docs2/api-response.md)
 
 ## 社区支持
 
