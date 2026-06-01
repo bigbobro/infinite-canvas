@@ -215,6 +215,10 @@ export default function AdminSettingsPage() {
             const channelModels = await fetchChannelModels(token, { index: editingChannelIndex ?? undefined, channel: normalizeChannel(channel) });
             const current = isModelSelectorOpen ? uniqueModels(modelSelectSelected) : uniqueModels(channelForm.getFieldValue("models") || []);
             rememberModels(channelModels);
+            if (!channelModels.length) {
+                message.warning("上游未返回模型列表，请手动输入模型名称");
+                return;
+            }
             setModelSelectExisting(current);
             setModelSelectSource(uniqueModels(channelModels));
             setModelSelectSelected(uniqueModels([...current, ...channelModels]));
@@ -337,7 +341,7 @@ export default function AdminSettingsPage() {
         const nextChannelModels = collectChannelModels(nextChannels);
         const nextSettings = normalizeSettings({
             ...values,
-            public: { ...values.public, modelChannel: { ...values.public.modelChannel, availableModels: filterModels(values.public.modelChannel.availableModels, nextChannelModels) } },
+            public: { ...values.public, modelChannel: { ...values.public.modelChannel, availableModels: nextChannelModels } },
             private: { ...values.private, channels: nextChannels },
         });
         const saved = normalizeSettings(await saveAdminSettings(token, nextSettings));
@@ -410,7 +414,7 @@ export default function AdminSettingsPage() {
                             <Form form={form} layout="vertical" initialValues={emptySettings} requiredMark={false}>
                                 <Row gutter={16}>
                                     <Col span={24}>
-                                        <Form.Item name={["public", "modelChannel", "availableModels"]} label="系统可用模型(请先在私有配置里配置渠道)" extra="可选项来自已启用渠道中选择的模型，最终开放哪些模型由这里勾选决定">
+                                        <Form.Item name={["public", "modelChannel", "availableModels"]} label="系统可用模型(请先在私有配置里配置渠道)" extra="保存设置时会自动合并所有已启用私有渠道的模型，前台模型下拉会读取这里的公开列表">
                                             <Select mode="multiple" placeholder="请选择系统可用模型" options={channelModels.map((item) => ({ label: item, value: item }))} />
                                         </Form.Item>
                                     </Col>
@@ -707,6 +711,7 @@ export default function AdminSettingsPage() {
                                 </Button>
                             </Space.Compact>
                         </Flex>
+                        <Typography.Text type="secondary">如果上游不提供 OpenAI /models 模型列表接口，请在这里手动增加模型名称。</Typography.Text>
                         <Tabs
                             activeKey={modelSelectTab}
                             onChange={(key) => setModelSelectTab(key as ModelSelectTabKey)}
@@ -765,7 +770,7 @@ export default function AdminSettingsPage() {
                     destroyOnHidden
                 >
                     <Flex vertical gap={12}>
-                        <Typography.Text type="secondary">测试会向选中模型发送一条 hi，用于确认渠道是否有响应。</Typography.Text>
+                        <Typography.Text type="secondary">普通文本模型会发送一条 hi；Agent Plan / Seedance 视频模型只做配置格式检查，不会发起视频生成，也不代表模型权限已验证。</Typography.Text>
                         <Input.Search placeholder="搜索模型..." allowClear value={testKeyword} onChange={(event) => setTestKeyword(event.target.value)} />
                         <Table
                             rowKey="model"
@@ -926,11 +931,6 @@ function uniqueModels(models: string[]) {
     return Array.from(new Set(models.filter(Boolean)));
 }
 
-function filterModels(models: string[], options: string[]) {
-    const optionSet = new Set(options);
-    return uniqueModels(models).filter((model) => optionSet.has(model));
-}
-
 function modelSummary(models: string[]) {
     if (!models.length) return "未配置模型";
     const preview = models.slice(0, 3).join(", ");
@@ -966,7 +966,7 @@ async function collectSettings(form: any, editorMode: Record<SettingsTabKey, Edi
         }
         values.private = privateSetting;
     }
-    values.public.modelChannel.availableModels = filterModels(values.public.modelChannel.availableModels, collectChannelModels(values.private.channels));
+    values.public.modelChannel.availableModels = collectChannelModels(values.private.channels);
     return normalizeSettings(values);
 }
 

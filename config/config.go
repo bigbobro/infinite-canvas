@@ -3,6 +3,8 @@ package config
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/caarlos0/env/v11"
@@ -17,6 +19,7 @@ type Config struct {
 	JWTExpireHours      int    `env:"JWT_EXPIRE_HOURS" envDefault:"168"`
 	StorageDriver       string `env:"STORAGE_DRIVER" envDefault:"sqlite"`
 	DatabaseDSN         string `env:"DATABASE_DSN" envDefault:"data/infinite-canvas.db"`
+	PublicBaseURL       string `env:"PUBLIC_BASE_URL"`
 	LinuxDoAuthorizeURL string `env:"LINUX_DO_AUTHORIZE_URL" envDefault:"https://connect.linux.do/oauth2/authorize"`
 	LinuxDoTokenURL     string `env:"LINUX_DO_TOKEN_URL" envDefault:"https://connect.linux.do/oauth2/token"`
 	LinuxDoUserInfoURL  string `env:"LINUX_DO_USERINFO_URL" envDefault:"https://connect.linux.do/api/user"`
@@ -29,6 +32,7 @@ func Load() error {
 	if err := env.Parse(&Cfg); err != nil {
 		return err
 	}
+	normalizeDockerSQLiteDSN("/app/data")
 	if strings.TrimSpace(Cfg.JWTSecret) == "" || Cfg.JWTSecret == "infinite-canvas" {
 		secret, err := randomSecret()
 		if err != nil {
@@ -37,6 +41,33 @@ func Load() error {
 		Cfg.JWTSecret = secret
 	}
 	return nil
+}
+
+func normalizeDockerSQLiteDSN(appDataDir string) {
+	driver := strings.ToLower(strings.TrimSpace(Cfg.StorageDriver))
+	if driver != "" && driver != "sqlite" {
+		return
+	}
+	dsn := strings.TrimSpace(Cfg.DatabaseDSN)
+	if dsn == "" || dsn == ":memory:" || strings.HasPrefix(dsn, "file:") {
+		return
+	}
+	pathPart, suffix := dsn, ""
+	if index := strings.Index(dsn, "?"); index >= 0 {
+		pathPart = dsn[:index]
+		suffix = dsn[index:]
+	}
+	if filepath.IsAbs(pathPart) {
+		return
+	}
+	slashPath := filepath.ToSlash(pathPart)
+	if slashPath != "data" && !strings.HasPrefix(slashPath, "data/") {
+		return
+	}
+	if _, err := os.Stat(appDataDir); err != nil {
+		return
+	}
+	Cfg.DatabaseDSN = filepath.Join(filepath.Dir(appDataDir), filepath.FromSlash(slashPath)) + suffix
 }
 
 func randomSecret() (string, error) {

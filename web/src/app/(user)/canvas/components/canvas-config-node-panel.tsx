@@ -2,13 +2,15 @@
 
 import type { CSSProperties } from "react";
 import { useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Edit3, Eye, Image as ImageIcon, LoaderCircle, MessageSquare, Play, Video } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Edit3, Eye, Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Video } from "lucide-react";
 import { App, Button, Empty, Input, Modal, Segmented } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { imageReferenceLabel } from "@/lib/image-reference-prompt";
+import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
@@ -18,7 +20,7 @@ import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from ".
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
     isRunning: boolean;
-    inputSummary: { textCount: number; imageCount: number };
+    inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
     inputs: NodeGenerationInput[];
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onTextInputChange: (nodeId: string, content: string) => void;
@@ -41,6 +43,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const textInputs = inputs.filter((input) => input.type === "text");
     const imageInputs = inputs.filter((input) => input.type === "image");
+    const videoInputs = inputs.filter((input) => input.type === "video");
+    const audioInputs = inputs.filter((input) => input.type === "audio");
 
     const moveInput = (input: NodeGenerationInput, offset: number) => {
         const sameTypeInputs = inputs.filter((item) => item.type === input.type);
@@ -112,6 +116,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
             <div className="mb-2 flex flex-wrap gap-1.5" onMouseDown={(event) => event.stopPropagation()}>
                 <InputChip label="提示词" value={`${inputSummary.textCount} 个`} style={chipStyle} />
                 <InputChip label="参考图" value={`${inputSummary.imageCount} 张`} style={chipStyle} />
+                <InputChip label="参考视频" value={`${inputSummary.videoCount} 个`} style={chipStyle} />
+                <InputChip label="参考音频" value={`${inputSummary.audioCount} 个`} style={chipStyle} />
                 <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px]" style={chipStyle} onClick={() => setPreviewOpen(true)}>
                     <Eye className="size-3.5" />
                     预览
@@ -121,7 +127,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
             <div className={`mb-2 grid min-w-0 cursor-default items-center gap-2 ${mode === "text" ? "grid-cols-1" : "grid-cols-[minmax(0,1fr)_148px]"}`} onMouseDown={(event) => event.stopPropagation()}>
                 <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} onMissingConfig={() => openConfigDialog(true)} fullWidth />
                 {mode === "video" ? (
-                    <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "videoSeconds" ? { seconds: value } : { [key]: value })} />
+                    <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                 ) : mode === "image" ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : null}
@@ -130,7 +136,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
             <Button
                 type="primary"
                 className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
-                disabled={isRunning || (!inputSummary.textCount && !inputSummary.imageCount)}
+                disabled={isRunning || (!inputSummary.textCount && !inputSummary.imageCount && !inputSummary.videoCount && !inputSummary.audioCount)}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => onGenerate(node.id)}
             >
@@ -167,6 +173,24 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
                                     <div className="thin-scrollbar flex gap-1.5 overflow-x-auto pb-1">
                                         {imageInputs.map((input, index) => (
                                             <ImageSortCard key={input.nodeId} input={input} imageIndex={index} imageTotal={imageInputs.length} inputs={inputs} theme={theme} onMove={moveInput} />
+                                        ))}
+                                    </div>
+                                </PreviewSection>
+                            </div>
+                            <div className="shrink-0">
+                                <PreviewSection title="参考视频" count={videoInputs.length} empty="暂无参考视频">
+                                    <div className="thin-scrollbar flex gap-1.5 overflow-x-auto pb-1">
+                                        {videoInputs.map((input, index) => (
+                                            <VideoSortCard key={input.nodeId} input={input} videoIndex={index} videoTotal={videoInputs.length} theme={theme} onMove={moveInput} />
+                                        ))}
+                                    </div>
+                                </PreviewSection>
+                            </div>
+                            <div className="shrink-0">
+                                <PreviewSection title="参考音频" count={audioInputs.length} empty="暂无参考音频">
+                                    <div className="thin-scrollbar flex gap-1.5 overflow-x-auto pb-1">
+                                        {audioInputs.map((input, index) => (
+                                            <AudioSortCard key={input.nodeId} input={input} audioIndex={index} audioTotal={audioInputs.length} theme={theme} onMove={moveInput} />
                                         ))}
                                     </div>
                                 </PreviewSection>
@@ -281,8 +305,63 @@ function ImageSortCard({
         <div className="w-24 shrink-0 overflow-hidden rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
             <div className="relative">
                 <img src={input.image.dataUrl} alt={input.title} className="aspect-square w-full object-cover" />
-                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{imageIndex + 1}</span>
+                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{imageReferenceLabel(imageIndex)}</span>
                 <HorizontalOrderButtons index={imageIndex} total={imageTotal} onMove={(offset) => onMove(input, offset)} />
+            </div>
+        </div>
+    );
+}
+
+function VideoSortCard({
+    input,
+    videoIndex,
+    videoTotal,
+    theme,
+    onMove,
+}: {
+    input: NodeGenerationInput;
+    videoIndex: number;
+    videoTotal: number;
+    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    onMove: (input: NodeGenerationInput, offset: number) => void;
+}) {
+    if (!input.video) return null;
+    return (
+        <div className="w-32 shrink-0 overflow-hidden rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
+            <div className="relative">
+                <video src={input.video.url} className="aspect-video w-full bg-black object-cover" muted preload="metadata" />
+                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 py-0.5 text-[9px] font-medium text-white">{seedanceReferenceLabel("video", videoIndex)}</span>
+                <HorizontalOrderButtons index={videoIndex} total={videoTotal} onMove={(offset) => onMove(input, offset)} />
+            </div>
+        </div>
+    );
+}
+
+function AudioSortCard({
+    input,
+    audioIndex,
+    audioTotal,
+    theme,
+    onMove,
+}: {
+    input: NodeGenerationInput;
+    audioIndex: number;
+    audioTotal: number;
+    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    onMove: (input: NodeGenerationInput, offset: number) => void;
+}) {
+    if (!input.audio) return null;
+    return (
+        <div className="w-48 shrink-0 rounded-lg border p-2" style={{ background: theme.node.fill, borderColor: theme.node.stroke }}>
+            <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-[11px] opacity-70">
+                <Music2 className="size-3.5 shrink-0" />
+                <span className="truncate">{input.title}</span>
+            </div>
+            <audio src={input.audio.url} controls className="h-8 w-full" preload="metadata" />
+            <div className="mt-1 flex justify-between">
+                <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !p-0" icon={<ArrowLeft className="size-3" />} disabled={audioIndex <= 0} onClick={() => onMove(input, -1)} />
+                <span className="text-[10px] opacity-45">{seedanceReferenceLabel("audio", audioIndex)}</span>
+                <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !p-0" icon={<ArrowRight className="size-3" />} disabled={audioIndex >= audioTotal - 1} onClick={() => onMove(input, 1)} />
             </div>
         </div>
     );
@@ -324,6 +403,15 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,
         vquality: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality,
+        videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
+        videoWatermark: node.metadata?.watermark || globalConfig.videoWatermark || defaultConfig.videoWatermark,
         count: String(node.metadata?.count || (mode === "image" ? 3 : globalConfig.count) || defaultConfig.count),
     };
+}
+
+function videoConfigPatch(key: keyof AiConfig, value: string) {
+    if (key === "videoSeconds") return { seconds: value };
+    if (key === "videoGenerateAudio") return { generateAudio: value };
+    if (key === "videoWatermark") return { watermark: value };
+    return { [key]: value };
 }

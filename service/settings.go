@@ -7,16 +7,20 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/basketikun/infinite-canvas/model"
 	"github.com/basketikun/infinite-canvas/repository"
 )
 
+var adminModelHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 func PublicSettings() (model.PublicSetting, error) {
 	settings, err := repository.GetSettings()
-	return normalizePublicSetting(settings.Public), err
+	return normalizeSettings(settings).Public, err
 }
 
 func AdminSettings() (model.Settings, error) {
@@ -52,16 +56,23 @@ func AdminTestChannelModel(index *int, channel model.ModelChannel, modelName str
 	if err != nil {
 		return "", err
 	}
+	if isArkAgentPlanChannel(resolved) || isSeedanceModelName(modelName) {
+		return testArkSeedanceChannelModel(resolved, modelName)
+	}
 	return testAdminChannelModel(resolved, modelName)
 }
 
 func normalizeSettings(settings model.Settings) model.Settings {
-	settings.Public = normalizePublicSetting(settings.Public)
 	settings.Private = normalizePrivateSetting(settings.Private)
+	settings.Public = normalizePublicSettingWithChannels(settings.Public, settings.Private.Channels)
 	return settings
 }
 
 func normalizePublicSetting(setting model.PublicSetting) model.PublicSetting {
+	return normalizePublicSettingWithChannels(setting, nil)
+}
+
+func normalizePublicSettingWithChannels(setting model.PublicSetting, channels []model.ModelChannel) model.PublicSetting {
 	if setting.ModelChannel.AvailableModels == nil {
 		setting.ModelChannel.AvailableModels = []string{}
 	}
@@ -82,6 +93,16 @@ func normalizePublicSetting(setting model.PublicSetting) model.PublicSetting {
 		enabled := true
 		setting.Auth.AllowRegister = &enabled
 	}
+	enabledModels := enabledChannelModels(channels)
+	if len(enabledModels) > 0 {
+		setting.ModelChannel.AvailableModels = enabledModels
+	} else {
+		setting.ModelChannel.AvailableModels = uniqueModelNames(setting.ModelChannel.AvailableModels)
+	}
+	setting.ModelChannel.DefaultTextModel = repairDefaultModel(setting.ModelChannel.DefaultTextModel, setting.ModelChannel.AvailableModels, isTextModelName)
+	setting.ModelChannel.DefaultImageModel = repairDefaultModel(setting.ModelChannel.DefaultImageModel, setting.ModelChannel.AvailableModels, isImageModelName)
+	setting.ModelChannel.DefaultVideoModel = repairDefaultModel(setting.ModelChannel.DefaultVideoModel, setting.ModelChannel.AvailableModels, isVideoModelName)
+	setting.ModelChannel.DefaultModel = repairDefaultModel(setting.ModelChannel.DefaultModel, setting.ModelChannel.AvailableModels, isTextModelName)
 	return setting
 }
 
@@ -179,11 +200,99 @@ func SelectModelChannel(modelName string) (model.ModelChannel, error) {
 }
 
 func BuildModelChannelURL(channel model.ModelChannel, path string) string {
-	baseURL := strings.TrimRight(channel.BaseURL, "/")
-	if !strings.HasSuffix(baseURL, "/v1") {
+	baseURL := normalizeModelChannelBaseURL(channel.BaseURL)
+	lowerBaseURL := strings.ToLower(baseURL)
+	if !strings.HasSuffix(lowerBaseURL, "/v1") && !strings.HasSuffix(lowerBaseURL, "/api/v3") && !strings.HasSuffix(lowerBaseURL, "/api/plan/v3") {
 		baseURL += "/v1"
 	}
 	return baseURL + path
+}
+
+func normalizeModelChannelBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	parsed, err := url.Parse(baseURL)
+	if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		path := strings.TrimRight(parsed.Path, "/")
+		lowerPath := strings.ToLower(path)
+		if index := strings.Index(lowerPath, "/api/plan/v3"); index >= 0 {
+			end := index + len("/api/plan/v3")
+			if len(lowerPath) == end || lowerPath[end] == '/' {
+				parsed.Path = path[:end]
+				parsed.RawPath = ""
+				parsed.RawQuery = ""
+				parsed.Fragment = ""
+				return strings.TrimRight(parsed.String(), "/")
+			}
+		}
+	}
+	return baseURL
+}
+
+func isArkAgentPlanChannel(channel model.ModelChannel) bool {
+	baseURL := strings.ToLower(normalizeModelChannelBaseURL(channel.BaseURL))
+	return strings.HasSuffix(baseURL, "/api/plan/v3")
+}
+
+func isSeedanceModelName(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(modelName, "seedance") || strings.Contains(modelName, "doubao-seedance")
+}
+
+func enabledChannelModels(channels []model.ModelChannel) []string {
+	models := []string{}
+	for _, channel := range channels {
+		if !channel.Enabled {
+			continue
+		}
+		models = append(models, channel.Models...)
+	}
+	return uniqueModelNames(models)
+}
+
+func uniqueModelNames(models []string) []string {
+	result := []string{}
+	seen := map[string]bool{}
+	for _, item := range models {
+		name := strings.TrimSpace(item)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, name)
+	}
+	return result
+}
+
+func repairDefaultModel(current string, models []string, preferred func(string) bool) string {
+	current = strings.TrimSpace(current)
+	for _, item := range models {
+		if item == current {
+			return current
+		}
+	}
+	for _, item := range models {
+		if preferred(item) {
+			return item
+		}
+	}
+	if len(models) > 0 {
+		return models[0]
+	}
+	return ""
+}
+
+func isVideoModelName(modelName string) bool {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(name, "seedance") || strings.Contains(name, "video")
+}
+
+func isImageModelName(modelName string) bool {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(name, "seedream") || strings.Contains(name, "gpt-image") || strings.Contains(name, "image")
+}
+
+func isTextModelName(modelName string) bool {
+	return !isImageModelName(modelName) && !isVideoModelName(modelName)
 }
 
 func normalizeModelChannel(channel model.ModelChannel) model.ModelChannel {
@@ -239,13 +348,16 @@ func fetchAdminChannelModels(channel model.ModelChannel) ([]string, error) {
 		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
-	response, err := http.DefaultClient.Do(request)
+	response, err := adminModelHTTPClient.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, safeMessageError{message: "读取模型失败：上游接口无响应或网络不可达"}
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode >= http.StatusBadRequest {
+		if response.StatusCode == http.StatusNotFound && isArkAgentPlanChannel(channel) {
+			return nil, safeMessageError{message: "火山方舟 Agent Plan 未提供 OpenAI /models 模型列表接口，请手动填写模型名称，例如 doubao-seedance-2.0。"}
+		}
 		return nil, readAdminChannelError(body, response.StatusCode, "读取模型失败")
 	}
 	var payload struct {
@@ -281,9 +393,9 @@ func testAdminChannelModel(channel model.ModelChannel, modelName string) (string
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	response, err := adminModelHTTPClient.Do(request)
 	if err != nil {
-		return "", err
+		return "", safeMessageError{message: "测试失败：上游接口无响应或网络不可达"}
 	}
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(response.Body)
@@ -304,6 +416,22 @@ func testAdminChannelModel(channel model.ModelChannel, modelName string) (string
 	return "ok", nil
 }
 
+func testArkSeedanceChannelModel(channel model.ModelChannel, modelName string) (string, error) {
+	if strings.TrimSpace(modelName) == "" {
+		return "", errors.New("缺少模型名称")
+	}
+	if strings.TrimSpace(channel.BaseURL) == "" {
+		return "", safeMessageError{message: "缺少接口地址"}
+	}
+	if strings.TrimSpace(channel.APIKey) == "" {
+		return "", safeMessageError{message: "缺少 API Key"}
+	}
+	if !isArkAgentPlanChannel(channel) {
+		return "Seedance 视频模型不会发送 /chat/completions 文本测试。已检查 Base URL、API Key 和模型名非空；未调用视频生成接口，因此未验证套餐额度或模型权限。", nil
+	}
+	return "Agent Plan / Seedance 视频模型配置格式已通过。后台测试不会调用视频生成接口，因此未验证 API Key、套餐额度或模型权限；请在画布中使用视频生成验证。", nil
+}
+
 func readAdminChannelError(body []byte, statusCode int, fallback string) error {
 	var payload struct {
 		Error *struct {
@@ -319,8 +447,11 @@ func readAdminChannelError(body []byte, statusCode int, fallback string) error {
 			return safeMessageError{message: payload.Msg}
 		}
 	}
-	if statusCode == http.StatusUnauthorized {
-		return safeMessageError{message: "上游接口认证失败（401），请检查 API Key"}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return safeMessageError{message: fmt.Sprintf("上游接口鉴权失败（%d），请检查 API Key、套餐权限或模型权限", statusCode)}
+	}
+	if statusCode == http.StatusTooManyRequests {
+		return safeMessageError{message: "上游接口限流或额度不足（429），请稍后重试或检查额度"}
 	}
 	if statusCode > 0 {
 		return safeMessageError{message: fmt.Sprintf("%s：%d", fallback, statusCode)}

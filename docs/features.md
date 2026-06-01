@@ -52,12 +52,26 @@
 
 ## AI 生成
 
-项目通过前端直接请求 OpenAI 兼容接口：
+项目支持两种 AI 调用方式：
+
+- 本地直连：前端使用本地配置的 Base URL、API Key 和 Model 直接请求 OpenAI 兼容接口。
+- 后台渠道：前端请求本项目后端 `/api/v1/*` 代理接口，后端按模型选择管理后台配置的渠道。
+
+OpenAI 兼容图像和文本能力继续复用现有接口：
 
 - `/v1/images/generations`：文生图。
 - `/v1/images/edits`：图生图/参考图编辑。
 - `/v1/chat/completions`：文本问答和带图问答。
-- `/v1/models`：读取模型列表。
+- `/v1/models`：读取模型列表；火山方舟 Agent Plan 专属 `/api/plan/v3` 当前未提供 OpenAI `/models` 模型列表接口，需要手动填写模型名。
+
+视频能力支持两类接口：
+
+- OpenAI 风格视频：`POST /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`。
+- 火山方舟 Agent Plan / Seedance 2.0：Base URL 使用 `https://ark.cn-beijing.volces.com/api/plan/v3`，创建任务为 `POST /contents/generations/tasks`，查询任务为 `GET /contents/generations/tasks/{id}`，成功结果读取 `content.video_url`。
+
+Base URL 如果已经以 `/v1`、`/api/v3` 或 `/api/plan/v3` 结尾，系统不会再追加 `/v1`。因此 cpa 反代或火山方舟 Agent Plan 可以继续通过现有 Base URL + API Key + Model 方式配置，不需要新增火山生图 Provider。
+
+后台“拉取模型列表”会尝试真实请求 OpenAI `/models`，不会为 Agent Plan 伪造模型结果。如果火山方舟 Agent Plan 返回 404，请手动增加 `doubao-seedance-2.0` 或文档列出的其他模型名。
 
 可配置项：
 
@@ -67,8 +81,12 @@
 - 图片质量。
 - 图片比例。
 - 生成数量。
+- 视频模型。
+- 视频比例、清晰度、时长、生成声音和水印。
 
 普通图片/文本节点可以直接输入提示词生成结果。生成配置节点可以读取上游节点内容，并按节点自己的配置批量生成多个图片或文本结果。生成配置节点支持预览当前提示词和参考图输入，并调整输入顺序。
+
+视频生成可从文本节点读取 prompt，从图片节点读取参考图，从视频节点读取参考视频，从音频节点读取参考音频。Seedance 2.0 支持最多 9 张参考图、3 个参考视频、3 个参考音频；分辨率支持 `480p`、`720p`、`1080p`（fast 模型不支持 `1080p`），比例支持 `16:9`、`4:3`、`1:1`、`3:4`、`9:16`、`21:9`、`adaptive`，时长支持 4-15 秒或智能时长。生成成功后会把视频插入画布为视频节点并使用原生播放器预览。Seedance 参考视频和参考音频需要公网可访问 URL；本地上传素材会先通过 `/api/v1/media/references` 保存到服务端，再由 `PUBLIC_BASE_URL` 生成可供火山服务器拉取的公开链接。
 
 ## 画布助手
 
@@ -161,6 +179,8 @@
 ## 当前限制
 
 - 画布项目和“我的素材”目前只保存在浏览器本地，不会随账号同步。
-- AI API Key 目前保存在浏览器本地，并由浏览器直接请求配置的 OpenAI 兼容接口。
+- 本地直连模式下，AI API Key 保存在浏览器本地，并由浏览器直接请求配置的 OpenAI 兼容接口；只适合本地或个人使用，公网多人使用不安全。公网部署推荐使用后台渠道，把真实密钥保存在服务端配置中。
 - 服务器素材库目前主要保存 URL 或文本，暂未提供文件上传接口。
+- Seedance 本地参考图/视频上传依赖 `PUBLIC_BASE_URL`，如果服务部署在 localhost、内网或不可被火山访问的地址，火山无法拉取参考素材。
+- Seedance 返回远程视频 URL 时，前端会尽量下载为本地 Blob 持久化；如果因 CORS 或网络限制无法下载，会保留远程 URL，后续是否可播放取决于上游 URL 的有效期。
 - 画布更适合桌面端使用，移动端触控体验还未系统完善。
