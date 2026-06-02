@@ -1,7 +1,7 @@
 "use client";
 
-import { type ReactNode } from "react";
-import { ConfigProvider } from "antd";
+import { type ReactNode, useState } from "react";
+import { ConfigProvider, Switch } from "antd";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import type { AiConfig } from "@/stores/use-config-store";
@@ -12,6 +12,7 @@ const qualityOptions = [
     { value: "medium", label: "中" },
     { value: "low", label: "低" },
 ];
+const DIMENSION_STEP = 16;
 
 const aspectOptions = [
     { value: "1:1", label: "1:1", width: 1024, height: 1024, icon: "square" },
@@ -40,6 +41,7 @@ type ImageSettingsPanelProps = {
 };
 
 export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
+    const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
     const activeSize = config.size || "auto";
@@ -51,12 +53,22 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     };
     const updateDimension = (key: "width" | "height", value: number | null) => {
         const next = Math.max(1, Math.floor(value || dimensions[key] || 1024));
-        onConfigChange("size", `${key === "width" ? next : dimensions.width}x${key === "height" ? next : dimensions.height}`);
+        const width = key === "width" ? next : dimensions.width;
+        const height = key === "height" ? next : dimensions.height;
+        onConfigChange("size", `${alignDimension(width, snapDimensionToStep)}x${alignDimension(height, snapDimensionToStep)}`);
     };
 
     return (
         <ImageSettingsTheme theme={theme}>
-            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+            <div
+                className={className}
+                style={{ color: theme.node.text }}
+                onMouseDown={(event) => {
+                    event.stopPropagation();
+                    if (event.target instanceof HTMLInputElement) return;
+                    if (document.activeElement instanceof HTMLInputElement && event.currentTarget.contains(document.activeElement)) document.activeElement.blur();
+                }}
+            >
                 {showTitle ? <div className="text-lg font-semibold">图像设置</div> : null}
                 <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>质量</SettingTitle>
@@ -69,11 +81,21 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </div>
                 <div className="space-y-2.5">
-                    <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
+                    <div className="flex items-center justify-between gap-3">
+                        <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
+                                16倍数对齐
+                            </span>
+                            <span title="输入完成后自动向上补成 16 的倍数" onMouseDown={(event) => event.stopPropagation()}>
+                                <Switch size="small" checked={snapDimensionToStep} onChange={setSnapDimensionToStep} />
+                            </span>
+                        </div>
+                    </div>
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} onChange={(value) => updateDimension("width", value)} />
+                        <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("width", value)} />
                         <span className="text-lg opacity-45">↔</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} onChange={(value) => updateDimension("height", value)} />
+                        <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
                     </div>
                 </div>
                 <div className="space-y-2.5">
@@ -145,7 +167,13 @@ function OptionPill({ selected, theme, onClick, children }: { selected: boolean;
     );
 }
 
-function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: string; value: number; disabled: boolean; theme: CanvasTheme; onChange: (value: number | null) => void }) {
+function DimensionInput({ prefix, value, disabled, theme, alignToStep, onChange }: { prefix: string; value: number; disabled: boolean; theme: CanvasTheme; alignToStep: boolean; onChange: (value: number | null) => void }) {
+    const commit = (input: HTMLInputElement) => {
+        const next = alignDimension(Math.max(1, Math.floor(Number(input.value) || value || 1024)), alignToStep);
+        input.value = String(next);
+        onChange(next);
+    };
+
     return (
         <label className="flex h-9 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text, opacity: disabled ? 0.55 : 1 }}>
             <span className="grid w-9 place-items-center" style={{ color: theme.node.muted }}>
@@ -156,8 +184,12 @@ function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: 
                 min={1}
                 disabled={disabled}
                 className="min-w-0 flex-1 bg-transparent px-2 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                value={value || ""}
-                onChange={(event) => onChange(Number(event.target.value) || null)}
+                defaultValue={value || ""}
+                key={`${prefix}-${value}`}
+                onBlur={(event) => commit(event.currentTarget)}
+                onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                }}
                 onMouseDown={(event) => event.stopPropagation()}
             />
         </label>
@@ -207,4 +239,8 @@ function readSizeDimensions(size: string, fallback: { width: number; height: num
         width: match ? Number(match[1]) : fallback.width,
         height: match ? Number(match[2]) : fallback.height,
     };
+}
+
+function alignDimension(value: number, enabled: boolean) {
+    return enabled ? Math.ceil(value / DIMENSION_STEP) * DIMENSION_STEP : value;
 }

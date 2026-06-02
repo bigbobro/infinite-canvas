@@ -465,7 +465,7 @@ export default function ImagePage() {
                     onPreviewLog={(log) => void previewGenerationLog(log)}
                 />
             </Drawer>
-            <Drawer title="参数" placement="bottom" height="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
+            <Drawer title="参数" placement="bottom" size="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
                 <div className="grid grid-cols-2 gap-3 pb-4">
                     <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
                 </div>
@@ -638,6 +638,8 @@ function LogPanel({
 }
 
 function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
+    const thumbnails = (log.thumbnails || []).filter(Boolean).slice(0, 4);
+
     return (
         <button
             type="button"
@@ -649,9 +651,9 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
                     <Checkbox className="mt-0.5" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelectedChange(event.target.checked)} />
                     <div className="min-w-0">
                         <div className="truncate text-sm font-semibold leading-5">{log.title}</div>
-                        {log.thumbnails?.length ? (
+                        {thumbnails.length ? (
                             <div className="mt-2 flex gap-1 overflow-hidden">
-                                {log.thumbnails.slice(0, 4).map((image, index) => (
+                                {thumbnails.map((image, index) => (
                                     <img key={`${log.id}-${index}`} src={image} alt="" className="size-8 shrink-0 rounded-md object-cover" />
                                 ))}
                             </div>
@@ -729,7 +731,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         quality: log.quality || config.quality || "",
         status: log.status || "成功",
         images,
-        thumbnails: images.map((image) => image.dataUrl),
+        thumbnails: images.map((image) => image.dataUrl).filter(Boolean),
     };
 }
 
@@ -815,6 +817,6 @@ function buildLog({
         quality: logConfig.quality,
         status,
         images,
-        thumbnails: images.map((image) => image.dataUrl),
+        thumbnails: images.map((image) => image.dataUrl).filter(Boolean),
     };
 }
