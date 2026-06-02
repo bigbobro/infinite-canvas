@@ -1,6 +1,6 @@
 import { docs } from 'collections/server';
 import { loader } from 'fumadocs-core/source';
-import { docsContentRoute, docsImageRoute, docsRoute } from './shared';
+import { docsContentRoute, docsRoute } from './shared';
 
 // See https://fumadocs.dev/docs/headless/source-api for more info
 export const source = loader({
@@ -8,15 +8,6 @@ export const source = loader({
   source: docs.toFumadocsSource(),
   plugins: [],
 });
-
-export function getPageImage(page: (typeof source)['$inferPage']) {
-  const segments = [...page.slugs, 'image.png'];
-
-  return {
-    segments,
-    url: `${docsImageRoute}/${segments.join('/')}`,
-  };
-}
 
 export function getPageMarkdownUrl(page: (typeof source)['$inferPage']) {
   const segments = [...page.slugs, 'content.md'];

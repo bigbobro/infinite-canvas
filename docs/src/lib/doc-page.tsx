@@ -1,6 +1,6 @@
 import { getMDXComponents } from '@/components/mdx';
 import { gitConfig } from '@/lib/shared';
-import { getPageImage, getPageMarkdownUrl, source } from '@/lib/source';
+import { getPageMarkdownUrl, source } from '@/lib/source';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from 'fumadocs-ui/page';
@@ -41,8 +41,5 @@ export function getDocPageMetadata(page: DocPageData): Metadata {
   return {
     title: page.data.title,
     description: page.data.description,
-    openGraph: {
-      images: getPageImage(page).url,
-    },
   };
 }
