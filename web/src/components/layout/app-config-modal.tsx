@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { fetchImageModels } from "@/services/api/image";
+import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { filterModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelGroup = {
@@ -180,7 +181,7 @@ export function AppConfigModal() {
                             </Form.Item>
                         ))}
                     </div>
-                    <div className="grid gap-4 md:grid-cols-3">
+                    <div className="grid gap-4 md:grid-cols-4">
                         <Form.Item label="画布默认生图张数" extra="新建画布生图和配置节点默认使用，单个节点仍可单独覆盖。" className="mb-4">
                             <Input
                                 type="number"
@@ -191,7 +192,27 @@ export function AppConfigModal() {
                                 onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
                             />
                         </Form.Item>
+                        <Form.Item label="默认音频声音" className="mb-4">
+                            <Select value={config.audioVoice} options={audioVoiceOptions} onChange={(value) => updateConfig("audioVoice", value)} />
+                        </Form.Item>
+                        <Form.Item label="默认音频格式" className="mb-4">
+                            <Select value={config.audioFormat} options={audioFormatOptions} onChange={(value) => updateConfig("audioFormat", value)} />
+                        </Form.Item>
+                        <Form.Item label="默认音频语速" className="mb-4">
+                            <Input
+                                type="number"
+                                min={0.25}
+                                max={4}
+                                step={0.05}
+                                value={config.audioSpeed}
+                                onChange={(event) => updateConfig("audioSpeed", event.target.value)}
+                                onBlur={(event) => updateConfig("audioSpeed", normalizeAudioSpeedValue(event.target.value))}
+                            />
+                        </Form.Item>
                     </div>
+                    <Form.Item label="默认音频指令" className="mb-4">
+                        <Input.TextArea rows={2} value={config.audioInstructions} placeholder="例如：自然、温暖、适合旁白。" onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
+                    </Form.Item>
                     {effectiveMode === "local" ? (
                         <Form.Item label="系统提示词" className="mb-0">
                             <Input.TextArea rows={3} value={config.systemPrompt} placeholder="例如：你是一位擅长电影感写实摄影的视觉导演。" onChange={(event) => updateConfig("systemPrompt", event.target.value)} />

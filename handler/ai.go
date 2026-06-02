@@ -26,6 +26,10 @@ func AIChatCompletions(w http.ResponseWriter, r *http.Request) {
 	proxyAIRequest(w, r, "/chat/completions")
 }
 
+func AIAudioSpeech(w http.ResponseWriter, r *http.Request) {
+	proxyAIRequest(w, r, "/audio/speech")
+}
+
 func AIVideos(w http.ResponseWriter, r *http.Request) {
 	proxyAIRequest(w, r, "/videos")
 }

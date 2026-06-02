@@ -16,6 +16,10 @@ export type AiConfig = {
     videoModel: string;
     textModel: string;
     audioModel: string;
+    audioVoice: string;
+    audioFormat: string;
+    audioSpeed: string;
+    audioInstructions: string;
     videoSeconds: string;
     vquality: string;
     videoGenerateAudio: string;
@@ -43,7 +47,11 @@ export const defaultConfig: AiConfig = {
     imageModel: "gpt-image-2",
     videoModel: "grok-imagine-video",
     textModel: "gpt-5.5",
-    audioModel: "",
+    audioModel: "gpt-4o-mini-tts",
+    audioVoice: "alloy",
+    audioFormat: "mp3",
+    audioSpeed: "1",
+    audioInstructions: "",
     videoSeconds: "6",
     vquality: "720",
     videoGenerateAudio: "true",
@@ -124,7 +132,7 @@ function isImageModelName(model: string) {
 
 function isAudioModelName(model: string) {
     const value = model.toLowerCase();
-    return value.includes("audio") || value.includes("tts") || value.includes("speech") || value.includes("whisper") || value.includes("transcribe") || value.includes("voice") || value.includes("music") || value.includes("sound");
+    return value.includes("audio") || value.includes("tts") || value.includes("speech") || value.includes("voice") || value.includes("music") || value.includes("sound");
 }
 
 function isTextModelName(model: string) {
@@ -199,7 +207,11 @@ export const useConfigStore = create<ConfigStore>()(
                         imageModel: config.imageModel || config.model,
                         videoModel: config.videoModel || "grok-imagine-video",
                         textModel: config.textModel || config.model,
-                        audioModel: config.audioModel || "",
+                        audioModel: config.audioModel || defaultConfig.audioModel,
+                        audioVoice: config.audioVoice || defaultConfig.audioVoice,
+                        audioFormat: config.audioFormat || defaultConfig.audioFormat,
+                        audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
+                        audioInstructions: config.audioInstructions || "",
                         videoSeconds: config.videoSeconds || "6",
                         vquality: config.vquality || "720",
                         videoGenerateAudio: config.videoGenerateAudio || "true",
