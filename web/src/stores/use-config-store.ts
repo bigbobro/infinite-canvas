@@ -24,9 +24,11 @@ export type AiConfig = {
     quality: string;
     size: string;
     count: string;
+    canvasImageCount: string;
 };
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
+export type ModelCapability = "image" | "video" | "text";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -45,6 +47,7 @@ export const defaultConfig: AiConfig = {
     quality: "auto",
     size: "1:1",
     count: "1",
+    canvasImageCount: "3",
 };
 
 type ConfigStore = {
@@ -65,18 +68,21 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
     const channelMode = modelChannel?.allowCustomChannel ? config.channelMode : "remote";
     if (channelMode === "local" || !modelChannel) return { ...config, channelMode };
     const models = modelChannel.availableModels;
-    const fallbackTextModel = validDefault(modelChannel.defaultTextModel, models) || preferredModel(models, isTextModelName);
-    const fallbackModel = validDefault(modelChannel.defaultModel, models) || fallbackTextModel || models[0] || "";
-    const fallbackImageModel = validDefault(modelChannel.defaultImageModel, models) || preferredModel(models, isImageModelName) || fallbackModel;
-    const fallbackVideoModel = validDefault(modelChannel.defaultVideoModel, models) || preferredModel(models, isVideoModelName) || fallbackModel;
+    const textModels = filterModelsByCapability(models, "text");
+    const imageModels = filterModelsByCapability(models, "image");
+    const videoModels = filterModelsByCapability(models, "video");
+    const fallbackTextModel = validDefault(modelChannel.defaultTextModel, textModels) || preferredModel(textModels, isTextModelName);
+    const fallbackModel = validDefault(modelChannel.defaultModel, textModels) || fallbackTextModel;
+    const fallbackImageModel = validDefault(modelChannel.defaultImageModel, imageModels) || preferredModel(imageModels, isImageModelName);
+    const fallbackVideoModel = validDefault(modelChannel.defaultVideoModel, videoModels) || preferredModel(videoModels, isVideoModelName);
     return {
         ...config,
         channelMode,
         models,
-        model: models.includes(config.model) ? config.model : fallbackModel,
-        imageModel: models.includes(config.imageModel) ? config.imageModel : fallbackImageModel,
-        videoModel: models.includes(config.videoModel) ? config.videoModel : fallbackVideoModel,
-        textModel: models.includes(config.textModel) ? config.textModel : fallbackTextModel || fallbackModel,
+        model: textModels.includes(config.model) ? config.model : fallbackModel,
+        imageModel: imageModels.includes(config.imageModel) ? config.imageModel : fallbackImageModel,
+        videoModel: videoModels.includes(config.videoModel) ? config.videoModel : fallbackVideoModel,
+        textModel: textModels.includes(config.textModel) ? config.textModel : fallbackTextModel || fallbackModel,
         systemPrompt: modelChannel.systemPrompt,
     };
 }
@@ -91,16 +97,27 @@ function preferredModel(models: string[], predicate: (model: string) => boolean)
 
 function isVideoModelName(model: string) {
     const value = model.toLowerCase();
-    return value.includes("seedance") || value.includes("video");
+    return value.includes("seedance") || value.includes("video") || value.includes("sora") || value.includes("veo") || value.includes("kling") || value.includes("wan") || value.includes("hailuo");
 }
 
 function isImageModelName(model: string) {
     const value = model.toLowerCase();
-    return value.includes("seedream") || value.includes("gpt-image") || value.includes("image");
+    return !isVideoModelName(model) && (value.includes("seedream") || value.includes("gpt-image") || value.includes("image") || value.includes("dall-e") || value.includes("dalle") || value.includes("imagen") || value.includes("flux") || value.includes("sdxl") || value.includes("stable-diffusion") || value.includes("midjourney"));
 }
 
 function isTextModelName(model: string) {
     return !isImageModelName(model) && !isVideoModelName(model);
+}
+
+export function modelMatchesCapability(model: string, capability?: ModelCapability) {
+    if (!capability) return true;
+    if (capability === "image") return isImageModelName(model);
+    if (capability === "video") return isVideoModelName(model);
+    return isTextModelName(model);
+}
+
+export function filterModelsByCapability(models: string[], capability?: ModelCapability) {
+    return capability ? models.filter((model) => modelMatchesCapability(model, capability)) : models;
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {
@@ -141,7 +158,7 @@ export const useConfigStore = create<ConfigStore>()(
             partialize: (state) => ({ config: state.config }),
             merge: (persisted, current) => {
                 const config = { ...defaultConfig, ...((persisted as Partial<ConfigStore>).config || {}) };
-                return { ...current, config: { ...config, channelMode: config.channelMode || "remote", imageModel: config.imageModel || config.model, videoModel: config.videoModel || "grok-imagine-video", textModel: config.textModel || config.model, videoSeconds: config.videoSeconds || "6", vquality: config.vquality || "720", videoGenerateAudio: config.videoGenerateAudio || "true", videoWatermark: config.videoWatermark || "false" } };
+                return { ...current, config: { ...config, channelMode: config.channelMode || "remote", imageModel: config.imageModel || config.model, videoModel: config.videoModel || "grok-imagine-video", textModel: config.textModel || config.model, videoSeconds: config.videoSeconds || "6", vquality: config.vquality || "720", videoGenerateAudio: config.videoGenerateAudio || "true", videoWatermark: config.videoWatermark || "false", canvasImageCount: config.canvasImageCount || "3" } };
             },
         },
     ),

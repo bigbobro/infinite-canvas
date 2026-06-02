@@ -5,22 +5,23 @@ import { Cpu } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type { AiConfig } from "@/stores/use-config-store";
+import { filterModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelPickerProps = {
     config: AiConfig;
     value?: string;
     onChange: (model: string) => void;
+    capability?: ModelCapability;
     className?: string;
     fullWidth?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
 };
 
-export function ModelPicker({ config, value, onChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder = "选择模型", onMissingConfig }: ModelPickerProps) {
     const pickerId = useId();
     const [open, setOpen] = useState(false);
-    const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" ? [value] : []), ...config.models].filter((model): model is string => Boolean(model)))), [config.channelMode, config.models, value]);
+    const options = useMemo(() => filterModelsByCapability(Array.from(new Set([...(config.channelMode === "local" ? [value] : []), ...config.models].filter((model): model is string => Boolean(model)))), capability), [capability, config.channelMode, config.models, value]);
     const current = value || "";
 
     useEffect(() => {
@@ -77,12 +78,18 @@ export function ModelPicker({ config, value, onChange, className, fullWidth = fa
                     ))
                 ) : (
                     <SelectItem value="__empty__" disabled>
-                        {config.channelMode === "remote" ? "暂无可用模型" : "请先到配置里拉取模型列表"}
+                        {emptyModelLabel(config, capability)}
                     </SelectItem>
                 )}
             </SelectContent>
         </Select>
     );
+}
+
+function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
+    const label = capability === "image" ? "生图" : capability === "video" ? "视频" : capability === "text" ? "文本" : "";
+    if (config.channelMode === "remote") return `暂无可用${label}模型`;
+    return config.models.length ? `暂无匹配的${label}模型` : "请先到配置里拉取模型列表";
 }
 
 function ModelLabel({ model }: { model: string }) {

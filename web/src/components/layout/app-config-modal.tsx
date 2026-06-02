@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { fetchImageModels } from "@/services/api/image";
-import { useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { filterModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 
 export function AppConfigModal() {
     const { message } = App.useApp();
@@ -41,10 +41,13 @@ export function AppConfigModal() {
         setLoadingModels(true);
         try {
             const models = await fetchImageModels(config);
+            const imageModels = filterModelsByCapability(models, "image");
+            const videoModels = filterModelsByCapability(models, "video");
+            const textModels = filterModelsByCapability(models, "text");
             updateConfig("models", models);
-            if (models.length && !models.includes(config.imageModel)) updateConfig("imageModel", models[0]);
-            if (models.length && !models.includes(config.videoModel)) updateConfig("videoModel", models[0]);
-            if (models.length && !models.includes(config.textModel)) updateConfig("textModel", models[0]);
+            if (imageModels.length && !imageModels.includes(config.imageModel)) updateConfig("imageModel", imageModels[0]);
+            if (videoModels.length && !videoModels.includes(config.videoModel)) updateConfig("videoModel", videoModels[0]);
+            if (textModels.length && !textModels.includes(config.textModel)) updateConfig("textModel", textModels[0]);
             message.success("模型列表已更新");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "读取模型失败");
@@ -115,13 +118,25 @@ export function AppConfigModal() {
                     )}
                     <div className="grid gap-4 md:grid-cols-3">
                         <Form.Item label="默认生图模型" className="mb-4">
-                            <ModelPicker config={modelConfig} value={modelConfig.imageModel} onChange={(model) => updateConfig("imageModel", model)} fullWidth />
+                            <ModelPicker config={modelConfig} value={modelConfig.imageModel} onChange={(model) => updateConfig("imageModel", model)} capability="image" fullWidth />
                         </Form.Item>
                         <Form.Item label="默认视频模型" className="mb-4">
-                            <ModelPicker config={modelConfig} value={modelConfig.videoModel} onChange={(model) => updateConfig("videoModel", model)} fullWidth />
+                            <ModelPicker config={modelConfig} value={modelConfig.videoModel} onChange={(model) => updateConfig("videoModel", model)} capability="video" fullWidth />
                         </Form.Item>
                         <Form.Item label="默认文本模型" className="mb-4">
-                            <ModelPicker config={modelConfig} value={modelConfig.textModel} onChange={(model) => updateConfig("textModel", model)} fullWidth />
+                            <ModelPicker config={modelConfig} value={modelConfig.textModel} onChange={(model) => updateConfig("textModel", model)} capability="text" fullWidth />
+                        </Form.Item>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-3">
+                        <Form.Item label="画布默认生图张数" extra="新建画布生图和配置节点默认使用，单个节点仍可单独覆盖。" className="mb-4">
+                            <Input
+                                type="number"
+                                min={1}
+                                max={15}
+                                value={config.canvasImageCount}
+                                onChange={(event) => updateConfig("canvasImageCount", event.target.value)}
+                                onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
+                            />
                         </Form.Item>
                     </div>
                     {effectiveMode === "local" ? (
@@ -133,4 +148,8 @@ export function AppConfigModal() {
             </div>
         </Modal>
     );
+}
+
+function normalizeImageCount(value: string) {
+    return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
