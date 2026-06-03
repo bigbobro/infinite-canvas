@@ -54,18 +54,20 @@ export function buildInputMentionReferences(inputs: MentionInput[]) {
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
-    if (ownInputs.length) return ownInputs;
     const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
     if (configInputs.length) return configInputs;
+    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
+    if (ownInputs.length) return ownInputs;
     const node = nodes.find((item) => item.id === nodeId);
     return node && isResourceNode(node) ? [node] : [];
 }
 
 export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
+    if (configInputs.length) return configInputs;
     const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
     if (ownInputs.length) return ownInputs;
-    return getConnectedConfigResourceNodes(nodeId, nodes, connections);
+    return [];
 }
 
 function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
