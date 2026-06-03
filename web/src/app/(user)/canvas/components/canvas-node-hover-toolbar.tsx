@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Modal, Segmented, Tooltip } from "antd";
-import { Camera, Download, FolderPlus, Image as ImageIcon, Info, Lock, LockOpen, Maximize2, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Scissors, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { Camera, Download, FolderPlus, Image as ImageIcon, Info, Lock, LockOpen, Maximize2, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Scissors, Settings2, Sparkles, Trash2, Upload, Video, ZoomIn } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
@@ -24,6 +24,8 @@ type CanvasNodeHoverToolbarProps = {
     onDownload: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
     onCrop: (node: CanvasNodeData) => void;
+    onUpscale: (node: CanvasNodeData) => void;
+    onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
     onRetry: (node: CanvasNodeData) => void;
@@ -46,6 +48,8 @@ export function CanvasNodeHoverToolbar({
     onDownload,
     onSaveAsset,
     onCrop,
+    onUpscale,
+    onSuperResolve,
     onAngle,
     onViewImage,
     onRetry,
@@ -102,6 +106,8 @@ export function CanvasNodeHoverToolbar({
                 />
             ) : null}
             {hasImage ? <ToolbarAction title="裁剪并生成新节点" label="裁剪" icon={<Scissors className="size-4" />} onClick={() => onCrop(node)} /> : null}
+            {hasImage ? <ToolbarAction title="放大图片分辨率" label="放大" icon={<ZoomIn className="size-4" />} onClick={() => onUpscale(node)} /> : null}
+            {hasImage ? <ToolbarAction title="AI 超分" label="超分" icon={<Sparkles className="size-4" />} onClick={() => onSuperResolve(node)} /> : null}
             {hasImage ? <ToolbarAction title="生成角度" label="多角度" icon={<Camera className="size-4" />} onClick={() => onAngle(node)} /> : null}
             {hasImage ? <ToolbarAction title="查看图片详情" label="查看大图" icon={<Maximize2 className="size-4" />} onClick={() => onViewImage(node)} /> : null}
         </div>
@@ -180,7 +186,7 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
 
 function ToolbarAction({ title, label, icon, onClick, hint, active = false, danger = false }: { title: string; label: string; icon: ReactNode; onClick?: () => void; hint?: string; active?: boolean; danger?: boolean }) {
     return (
-        <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color="#ffffff" styles={{ body: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
             <button type="button" className={`group relative flex h-12 items-center whitespace-nowrap px-1.5 ${danger ? "text-[#ef4444]" : ""}`} onClick={onClick} aria-label={title}>
                 <span className={`flex h-9 items-center gap-2 rounded-lg px-2.5 transition group-hover:bg-[#f0f0f1] ${active ? "bg-[#eeeeef]" : ""}`}>
                     {icon}
@@ -194,7 +200,7 @@ function ToolbarAction({ title, label, icon, onClick, hint, active = false, dang
 
 function IconAction({ title, icon, onClick }: { title: string; icon: ReactNode; onClick: () => void }) {
     return (
-        <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
+        <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color="#ffffff" styles={{ body: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
             <button type="button" className="group relative grid h-12 w-12 place-items-center px-1.5" onClick={onClick} aria-label={title}>
                 <span className="grid size-9 place-items-center rounded-lg transition group-hover:bg-[#f0f0f1]">{icon}</span>
             </button>
