@@ -3,7 +3,7 @@
 import type { CSSProperties } from "react";
 import { useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Edit3, Eye, Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Video } from "lucide-react";
-import { App, Button, Empty, Input, Modal, Segmented } from "antd";
+import { App, Button, Empty, Modal, Segmented } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -14,21 +14,24 @@ import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
+import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "../types";
+import type { CanvasResourceReference } from "../utils/canvas-resource-references";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
     isRunning: boolean;
     inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
     inputs: NodeGenerationInput[];
+    mentionReferences?: CanvasResourceReference[];
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onTextInputChange: (nodeId: string, content: string) => void;
     onGenerate: (nodeId: string) => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, onConfigChange, onTextInputChange, onGenerate }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, mentionReferences = [], onConfigChange, onTextInputChange, onGenerate }: CanvasConfigNodePanelProps) {
     const { message } = App.useApp();
     const [previewOpen, setPreviewOpen] = useState(false);
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
@@ -46,6 +49,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
     const imageInputs = inputs.filter((input) => input.type === "image");
     const videoInputs = inputs.filter((input) => input.type === "video");
     const audioInputs = inputs.filter((input) => input.type === "audio");
+    const editingMentionReferences = editingTextId ? mentionReferences.filter((reference) => reference.nodeId !== editingTextId) : mentionReferences;
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const canGenerate = mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput;
 
@@ -125,12 +129,12 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
                 </div>
             </div>
 
-            <div className="mb-2 flex flex-wrap gap-1.5" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-2 flex flex-wrap gap-1.5">
                 <InputChip label="提示词" value={`${inputSummary.textCount} 个`} style={chipStyle} />
                 <InputChip label="参考图" value={`${inputSummary.imageCount} 张`} style={chipStyle} />
                 <InputChip label="参考视频" value={`${inputSummary.videoCount} 个`} style={chipStyle} />
                 <InputChip label="参考音频" value={`${inputSummary.audioCount} 个`} style={chipStyle} />
-                <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px]" style={chipStyle} onClick={() => setPreviewOpen(true)}>
+                <button type="button" className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px]" style={chipStyle} onMouseDown={(event) => event.stopPropagation()} onClick={() => setPreviewOpen(true)}>
                     <Eye className="size-3.5" />
                     预览
                 </button>
@@ -228,7 +232,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
                                                     收起
                                                 </Button>
                                             </div>
-                                            <Input.TextArea className="thin-scrollbar !flex-1 !resize-none !text-xs !leading-5" value={editingText} onChange={(event) => setEditingText(event.target.value)} />
+                                            <CanvasResourceMentionTextarea containerClassName="min-h-0 flex-1" className="thin-scrollbar h-full w-full resize-none rounded-md border px-2 py-1 text-xs leading-5 outline-none" style={{ background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }} value={editingText} references={editingMentionReferences} onChange={setEditingText} />
                                             <div className="mt-2 flex justify-end gap-2">
                                                 <Button size="small" onClick={() => setEditingTextId(null)}>
                                                     取消
