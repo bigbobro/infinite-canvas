@@ -45,6 +45,7 @@ type CanvasNodeProps = {
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
     onRetry?: (node: CanvasNodeData) => void;
     onGenerateImage?: (node: CanvasNodeData) => void;
+    onViewImage?: (node: CanvasNodeData) => void;
     onContextMenu: (event: React.MouseEvent, nodeId: string) => void;
 };
 
@@ -99,6 +100,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onSetBatchPrimary,
     onRetry,
     onGenerateImage,
+    onViewImage,
     onContextMenu,
 }: CanvasNodeProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -267,6 +269,11 @@ export const CanvasNode = React.memo(function CanvasNode({
                     if (isBatchRoot) {
                         event.stopPropagation();
                         onToggleBatch?.(data.id);
+                        return;
+                    }
+                    if (data.type === CanvasNodeType.Image && hasImageContent) {
+                        event.stopPropagation();
+                        onViewImage?.(data);
                         return;
                     }
                     if (data.type !== CanvasNodeType.Text) return;
