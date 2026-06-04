@@ -89,6 +89,12 @@ const CONNECTION_NODE_HIT_PADDING = 32;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+const IMAGE_PROMPT_REVERSE_PRESET = `请根据参考图片反推一段适合用于 AI 生图的提示词。
+
+要求：
+1. 只输出提示词正文，不要解释。
+2. 覆盖主体、构图、风格、光线、色彩、材质、镜头和氛围。
+3. 尽量写成可直接用于生图模型的完整提示词。`;
 
 function createCanvasNode(type: CanvasNodeType, position: Position, metadata?: CanvasNodeMetadata): CanvasNodeData {
     const spec = getNodeSpec(type);
@@ -1441,6 +1447,53 @@ function InfiniteCanvasPage() {
         [addAsset, message],
     );
 
+    const createImageReversePromptNodes = useCallback(
+        (node: CanvasNodeData) => {
+            if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
+                message.warning("图片节点为空，无法反推提示词");
+                return;
+            }
+
+            const gap = 96;
+            const textSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
+            const configSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Config];
+            const centerY = node.position.y + node.height / 2;
+            const textNode = {
+                ...createCanvasNode(
+                    CanvasNodeType.Text,
+                    { x: node.position.x + node.width + gap + textSpec.width / 2, y: centerY },
+                    { content: IMAGE_PROMPT_REVERSE_PRESET, prompt: IMAGE_PROMPT_REVERSE_PRESET, status: NODE_STATUS_SUCCESS, fontSize: 14 },
+                ),
+                title: "反推提示词",
+            };
+            const configNode = {
+                ...createCanvasNode(
+                    CanvasNodeType.Config,
+                    { x: textNode.position.x + textNode.width + gap + configSpec.width / 2, y: centerY },
+                    {
+                        generationMode: "text",
+                        model: effectiveConfig.textModel || effectiveConfig.model || defaultConfig.textModel,
+                        count: 1,
+                        composerContent: `参考图片：@[node:${node.id}]\n任务说明：@[node:${textNode.id}]`,
+                    },
+                ),
+                title: "反推提示词配置",
+            };
+
+            setNodes((prev) => [...prev, textNode, configNode]);
+            setConnections((prev) => [
+                ...prev,
+                { id: nanoid(), fromNodeId: node.id, toNodeId: configNode.id },
+                { id: nanoid(), fromNodeId: textNode.id, toNodeId: configNode.id },
+            ]);
+            setSelectedNodeIds(new Set([configNode.id]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(configNode.id);
+            setContextMenu(null);
+        },
+        [effectiveConfig.model, effectiveConfig.textModel, message],
+    );
+
     const cropImageNode = useCallback(async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
         if (!node.metadata?.content) return;
         const cropped = await cropDataUrl(node.metadata.content, crop);
@@ -2387,6 +2440,7 @@ function InfiniteCanvasPage() {
                     onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
                     onAngle={(node) => setAngleNodeId(node.id)}
                     onViewImage={(node) => setPreviewNodeId(node.id)}
+                    onReversePrompt={createImageReversePromptNodes}
                     onRetry={(node) => void handleRetryNode(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}

@@ -1,11 +1,11 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Brush, Camera, Copy, Lock, LockOpen, Maximize2, Scissors, Sparkles, Upload, ZoomIn } from "lucide-react";
+import { Brush, Camera, Copy, FileText, Lock, LockOpen, Maximize2, Scissors, Sparkles, Upload, ZoomIn } from "lucide-react";
 
 import type { CanvasNodeData } from "../types";
 
-export type ImageNodeActionToolId = "copyPrompt" | "replace" | "resize" | "maskEdit" | "crop" | "upscale" | "superResolve" | "angle" | "view";
+export type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "maskEdit" | "crop" | "upscale" | "superResolve" | "angle" | "view";
 export type ImageQuickToolId = "info" | "delete" | "saveAsset" | "download" | "edit" | ImageNodeActionToolId;
 
 export type ImageToolHandlers = {
@@ -18,6 +18,7 @@ export type ImageToolHandlers = {
     onAngle: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
     onCopyPrompt: (node: CanvasNodeData) => void;
+    onReversePrompt: (node: CanvasNodeData) => void;
 };
 
 export type ImageToolDefinition = {
@@ -36,7 +37,7 @@ export type ImageQuickToolsConfig = {
     showLabels: boolean;
 };
 
-export const IMAGE_QUICK_TOOLS_STORAGE_KEY = "canvas-image-quick-tools-v4";
+export const IMAGE_QUICK_TOOLS_STORAGE_KEY = "canvas-image-quick-tools-v5";
 
 const defaultBaseToolIds: ImageQuickToolId[] = ["info", "delete", "saveAsset", "download", "edit"];
 
@@ -49,6 +50,15 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
         title: "复制生成该图片的提示词",
         icon: () => <Copy className="size-4" />,
         run: (node, handlers) => handlers.onCopyPrompt(node),
+    },
+    {
+        id: "reversePrompt",
+        defaultVisible: true,
+        panelLabel: "反推提示词",
+        label: "反推提示词",
+        title: "创建反推提示词的文本和配置节点",
+        icon: () => <FileText className="size-4" />,
+        run: (node, handlers) => handlers.onReversePrompt(node),
     },
     {
         id: "replace",
