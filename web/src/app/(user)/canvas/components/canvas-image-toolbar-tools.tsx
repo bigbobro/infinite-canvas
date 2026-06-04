@@ -60,7 +60,7 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
     },
     {
         id: "resize",
-        defaultVisible: true,
+        defaultVisible: false,
         panelLabel: "锁比例",
         label: (node) => (node.metadata?.freeResize ? "自由比例" : "锁比例"),
         title: (node) => (node.metadata?.freeResize ? "切换为等比缩放" : "切换为自由比例"),
@@ -88,7 +88,7 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
     },
     {
         id: "superResolve",
-        defaultVisible: true,
+        defaultVisible: false,
         panelLabel: "超分",
         label: "超分",
         title: "AI 超分",
@@ -97,7 +97,7 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
     },
     {
         id: "angle",
-        defaultVisible: true,
+        defaultVisible: false,
         panelLabel: "多角度",
         label: "多角度",
         title: "生成角度",
