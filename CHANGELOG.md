@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 新增canvas-agent通过codex/claude code操作画布。
+
 ## v0.2.5 - 2026-06-08
 
 + [新增] 新增图片切图功能。
