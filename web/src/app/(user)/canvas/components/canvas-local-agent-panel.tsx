@@ -1,22 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { App, Button, Input, Segmented, Switch, Tooltip } from "antd";
+import { App, Button, Input, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { ArrowUp, Bot, CheckCircle2, CircleAlert, Copy, FolderOpen, History, ImagePlus, KeyRound, Link2, LoaderCircle, PlugZap, Plus, RefreshCw, RotateCcw, Terminal, Trash2, UserRound, Wrench, X, XCircle } from "lucide-react";
+import { Copy, FolderOpen, History, KeyRound, Link2, LoaderCircle, PlugZap, Plus, RefreshCw, RotateCcw, Terminal, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import type { AuthUser } from "@/services/api/auth";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useCanvasAgentStore, type AgentAttachment, type AgentChatItem, type AgentEventLog, type AgentPanelTab, type AgentPendingToolCall, type AgentThreadSummary } from "../stores/use-canvas-agent-store";
 import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
+import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage, type CanvasAgentChatAttachment } from "./canvas-agent-chat-ui";
 
 const PANEL_MOTION_SECONDS = 0.5;
 const MAX_ATTACHMENTS = 6;
 const MAX_ATTACHMENT_PAYLOAD_BYTES = 28 * 1024 * 1024;
-const WORKING_TEXT = "working...";
 const AGENT_CONNECT_STEPS = [
     { title: "1. 本机已安装并登录 Codex", text: "先确认本机终端里的 Codex 可以正常使用。", command: "codex --version" },
     { title: "2. 安装 Canvas Agent", text: "推荐全局安装，后续可以直接运行 canvas-agent。", command: "npm i -g @basketikun/canvas-agent" },
@@ -40,7 +39,7 @@ type AgentWorkspace = { canvasId: string; workspacePath: string; activeThreadId?
 type AgentThreadsResponse = { ok?: boolean; workspace?: AgentWorkspace; data?: AgentThreadSummary[] };
 type AgentThreadResponse = { ok?: boolean; workspace?: AgentWorkspace; thread?: AgentThreadSummary; messages?: AgentChatItem[] };
 
-export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, onApplyOps, onUndoOps, onCollapseStart }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; collapsed: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null; onCollapseStart: () => void }) {
+export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedded, onApplyOps, onUndoOps }: { snapshot: CanvasAgentSnapshot; canUndoOps: boolean; collapsed?: boolean; embedded?: boolean; onApplyOps: (ops: CanvasAgentOp[]) => unknown; onUndoOps: () => CanvasAgentSnapshot | null }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const { message, modal } = App.useApp();
@@ -56,11 +55,6 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, onApply
     const attachmentUrlsRef = useRef(new Set<string>());
     const clientIdRef = useRef(typeof crypto === "undefined" ? `${Date.now()}` : crypto.randomUUID());
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
-    const tabStyle = (tab: AgentPanelTab) => ({
-        borderColor: activeTab === tab ? theme.node.text : "transparent",
-        color: activeTab === tab ? theme.node.text : theme.node.muted,
-    });
-
     const loadThreads = useCallback(async () => {
         const projectId = snapshotRef.current.projectId;
         if ((!connectedRef.current && !useCanvasAgentStore.getState().connected) || !projectId) return;
@@ -464,73 +458,29 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, onApply
         }
     };
 
-    return (
-        <motion.div
-            className="relative z-[70] flex h-full shrink-0"
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: collapsed ? 0 : width + 1, opacity: collapsed ? 0 : 1 }}
-            transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
-            style={{ overflow: "clip", pointerEvents: collapsed ? "none" : undefined }}
-        >
-        <motion.aside
-            className="relative flex h-full shrink-0 flex-col border-l"
-            initial={{ x: 48 }}
-            animate={{ x: collapsed ? 28 : 0 }}
-            transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
-            style={{ width, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
-        >
-            <div className="absolute left-0 top-0 h-full w-1 cursor-col-resize transition hover:bg-current/20" onPointerDown={startResize} />
-            <header className="flex h-14 items-center justify-between border-b px-4" style={{ borderColor: theme.node.stroke }}>
-                <div className="flex min-w-0 items-center gap-2">
-                    <span className="grid size-8 place-items-center rounded-lg">
-                        <Bot className="size-4" />
-                    </span>
-                    <div className="min-w-0">
-                        <div className="text-base font-semibold leading-5">Agent</div>
-                        <div className="truncate text-xs" style={{ color: theme.node.muted }}>
-                            Codex · {connected ? activity : "离线"}
-                        </div>
-                    </div>
-                    <span className="ml-1 rounded-full border px-2 py-0.5 text-xs" style={{ borderColor: connected ? "#16a34a" : theme.node.stroke, color: connected ? "#16a34a" : theme.node.muted }}>
-                        {connected ? "在线" : "离线"}
-                    </span>
-                </div>
-                <Button type="text" icon={<X className="size-4" />} onClick={onCollapseStart} />
-            </header>
-
-            <div className="border-b px-3" style={{ borderColor: theme.node.stroke }}>
-                <div className="flex min-h-11 items-center justify-between gap-3">
-                    <nav className="thin-scrollbar flex min-w-0 flex-1 items-center gap-3 overflow-x-auto text-sm" role="tablist" aria-label="Agent 面板">
-                        <button type="button" role="tab" aria-selected={activeTab === "setup"} className={`inline-flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-0.5 transition ${activeTab === "setup" ? "font-medium" : "font-normal"}`} style={tabStyle("setup")} onClick={() => setAgentState({ activeTab: "setup" })}>
-                            <PlugZap className="size-3.5" />
-                            连接
-                        </button>
-                        <button type="button" role="tab" aria-selected={activeTab === "chat"} className={`h-11 shrink-0 border-b-2 px-0.5 transition ${activeTab === "chat" ? "font-medium" : "font-normal"}`} style={tabStyle("chat")} onClick={() => setAgentState({ activeTab: "chat" })}>
-                            对话
-                        </button>
-                        <button type="button" role="tab" aria-selected={activeTab === "history"} className={`inline-flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-0.5 transition ${activeTab === "history" ? "font-medium" : "font-normal"}`} style={tabStyle("history")} onClick={() => {
-                            setAgentState({ activeTab: "history" });
-                            void loadThreads();
-                        }}>
-                            <History className="size-3.5" />
-                            历史{threads.length ? ` ${threads.length}` : ""}
-                        </button>
-                        <button type="button" role="tab" aria-selected={activeTab === "log"} className={`inline-flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-0.5 transition ${activeTab === "log" ? "font-medium" : "font-normal"}`} style={tabStyle("log")} onClick={() => setAgentState({ activeTab: "log" })}>
-                            <Terminal className="size-3.5" />
-                            日志{eventLogs.length ? ` ${eventLogs.length}` : ""}
-                        </button>
-                    </nav>
-                    <div className="flex shrink-0 items-center gap-2">
-                        <label className="flex items-center gap-1.5 text-xs" style={{ color: theme.node.muted }}>
-                            <Switch size="small" checked={confirmTools} onChange={(confirmTools) => setAgentState({ confirmTools })} />
-                            工具确认
-                        </label>
+    const content = (
+        <>
+            <AgentPanelTabs
+                value={activeTab}
+                theme={theme}
+                items={[
+                    { value: "setup", label: "连接", icon: <PlugZap className="size-3.5" /> },
+                    { value: "chat", label: "对话" },
+                    { value: "history", label: "历史", icon: <History className="size-3.5" />, count: threads.length },
+                    { value: "log", label: "日志", icon: <Terminal className="size-3.5" />, count: eventLogs.length },
+                ]}
+                onChange={(activeTab) => {
+                    setAgentState({ activeTab });
+                    if (activeTab === "history") void loadThreads();
+                }}
+                right={
+                    <>
                         <Button size="small" type="text" disabled={!canUndoOps} icon={<RotateCcw className="size-3.5" />} onClick={undoLastTool}>
                             撤销
                         </Button>
-                    </div>
-                </div>
-            </div>
+                    </>
+                }
+            />
 
             {activeTab === "setup" ? (
                 <AgentConnectView
@@ -571,71 +521,50 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, onApply
                 <>
                     <div ref={listRef} className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
                         {messages.map((item) => (
-                            <ChatMessage key={item.id} item={item} theme={theme} user={user} />
+                            <AgentChatMessage key={item.id} item={agentMessageToChatMessage(item)} theme={theme} user={user} />
                         ))}
-                        {pendingTool ? <PendingToolCard tool={pendingTool} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} /> : null}
-                        {waiting && !pendingTool ? <WorkingMessage theme={theme} /> : null}
+                        {pendingTool ? <AgentPendingToolCard summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)} detail={{ requestId: pendingTool.requestId, name: pendingTool.name, input: pendingTool.input }} theme={theme} onReject={rejectPendingTool} onApprove={approvePendingTool} /> : null}
+                        {waiting && !pendingTool ? <AgentWorkingMessage theme={theme} /> : null}
                     </div>
-                    <AgentComposer prompt={prompt} attachments={attachments} connected={connected} sending={sending || waiting} theme={theme} onPromptChange={(prompt) => setAgentState({ prompt })} onSubmit={sendPrompt} onAddFiles={addAttachments} onRemoveAttachment={removeAttachment} />
+                    <AgentChatComposer
+                        prompt={prompt}
+                        attachments={attachments.map(agentAttachmentToChatAttachment)}
+                        disabled={!connected}
+                        sending={sending || waiting}
+                        placeholder="询问 Codex，或让它操作画布"
+                        theme={theme}
+                        onPromptChange={(prompt) => setAgentState({ prompt })}
+                        onSubmit={sendPrompt}
+                        onAddFiles={addAttachments}
+                        onRemoveAttachment={removeAttachment}
+                        left={attachments.length ? <span className="text-[11px]" style={{ color: theme.node.muted }}>{formatBytes(attachmentPayloadBytes(attachments))} / 30MB</span> : null}
+                    />
                 </>
             )}
-        </motion.aside>
-        </motion.div>
+        </>
     );
-}
 
-function AgentComposer({ prompt, attachments, connected, sending, theme, onPromptChange, onSubmit, onAddFiles, onRemoveAttachment }: { prompt: string; attachments: AgentAttachment[]; connected: boolean; sending: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onPromptChange: (value: string) => void; onSubmit: () => void; onAddFiles: (files: FileList | File[] | null) => Promise<void>; onRemoveAttachment: (id: string) => void }) {
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const canSubmit = connected && !sending && Boolean(prompt.trim() || attachments.length);
-    const sizeText = attachments.length ? `${formatBytes(attachmentPayloadBytes(attachments))} / 30MB` : "";
+    if (embedded) return content;
+
     return (
-        <div className="border-t px-2 pb-2 pt-2" style={{ borderColor: theme.node.stroke }} onWheelCapture={(event) => event.stopPropagation()}>
-            <div className="rounded-[24px] border px-3 pb-3 pt-3 shadow-lg" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke }}>
-                {attachments.length ? (
-                    <div className="thin-scrollbar mb-2 flex gap-2 overflow-x-auto pb-1">
-                        {attachments.map((item) => (
-                            <div key={item.id} className="group relative size-14 shrink-0 overflow-hidden rounded-xl border" style={{ borderColor: theme.node.stroke }} title={item.name}>
-                                <img src={item.url} alt={item.name} className="size-full object-cover" />
-                                <button type="button" className="absolute right-1 top-1 grid size-5 place-items-center rounded-full border opacity-0 shadow-sm transition group-hover:opacity-100" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text }} onClick={() => onRemoveAttachment(item.id)} aria-label="移除图片">
-                                    <X className="size-3" />
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                ) : null}
-                <textarea
-                    value={prompt}
-                    onChange={(event) => onPromptChange(event.target.value)}
-                    onPaste={(event) => {
-                        const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-                        if (!images.length) return;
-                        event.preventDefault();
-                        void onAddFiles(images);
-                    }}
-                    onKeyDown={(event) => {
-                        if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey) return;
-                        event.preventDefault();
-                        void onSubmit();
-                    }}
-                    className="thin-scrollbar max-h-32 min-h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:opacity-45"
-                    style={{ color: theme.node.text }}
-                    placeholder="询问 Codex，或让它操作画布"
-                />
-                <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1">
-                        <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => {
-                            void onAddFiles(event.target.files);
-                            event.target.value = "";
-                        }} />
-                        <Tooltip title="上传图片">
-                            <Button type="text" shape="circle" className="!h-9 !w-9 !min-w-9" disabled={sending} style={{ color: theme.node.muted }} icon={<ImagePlus className="size-4" />} onClick={() => fileInputRef.current?.click()} />
-                        </Tooltip>
-                        {sizeText ? <span className="text-[11px]" style={{ color: theme.node.muted }}>{sizeText}</span> : null}
-                    </div>
-                    <Button type="primary" shape="circle" className="!h-10 !w-10 !min-w-10" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label="发送" />
-                </div>
-            </div>
-        </div>
+        <motion.div
+            className="relative z-[70] flex h-full shrink-0"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: collapsed ? 0 : width + 1, opacity: collapsed ? 0 : 1 }}
+            transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: "clip", pointerEvents: collapsed ? "none" : undefined }}
+        >
+            <motion.aside
+                className="relative flex h-full shrink-0 flex-col border-l"
+                initial={{ x: 48 }}
+                animate={{ x: collapsed ? 28 : 0 }}
+                transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
+                style={{ width, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+            >
+                <div className="absolute left-0 top-0 h-full w-1 cursor-col-resize transition hover:bg-current/20" onPointerDown={startResize} />
+                {content}
+            </motion.aside>
+        </motion.div>
     );
 }
 
@@ -823,182 +752,6 @@ function AgentHistoryView({ theme, threads, activeThreadId, workspacePath, loadi
     );
 }
 
-function ChatMessage({ item, theme, user }: { item: AgentChatItem; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; user: AuthUser | null }) {
-    const isUser = item.role === "user";
-    const isSystem = item.role === "system";
-    const color = item.role === "error" ? "#dc2626" : item.role === "tool" ? "#2563eb" : theme.node.text;
-    if (isSystem) {
-        return (
-            <div className="flex justify-center text-xs">
-                <div className="max-w-[88%] px-3 py-1.5 text-center" style={{ color: theme.node.muted }}>
-                    <div>
-                        {item.text}
-                        {item.meta ? <span className="ml-2 opacity-60">{item.meta}</span> : null}
-                    </div>
-                </div>
-            </div>
-        );
-    }
-    if (item.role === "tool") {
-        return (
-            <div className="flex items-start gap-3">
-                <OpenAiAvatar theme={theme} />
-                <ToolCard title={item.title || "工具调用"} text={item.text} detail={item.detail} theme={theme} />
-            </div>
-        );
-    }
-    return (
-        <div className={`flex items-start gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
-            {!isUser ? <OpenAiAvatar theme={theme} /> : null}
-            <div className={`min-w-0 max-w-[82%] text-sm leading-6 ${isUser ? "text-right" : "text-left"}`} style={{ color }}>
-                <div className="whitespace-pre-wrap break-words">{item.text}</div>
-                {item.attachments?.length ? <MessageAttachments attachments={item.attachments} /> : null}
-                {item.meta ? <div className="mt-1 text-[11px] opacity-45">{item.meta}</div> : null}
-            </div>
-            {isUser ? <UserAvatar user={user} theme={theme} /> : null}
-        </div>
-    );
-}
-
-function PendingToolCard({ tool, theme, onReject, onApprove }: { tool: AgentPendingToolCall; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onReject: () => void; onApprove: () => void }) {
-    const summary = summarizeCanvasAgentOps(tool.input?.ops || []) || toolName(tool.name);
-    return (
-        <div className="flex items-start gap-3">
-            <OpenAiAvatar theme={theme} />
-            <div className="min-w-0 flex-1 rounded-xl border p-4" style={{ borderColor: theme.node.stroke, background: "transparent", color: theme.node.text }}>
-                <details>
-                    <summary className="cursor-pointer list-none">
-                        <div className="flex items-start gap-3">
-                            <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border" style={{ borderColor: "rgba(217,119,6,.24)", color: "#d97706", background: "rgba(217,119,6,.04)" }}>
-                                <CircleAlert className="size-4" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5">
-                                    <span>确认工具调用</span>
-                                    <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium" style={{ borderColor: "rgba(217,119,6,.22)", color: "#d97706", background: "rgba(217,119,6,.04)" }}>
-                                        等待确认
-                                    </span>
-                                    <span className="ml-auto text-xs font-normal" style={{ color: theme.node.muted }}>详情</span>
-                                </div>
-                                <div className="mt-2 text-sm leading-6" style={{ color: theme.node.text }}>
-                                    {summary}
-                                </div>
-                            </div>
-                        </div>
-                    </summary>
-                    <DetailBlock detail={{ requestId: tool.requestId, name: tool.name, input: tool.input }} theme={theme} />
-                </details>
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                    <Button danger className="!h-9" icon={<XCircle className="size-4" />} onClick={() => void onReject()}>
-                        拒绝执行
-                    </Button>
-                    <Button className="!h-9" icon={<CheckCircle2 className="size-4" />} style={{ borderColor: "rgba(22,163,74,.42)", color: "#16a34a", background: "transparent" }} onClick={() => void onApprove()}>
-                        批准执行
-                    </Button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function ToolCard({ title, text, detail, theme }: { title: string; text: string; detail?: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
-    const state = toolCardState(title, text, detail);
-    return (
-        <details className="min-w-0 flex-1 rounded-xl border px-4 py-3.5 text-left" style={{ borderColor: theme.node.stroke, background: "transparent", color: theme.node.text }}>
-            <summary className="cursor-pointer list-none">
-                <div className="flex items-start gap-3">
-                    <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg border" style={{ borderColor: state.softBorder, color: state.color, background: state.softBg }}>
-                        {state.icon}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5">
-                            <span className="min-w-0 truncate">{title}</span>
-                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium" style={{ borderColor: state.softBorder, color: state.color, background: state.softBg }}>
-                                {state.label}
-                            </span>
-                            {detail ? <span className="ml-auto text-xs font-normal" style={{ color: theme.node.muted }}>详情</span> : null}
-                        </div>
-                        <div className="mt-2 text-sm leading-6" style={{ color: state.isError ? state.color : theme.node.muted }}>
-                            {text}
-                        </div>
-                    </div>
-                </div>
-            </summary>
-            {detail ? <DetailBlock detail={detail} theme={theme} /> : null}
-        </details>
-    );
-}
-
-function DetailBlock({ detail, theme }: { detail: unknown; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
-    return (
-        <pre className="thin-scrollbar mt-3 max-h-64 overflow-auto rounded-lg border p-3 text-[11px] leading-4" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel, color: theme.node.muted }}>
-            {JSON.stringify(detail, null, 2)}
-        </pre>
-    );
-}
-
-function toolCardState(title: string, text: string, detail?: unknown) {
-    const raw = `${title} ${text} ${normalizeText(objectField(detail, "error"))}`;
-    const lower = raw.toLowerCase();
-    const tool = String(objectField(detail, "name") || objectField(detail, "tool") || "");
-    if (/拒绝|取消/.test(raw) || lower.includes("rejected")) {
-        return { label: "拒绝执行", color: "#dc2626", softBorder: "rgba(220,38,38,.20)", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };
-    }
-    if (/失败|错误/.test(raw) || lower.includes("failed") || lower.includes("error")) {
-        return { label: "执行失败", color: "#dc2626", softBorder: "rgba(220,38,38,.20)", softBg: "rgba(220,38,38,.04)", icon: <XCircle className="size-4" />, isError: true };
-    }
-    if (/完成|成功/.test(raw) || lower.includes("completed") || lower.includes("succeeded")) {
-        const label = tool === "canvas_apply_ops" || /画布操作/.test(title) ? "已批准执行" : "执行完成";
-        return { label, color: "#16a34a", softBorder: "rgba(22,163,74,.20)", softBg: "rgba(22,163,74,.04)", icon: <CheckCircle2 className="size-4" />, isError: false };
-    }
-    return { label: "工具调用", color: "#2563eb", softBorder: "rgba(37,99,235,.20)", softBg: "rgba(37,99,235,.04)", icon: <Wrench className="size-4" />, isError: false };
-}
-
-function WorkingMessage({ theme }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
-    const [length, setLength] = useState(1);
-    useEffect(() => {
-        const timer = window.setInterval(() => setLength((value) => (value >= WORKING_TEXT.length + 4 ? 1 : value + 1)), 120);
-        return () => window.clearInterval(timer);
-    }, []);
-    return (
-        <div className="flex items-start gap-2.5">
-            <OpenAiAvatar theme={theme} />
-            <div className="min-w-0 max-w-[82%]">
-                <div className="font-mono text-sm" style={{ color: theme.node.muted }} aria-label={WORKING_TEXT}>
-                    <span className="inline-block w-[76px]">{WORKING_TEXT.slice(0, Math.min(length, WORKING_TEXT.length))}</span>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function OpenAiAvatar({ theme }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
-    return (
-        <span className="grid size-8 shrink-0 place-items-center" role="img" aria-label="OpenAI">
-            <span className="size-5 opacity-80" style={{ background: theme.node.text, WebkitMask: "url(/icons/openai.svg) center / contain no-repeat", mask: "url(/icons/openai.svg) center / contain no-repeat" }} />
-        </span>
-    );
-}
-
-function UserAvatar({ user, theme }: { user: AuthUser | null; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
-    const avatarUrl = user?.avatarUrl?.trim();
-    return (
-        <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-full" style={{ color: theme.node.text }}>
-            {avatarUrl ? <img src={avatarUrl} alt="" className="size-full object-cover" referrerPolicy="no-referrer" /> : <UserRound className="size-4" />}
-        </span>
-    );
-}
-
-function MessageAttachments({ attachments }: { attachments: AgentAttachment[] }) {
-    return (
-        <div className="mt-2 grid grid-cols-3 gap-1.5">
-            {attachments.map((item) => (
-                <img key={item.id} src={item.dataUrl || item.url} alt={item.name} className="aspect-square w-full rounded-lg object-cover" />
-            ))}
-        </div>
-    );
-}
-
 async function postState(endpoint: string, token: string, clientId: string, snapshot: CanvasAgentSnapshot) {
     try {
         await fetch(`${endpoint}/canvas/state?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(snapshot) });
@@ -1007,6 +760,14 @@ async function postState(endpoint: string, token: string, clientId: string, snap
 
 async function postToolResult(endpoint: string, token: string, clientId: string, body: { requestId: string; result?: unknown; error?: string }) {
     await fetch(`${endpoint}/canvas/result?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+}
+
+function agentMessageToChatMessage(item: AgentChatItem) {
+    return { ...item, attachments: item.attachments?.map(agentAttachmentToChatAttachment) };
+}
+
+function agentAttachmentToChatAttachment(item: AgentAttachment): CanvasAgentChatAttachment {
+    return { id: item.id, name: item.name, url: item.dataUrl || item.url };
 }
 
 function formatAgentEvent(event: AgentEventPayload): Omit<AgentChatItem, "id"> | null {

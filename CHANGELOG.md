@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 新增网页版Agent Loop模式。
+
 ## v0.3.0 - 2026-06-15
 
 + [新增] 新增canvas-agent通过codex操作画布。

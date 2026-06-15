@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { BookOpen, Bot, Home, ImageIcon, Images, List, Menu, MessageSquare, Music2, Plus, Redo2, Settings2, Trash2, Undo2, Upload, Video } from "lucide-react";
+import { BookOpen, Bot, Home, ImageIcon, Images, List, Menu, Music2, Plus, Redo2, Settings2, Trash2, Undo2, Upload, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
@@ -27,7 +27,6 @@ import { ActiveConnectionPath, ConnectionPath } from "../components/canvas-conne
 import { CanvasConfigComposer } from "../components/canvas-config-composer";
 import { CanvasConfigNodePanel } from "../components/canvas-config-node-panel";
 import { CanvasAssistantPanel } from "../components/canvas-assistant-panel";
-import { CanvasLocalAgentPanel } from "../components/canvas-local-agent-panel";
 import { CanvasNodeContextMenu } from "../components/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "../components/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "../components/canvas-node-crop-dialog";
@@ -46,6 +45,7 @@ import { CanvasZoomControls } from "../components/canvas-zoom-controls";
 import { useCanvasStore } from "../stores/use-canvas-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
 import { buildCanvasResourceReferences, buildNodeMentionReferences } from "../utils/canvas-resource-references";
+import type { CanvasAgentMode } from "../components/canvas-agent-chat-ui";
 import {
     CanvasNodeType,
     type CanvasAssistantImage,
@@ -292,8 +292,7 @@ function InfiniteCanvasPage() {
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [assistantCollapsed, setAssistantCollapsed] = useState(true);
     const [assistantMounted, setAssistantMounted] = useState(false);
-    const [localAgentCollapsed, setLocalAgentCollapsed] = useState(true);
-    const [localAgentMounted, setLocalAgentMounted] = useState(false);
+    const [agentMode, setAgentMode] = useState<CanvasAgentMode>("online");
     const [agentUndoSnapshot, setAgentUndoSnapshot] = useState<CanvasAgentSnapshot | null>(null);
     const [titleEditing, setTitleEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
@@ -659,10 +658,11 @@ function InfiniteCanvasPage() {
         [connections, currentProject?.title, nodes, projectId, selectedNodeIds, viewport],
     );
     const applyAgentOps = useCallback(
-        (ops: CanvasAgentOp[]) => {
+        (ops?: CanvasAgentOp[]) => {
+            const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
             const before = { projectId, title: currentProject?.title || "未命名画布", nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
-            const generationOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation");
-            const next = applyCanvasAgentOps(before, ops.filter((op) => op.type !== "run_generation"));
+            const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
+            const next = applyCanvasAgentOps(before, safeOps.filter((op) => op.type !== "run_generation"));
             nodesRef.current = next.nodes;
             connectionsRef.current = next.connections;
             selectedNodeIdsRef.current = new Set(next.selectedNodeIds);
@@ -2337,13 +2337,15 @@ function InfiniteCanvasPage() {
         [insertAssistantImage, insertAssistantText, screenToCanvas, size.height, size.width],
     );
 
-    const localAgentOpen = localAgentMounted && !localAgentCollapsed;
-    const openLocalAgent = () => {
-        setLocalAgentMounted(true);
-        setLocalAgentCollapsed(false);
+    const assistantOpen = assistantMounted && !assistantCollapsed;
+    const openAgent = (mode: CanvasAgentMode = agentMode) => {
+        setAgentMode(mode);
+        setAssistantMounted(true);
+        setAssistantCollapsed(false);
     };
-    const closeLocalAgent = () => {
-        setLocalAgentCollapsed(true);
+    const closeAgent = () => {
+        setAssistantCollapsed(true);
+        setAssistantMounted(false);
     };
 
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -2368,13 +2370,8 @@ function InfiniteCanvasPage() {
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
-                    assistantCollapsed={assistantCollapsed}
-                    localAgentOpen={localAgentOpen}
-                    onExpandAssistant={() => {
-                        setAssistantMounted(true);
-                        setAssistantCollapsed(false);
-                    }}
-                    onToggleLocalAgent={() => (localAgentOpen ? closeLocalAgent() : openLocalAgent())}
+                    agentOpen={assistantOpen}
+                    onToggleAgent={() => (assistantOpen ? closeAgent() : openAgent())}
                 />
 
                 <InfiniteCanvas
@@ -2663,25 +2660,19 @@ function InfiniteCanvasPage() {
                 <CanvasAssistantPanel
                     nodes={nodes}
                     selectedNodeIds={selectedNodeIds}
+                    snapshot={agentSnapshot}
                     sessions={chatSessions}
                     activeSessionId={activeChatId}
                     onSelectNodeIds={setSelectedNodeIds}
                     onSessionsChange={handleAssistantSessionsChange}
-                    onInsertImage={insertAssistantImage}
-                    onInsertText={insertAssistantText}
+                    onApplyOps={applyAgentOps}
+                    canUndoOps={Boolean(agentUndoSnapshot)}
+                    onUndoOps={undoAgentOps}
                     onPasteImage={pasteAssistantImage}
+                    agentMode={agentMode}
+                    onAgentModeChange={setAgentMode}
                     onCollapseStart={() => setAssistantCollapsed(true)}
                     onCollapse={() => setAssistantMounted(false)}
-                />
-            ) : null}
-            {localAgentMounted ? (
-                <CanvasLocalAgentPanel
-                    snapshot={agentSnapshot}
-                    canUndoOps={Boolean(agentUndoSnapshot)}
-                    collapsed={localAgentCollapsed}
-                    onApplyOps={applyAgentOps}
-                    onUndoOps={undoAgentOps}
-                    onCollapseStart={closeLocalAgent}
                 />
             ) : null}
         </main>
@@ -2705,10 +2696,8 @@ function CanvasTopBar({
     onImportImage,
     onUndo,
     onRedo,
-    assistantCollapsed,
-    localAgentOpen,
-    onExpandAssistant,
-    onToggleLocalAgent,
+    agentOpen,
+    onToggleAgent,
 }: {
     title: string;
     titleDraft: string;
@@ -2726,10 +2715,8 @@ function CanvasTopBar({
     onImportImage: () => void;
     onUndo: () => void;
     onRedo: () => void;
-    assistantCollapsed: boolean;
-    localAgentOpen: boolean;
-    onExpandAssistant: () => void;
-    onToggleLocalAgent: () => void;
+    agentOpen: boolean;
+    onToggleAgent: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const theme = canvasThemes[colorTheme];
@@ -2826,25 +2813,12 @@ function CanvasTopBar({
                     <Button
                         type="text"
                         className="!h-10 !rounded-xl !px-3 !font-medium"
-                        style={{ background: localAgentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }}
+                        style={{ background: agentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }}
                         icon={<Bot className="size-4" />}
-                        onClick={onToggleLocalAgent}
+                        onClick={onToggleAgent}
                     >
                         Agent
                     </Button>
-                    {assistantCollapsed ? (
-                        <>
-                            <Button
-                                type="text"
-                                className="!h-10 !rounded-xl !px-3 !font-medium"
-                                style={{ background: theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }}
-                                icon={<MessageSquare className="size-4" />}
-                                onClick={onExpandAssistant}
-                            >
-                                助手
-                            </Button>
-                        </>
-                    ) : null}
                 </div>
             </div>
             <Modal title="快捷键" open={shortcutsOpen} onCancel={() => setShortcutsOpen(false)} footer={null} centered>
@@ -2997,7 +2971,6 @@ async function hydrateAssistantImages(sessions: CanvasAssistantSession[]) {
                 session.messages.map(async (message) => ({
                     ...message,
                     references: await Promise.all((message.references || []).map(hydrateItem)),
-                    images: await Promise.all((message.images || []).map(hydrateItem)),
                 })),
             ),
         })),
