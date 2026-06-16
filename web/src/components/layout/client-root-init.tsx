@@ -4,18 +4,14 @@ import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { App } from "antd";
 
-import { useConfigStore } from "@/stores/use-config-store";
+import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { message } = App.useApp();
     const handledConfigParams = useRef(false);
-    const loadPublicSettings = useConfigStore((state) => state.loadPublicSettings);
     const updateConfig = useConfigStore((state) => state.updateConfig);
+    const config = useConfigStore((state) => state.config);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
-
-    useEffect(() => {
-        void loadPublicSettings();
-    }, [loadPublicSettings]);
 
     useEffect(() => {
         if (handledConfigParams.current) return;
@@ -29,12 +25,26 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         searchParams.delete("apiKey");
         searchParams.delete("apikey");
         window.history.replaceState(null, "", `${window.location.pathname}${searchParams.size ? `?${searchParams}` : ""}${window.location.hash}`);
-        updateConfig("channelMode", "local");
+        const firstChannel = config.channels[0];
+        updateConfig(
+            "channels",
+            firstChannel
+                ? config.channels.map((channel, index) =>
+                      index === 0
+                          ? {
+                                ...channel,
+                                ...(baseUrl ? { baseUrl } : {}),
+                                ...(apiKey ? { apiKey } : {}),
+                            }
+                          : channel,
+                  )
+                : [createModelChannel({ id: "default", name: "默认渠道", baseUrl: baseUrl || undefined, apiKey: apiKey || "" })],
+        );
         if (baseUrl) updateConfig("baseUrl", baseUrl);
         if (apiKey) updateConfig("apiKey", apiKey);
         openConfigDialog(false);
         message.success("已导入本地直连配置");
-    }, [message, openConfigDialog, updateConfig]);
+    }, [config.channels, message, openConfigDialog, updateConfig]);
 
     return <>{children}</>;
 }
