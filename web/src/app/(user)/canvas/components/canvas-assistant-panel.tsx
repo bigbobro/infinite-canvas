@@ -6,7 +6,7 @@ import { Bot, Copy, Cpu, History, PanelRightClose, Plus, Settings2, Trash2, X } 
 import { Button, Modal, Segmented, Switch, Tooltip } from "antd";
 import { motion } from "motion/react";
 
-import { modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@/services/api/image";
@@ -1021,7 +1021,7 @@ function configNodeOp(id: string, input: Record<string, unknown>, x: number, y: 
             composerContent: prompt,
             prompt,
             status: "idle",
-            model: stringOptional(input.model) || defaultGenerationModel(config, mode),
+            model: resolveGenerationModel(config, mode, stringOptional(input.model)),
             size: stringOptional(input.size) || config.size,
             quality: stringOptional(input.quality) || config.quality,
             count: numberOptional(input.count) ?? generationCount(mode === "image" ? config.canvasImageCount || config.count : config.count),
@@ -1197,6 +1197,11 @@ function defaultGenerationModel(config: AiConfig, mode: "text" | "image" | "vide
     if (mode === "video") return config.videoModel || config.model;
     if (mode === "audio") return config.audioModel || config.model;
     return config.textModel || config.model;
+}
+
+function resolveGenerationModel(config: AiConfig, mode: "text" | "image" | "video" | "audio", model?: string) {
+    const normalized = normalizeModelOptionValue(model, config.channels);
+    return normalized && selectableModelsByCapability(config, mode).includes(normalized) ? normalized : defaultGenerationModel(config, mode);
 }
 
 function generationCount(value: string) {
