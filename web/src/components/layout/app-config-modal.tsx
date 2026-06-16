@@ -9,7 +9,7 @@ import { fetchImageModels } from "@/services/api/image";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { filterModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { filterModelsByCapability, useConfigStore, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -67,26 +67,19 @@ export function AppConfigModal() {
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
-    const publicSettings = useConfigStore((state) => state.publicSettings);
-    const effectiveConfig = useEffectiveConfig();
-    const modelChannel = publicSettings?.modelChannel;
-    const allowCustomChannel = modelChannel?.allowCustomChannel === true;
-    const effectiveMode = allowCustomChannel ? config.channelMode : "remote";
-    const modelConfig = effectiveMode === "remote" ? effectiveConfig : config;
     const modelOptions = config.models.map((model) => ({ label: model, value: model }));
     const webdavReady = Boolean(webdav.url.trim());
 
     const finishConfig = () => {
         setConfigDialogOpen(false);
-        if (effectiveMode === "local" && (!config.baseUrl.trim() || !config.apiKey.trim())) return;
-        if (!modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim()) return;
-        if (!allowCustomChannel && config.channelMode !== "remote") updateConfig("channelMode", "remote");
+        if (!config.baseUrl.trim() || !config.apiKey.trim()) return;
+        if (!config.imageModel.trim() || !config.videoModel.trim() || !config.textModel.trim()) return;
+        if (config.channelMode !== "local") updateConfig("channelMode", "local");
         message.success(shouldPromptContinue ? "配置已保存，请继续刚才的请求" : "配置已保存");
         clearPromptContinue();
     };
 
     const refreshModels = async () => {
-        if (effectiveMode === "remote") return;
         if (!config.baseUrl.trim() || !config.apiKey.trim()) {
             message.error("请先填写 Base URL 和 API Key");
             return;
@@ -197,74 +190,53 @@ export function AppConfigModal() {
         >
             <div className="pt-1">
                 <Form layout="vertical" requiredMark={false}>
-                    {allowCustomChannel ? (
-                        <Form.Item label="渠道模式" className="mb-5">
-                            <Segmented
-                                block
-                                size="middle"
-                                value={effectiveMode}
-                                onChange={(value) => updateConfig("channelMode", value as AiConfig["channelMode"])}
-                                options={[
-                                    { label: "本地直连", value: "local" },
-                                    { label: "云端渠道", value: "remote" },
-                                ]}
-                            />
+                    <div className="mb-5 rounded-lg border border-stone-200 p-3 dark:border-stone-800">
+                        <div className="text-sm font-semibold">前台直连</div>
+                        <div className="mt-1 text-xs leading-5 text-stone-500">AI 请求由浏览器直接发送到你配置的 OpenAI 兼容地址，API Key 只保存在当前浏览器本地。</div>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <Form.Item label="Base URL" className="mb-4">
+                            <Input value={config.baseUrl} onChange={(event) => updateConfig("baseUrl", event.target.value)} />
                         </Form.Item>
-                    ) : null}
-                    {effectiveMode === "local" ? (
-                        <>
-                            <div className="grid gap-4 md:grid-cols-2">
-                                <Form.Item label="Base URL" className="mb-4">
-                                    <Input value={config.baseUrl} onChange={(event) => updateConfig("baseUrl", event.target.value)} />
-                                </Form.Item>
-                                <Form.Item label="API Key" className="mb-4">
-                                    <Input.Password value={config.apiKey} onChange={(event) => updateConfig("apiKey", event.target.value)} />
-                                </Form.Item>
-                            </div>
-                            <div className="mb-5 flex items-center justify-between gap-3 rounded-lg border border-stone-200 px-3 py-2 dark:border-stone-800">
-                                <div className="min-w-0">
-                                    <div className="text-sm font-medium">模型列表</div>
-                                    <div className="mt-1 text-xs text-stone-500">当前已保存 {config.models.length} 个模型</div>
-                                </div>
-                                <Button size="small" loading={loadingModels} onClick={() => void refreshModels()}>
-                                    拉取模型列表
-                                </Button>
-                            </div>
-                        </>
-                    ) : (
-                        <div className="mb-5 rounded-lg border border-stone-200 p-3 text-sm text-stone-500 dark:border-stone-800">
-                            <div className="font-medium text-stone-900 dark:text-stone-100">云端渠道</div>
-                            <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelChannel?.availableModels.length || 0} 个模型。</div>
+                        <Form.Item label="API Key" className="mb-4">
+                            <Input.Password value={config.apiKey} onChange={(event) => updateConfig("apiKey", event.target.value)} />
+                        </Form.Item>
+                    </div>
+                    <div className="mb-5 flex items-center justify-between gap-3 rounded-lg border border-stone-200 px-3 py-2 dark:border-stone-800">
+                        <div className="min-w-0">
+                            <div className="text-sm font-medium">模型列表</div>
+                            <div className="mt-1 text-xs text-stone-500">当前已保存 {config.models.length} 个模型</div>
                         </div>
-                    )}
-                    {effectiveMode === "local" ? (
-                        <section className="mb-5 rounded-lg border border-stone-200 p-3 dark:border-stone-800">
-                            <div className="mb-3">
-                                <div className="text-sm font-semibold">本地模型可选项</div>
-                                <div className="mt-1 text-xs text-stone-500">从已拉取模型中选择哪些模型可进入各类下拉。</div>
-                            </div>
-                            <div className="grid gap-4 md:grid-cols-2">
-                                {modelGroups.map((group) => (
-                                    <Form.Item key={group.modelsKey} label={group.optionsLabel} className="mb-0">
-                                        <Select
-                                            mode="multiple"
-                                            showSearch
-                                            allowClear
-                                            maxTagCount="responsive"
-                                            placeholder={config.models.length ? `请选择${group.optionsLabel}` : "请先拉取模型列表"}
-                                            value={config[group.modelsKey]}
-                                            options={modelOptions}
-                                            onChange={(models) => updateCapabilityModels(group, models)}
-                                        />
-                                    </Form.Item>
-                                ))}
-                            </div>
-                        </section>
-                    ) : null}
+                        <Button size="small" loading={loadingModels} onClick={() => void refreshModels()}>
+                            拉取模型列表
+                        </Button>
+                    </div>
+                    <section className="mb-5 rounded-lg border border-stone-200 p-3 dark:border-stone-800">
+                        <div className="mb-3">
+                            <div className="text-sm font-semibold">模型可选项</div>
+                            <div className="mt-1 text-xs text-stone-500">可从已拉取模型中选择，也可直接输入模型名后回车。</div>
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                            {modelGroups.map((group) => (
+                                <Form.Item key={group.modelsKey} label={group.optionsLabel} className="mb-0">
+                                    <Select
+                                        mode="tags"
+                                        showSearch
+                                        allowClear
+                                        maxTagCount="responsive"
+                                        placeholder={config.models.length ? `请选择或输入${group.optionsLabel}` : "输入模型名，或先拉取模型列表"}
+                                        value={config[group.modelsKey]}
+                                        options={modelOptions}
+                                        onChange={(models) => updateCapabilityModels(group, models)}
+                                    />
+                                </Form.Item>
+                            ))}
+                        </div>
+                    </section>
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         {modelGroups.map((group) => (
                             <Form.Item key={group.modelKey} label={group.defaultLabel} className="mb-4">
-                                <ModelPicker config={modelConfig} value={modelConfig[group.modelKey]} onChange={(model) => updateConfig(group.modelKey, model)} capability={group.capability} fullWidth />
+                                <ModelPicker config={config} value={config[group.modelKey]} onChange={(model) => updateConfig(group.modelKey, model)} capability={group.capability} fullWidth />
                             </Form.Item>
                         ))}
                     </div>
@@ -300,11 +272,9 @@ export function AppConfigModal() {
                     <Form.Item label="默认音频指令" className="mb-4">
                         <Input.TextArea rows={2} value={config.audioInstructions} placeholder="例如：自然、温暖、适合旁白。" onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
                     </Form.Item>
-                    {effectiveMode === "local" ? (
-                        <Form.Item label="系统提示词" className="mb-0">
-                            <Input.TextArea rows={3} value={config.systemPrompt} placeholder="例如：你是一位擅长电影感写实摄影的视觉导演。" onChange={(event) => updateConfig("systemPrompt", event.target.value)} />
-                        </Form.Item>
-                    ) : null}
+                    <Form.Item label="系统提示词" className="mb-0">
+                        <Input.TextArea rows={3} value={config.systemPrompt} placeholder="例如：你是一位擅长电影感写实摄影的视觉导演。" onChange={(event) => updateConfig("systemPrompt", event.target.value)} />
+                    </Form.Item>
                     <section className="mt-5 rounded-lg border border-stone-200 p-3 dark:border-stone-800">
                         <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                             <div>

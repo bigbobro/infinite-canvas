@@ -13,12 +13,9 @@
 - [画布节点操作手册](/docs/canvas/canvas-node-manual)
 - [画布快捷键](/docs/canvas/canvas-shortcuts)
 
-## 开发文档
+## 开发与数据
 
 - [本地开发](/docs/backend/local-development)
-- [接口响应约定](/docs/backend/api-response)
-- [系统配置数据结构](/docs/backend/system-settings)
-- [后端数据库说明](/docs/backend/backend-database)
 - [画布数据结构](/docs/backend/canvas-data-structure)
 
 ## 商务合作
@@ -40,5 +37,5 @@
 
 ## 说明
 
-- 当前画布项目和“我的素材”主要保存在浏览器本地，不支持云同步。
-- 本地直连模式下，AI API Key 保存在浏览器本地，并由前端直接请求 OpenAI 兼容接口。
+- 当前画布项目和“我的素材”主要保存在浏览器本地，跨设备可自行配置 WebDAV 同步。
+- AI API Key 保存在浏览器本地，并由前端直接请求 OpenAI 兼容接口。

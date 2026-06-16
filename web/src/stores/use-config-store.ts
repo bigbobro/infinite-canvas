@@ -4,7 +4,6 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { apiGet } from "@/services/api/request";
 import type { AdminPublicSettings } from "@/services/api/admin";
 
 export type AiConfig = {
@@ -102,40 +101,6 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null) {
-    const channelMode = modelChannel?.allowCustomChannel ? config.channelMode : "remote";
-    if (channelMode === "local" || !modelChannel) return { ...config, channelMode };
-    const models = modelChannel.availableModels;
-    const textModels = filterModelsByCapability(models, "text");
-    const imageModels = filterModelsByCapability(models, "image");
-    const videoModels = filterModelsByCapability(models, "video");
-    const audioModels = filterModelsByCapability(models, "audio");
-    const fallbackTextModel = validDefault(modelChannel.defaultTextModel, textModels) || preferredModel(textModels, isTextModelName);
-    const fallbackModel = validDefault(modelChannel.defaultModel, textModels) || fallbackTextModel;
-    const fallbackImageModel = validDefault(modelChannel.defaultImageModel, imageModels) || preferredModel(imageModels, isImageModelName);
-    const fallbackVideoModel = validDefault(modelChannel.defaultVideoModel, videoModels) || preferredModel(videoModels, isVideoModelName);
-    const fallbackAudioModel = preferredModel(audioModels, isAudioModelName);
-    return {
-        ...config,
-        channelMode,
-        models,
-        imageModels,
-        videoModels,
-        textModels,
-        audioModels,
-        model: textModels.includes(config.model) ? config.model : fallbackModel,
-        imageModel: imageModels.includes(config.imageModel) ? config.imageModel : fallbackImageModel,
-        videoModel: videoModels.includes(config.videoModel) ? config.videoModel : fallbackVideoModel,
-        textModel: textModels.includes(config.textModel) ? config.textModel : fallbackTextModel || fallbackModel,
-        audioModel: audioModels.includes(config.audioModel) ? config.audioModel : fallbackAudioModel,
-        systemPrompt: modelChannel.systemPrompt,
-    };
-}
-
-function validDefault(model: string, models: string[]) {
-    return models.includes(model) ? model : "";
-}
-
 function preferredModel(models: string[], predicate: (model: string) => boolean) {
     return models.find(predicate) || "";
 }
@@ -181,7 +146,7 @@ function modelListKey(capability: ModelCapability) {
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {
-    return Boolean(model.trim()) && (config.channelMode === "remote" || Boolean(config.baseUrl.trim() && config.apiKey.trim()));
+    return Boolean(model.trim() && config.baseUrl.trim() && config.apiKey.trim());
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -211,7 +176,7 @@ export const useConfigStore = create<ConfigStore>()(
                 if (get().isPublicSettingsLoading) return;
                 set({ isPublicSettingsLoading: true });
                 try {
-                    set({ publicSettings: await apiGet<AdminPublicSettings>("/api/settings") });
+                    set({ publicSettings: defaultPublicSettings(get().config) });
                 } finally {
                     set({ isPublicSettingsLoading: false });
                 }
@@ -234,7 +199,7 @@ export const useConfigStore = create<ConfigStore>()(
                     webdav: { ...defaultWebdavSyncConfig, ...persistedWebdav },
                     config: {
                         ...config,
-                        channelMode: config.channelMode || "remote",
+                        channelMode: "local",
                         imageModel: config.imageModel || config.model,
                         videoModel: config.videoModel || "grok-imagine-video",
                         textModel: config.textModel || config.model,
@@ -265,8 +230,23 @@ function normalizeModelList(models: string[]) {
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
-    const modelChannel = useConfigStore((state) => state.publicSettings?.modelChannel || null);
-    return useMemo(() => resolveEffectiveConfig(config, modelChannel), [config, modelChannel]);
+    return useMemo(() => ({ ...config, channelMode: "local" as const }), [config]);
+}
+
+function defaultPublicSettings(config: AiConfig): AdminPublicSettings {
+    return {
+        modelChannel: {
+            availableModels: config.models,
+            modelCosts: [],
+            defaultModel: config.model,
+            defaultImageModel: config.imageModel,
+            defaultVideoModel: config.videoModel,
+            defaultTextModel: config.textModel,
+            systemPrompt: config.systemPrompt,
+            allowCustomChannel: true,
+        },
+        auth: { allowRegister: false, linuxDo: { enabled: false } },
+    };
 }
 
 export function buildApiUrl(baseUrl: string, path: string) {

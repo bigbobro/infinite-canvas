@@ -3,27 +3,16 @@ import axios from "axios";
 import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { buildApiUrl, type AiConfig } from "@/stores/use-config-store";
-import { useUserStore } from "@/stores/use-user-store";
 
 function aiApiUrl(config: AiConfig, path: string) {
-    return config.channelMode === "remote" ? `/api/v1${path}` : buildApiUrl(config.baseUrl, path);
+    return buildApiUrl(config.baseUrl, path);
 }
 
 function aiHeaders(config: AiConfig) {
-    const token = useUserStore.getState().token;
-    return config.channelMode === "remote"
-        ? {
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-              "Content-Type": "application/json",
-          }
-        : {
-              Authorization: `Bearer ${config.apiKey}`,
-              "Content-Type": "application/json",
-          };
-}
-
-function refreshRemoteUser(config: AiConfig) {
-    if (config.channelMode === "remote") void useUserStore.getState().hydrateUser();
+    return {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+    };
 }
 
 export async function requestAudioGeneration(config: AiConfig, prompt: string): Promise<Blob> {
@@ -46,7 +35,6 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string): 
             { headers: aiHeaders(config), responseType: "blob" },
         );
         await assertAudioBlob(response.data);
-        refreshRemoteUser(config);
         return response.data.type.startsWith("audio/") ? response.data : new Blob([response.data], { type: audioMimeType(format) });
     } catch (error) {
         throw new Error(readAxiosError(error, "音频生成失败"));
@@ -60,8 +48,8 @@ export async function storeGeneratedAudio(blob: Blob, format = "mp3"): Promise<U
 
 function assertAudioConfig(config: AiConfig, model: string) {
     if (!model) throw new Error("请先配置音频模型");
-    if (config.channelMode === "local" && !config.baseUrl.trim()) throw new Error("请先配置 Base URL");
-    if (config.channelMode === "local" && !config.apiKey.trim()) throw new Error("请先配置 API Key");
+    if (!config.baseUrl.trim()) throw new Error("请先配置 Base URL");
+    if (!config.apiKey.trim()) throw new Error("请先配置 API Key");
 }
 
 async function assertAudioBlob(blob: Blob) {

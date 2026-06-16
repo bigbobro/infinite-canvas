@@ -1,5 +1,7 @@
-import { apiDelete, apiGet, apiPost, compactApiParams } from "@/services/api/request";
-import type { Prompt, PromptListResponse } from "@/services/api/prompts";
+import { nanoid } from "nanoid";
+
+import { fetchPrompts, type Prompt, type PromptListResponse } from "@/services/api/prompts";
+import { fetchImageModels } from "@/services/api/image";
 
 export type AdminPromptCategory = {
     category: string;
@@ -57,39 +59,40 @@ export type AdminUserQuery = {
 };
 
 export async function fetchAdminUsers(token: string, query: AdminUserQuery = {}) {
-    return apiGet<AdminUserListResponse>("/api/admin/users", compactApiParams(query), token);
+    return { items: [], total: 0 };
 }
 
 export async function saveAdminUser(token: string, user: Partial<AdminUser> & { password?: string }) {
-    return apiPost<AdminUser>("/api/admin/users", user, token);
+    return { ...emptyAdminUser(), ...user, id: user.id || nanoid() };
 }
 
 export async function adjustAdminUserCredits(token: string, id: string, credits: number) {
-    return apiPost<AdminUser>(`/api/admin/users/${encodeURIComponent(id)}/credits`, { credits }, token);
+    return { ...emptyAdminUser(), id, credits };
 }
 
 export async function deleteAdminUser(token: string, id: string) {
-    return apiDelete<boolean>(`/api/admin/users/${encodeURIComponent(id)}`, token);
+    return true;
 }
 
 export async function fetchAdminCreditLogs(token: string, query: AdminUserQuery = {}) {
-    return apiGet<AdminCreditLogListResponse>("/api/admin/credit-logs", compactApiParams(query), token);
+    return { items: [], total: 0 };
 }
 
 export async function saveAdminCreditLog(token: string, log: Partial<AdminCreditLog>) {
-    return apiPost<AdminCreditLog>("/api/admin/credit-logs", log, token);
+    return { id: log.id || nanoid(), userId: "", type: "", amount: 0, balance: 0, relatedId: "", remark: "", extra: "", createdAt: new Date().toISOString(), ...log };
 }
 
 export async function deleteAdminCreditLog(token: string, id: string) {
-    return apiDelete<boolean>(`/api/admin/credit-logs/${encodeURIComponent(id)}`, token);
+    return true;
 }
 
 export async function fetchAdminPromptCategories(token: string) {
-    return apiGet<AdminPromptCategory[]>("/api/admin/prompt-categories", undefined, token);
+    return promptCategories;
 }
 
 export async function syncAdminPromptCategory(token: string, category: string) {
-    return apiPost<AdminPromptCategory[]>("/api/admin/prompt-categories/sync", { category }, token);
+    await fetchPrompts({ category, pageSize: 1 });
+    return promptCategories;
 }
 
 export type AdminPromptQuery = {
@@ -121,19 +124,20 @@ export type AdminAssetListResponse = {
 };
 
 export async function fetchAdminPrompts(token: string, query: AdminPromptQuery = {}) {
-    return apiGet<PromptListResponse>("/api/admin/prompts", compactApiParams(query), token);
+    return fetchPrompts(query);
 }
 
 export async function saveAdminPrompt(token: string, prompt: Partial<Prompt>) {
-    return apiPost<Prompt>("/api/admin/prompts", prompt, token);
+    const now = new Date().toISOString();
+    return { id: prompt.id || nanoid(), title: "", coverUrl: "", prompt: "", tags: [], category: "", githubUrl: "", preview: "", createdAt: now, updatedAt: now, ...prompt };
 }
 
 export async function deleteAdminPrompt(token: string, id: string) {
-    return apiDelete<boolean>(`/api/admin/prompts/${encodeURIComponent(id)}`, token);
+    return true;
 }
 
 export async function deleteAdminPrompts(token: string, ids: string[]) {
-    return apiPost<boolean>("/api/admin/prompts/batch-delete", { ids }, token);
+    return true;
 }
 
 export type AdminAssetQuery = {
@@ -145,15 +149,15 @@ export type AdminAssetQuery = {
 };
 
 export async function fetchAdminAssets(token: string, query: AdminAssetQuery = {}) {
-    return apiGet<AdminAssetListResponse>("/api/admin/assets", compactApiParams(query), token);
+    return { items: [], tags: [], total: 0 };
 }
 
 export async function saveAdminAsset(token: string, asset: Partial<AdminAsset>) {
-    return apiPost<AdminAsset>("/api/admin/assets", asset, token);
+    return { id: asset.id || nanoid(), title: "", type: "text", coverUrl: "", tags: [], category: "", description: "", content: "", url: "", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...asset };
 }
 
 export async function deleteAdminAsset(token: string, id: string) {
-    return apiDelete<boolean>(`/api/admin/assets/${encodeURIComponent(id)}`, token);
+    return true;
 }
 
 export type AdminModelChannel = {
@@ -213,11 +217,11 @@ export type AdminSettings = {
 };
 
 export async function fetchAdminSettings(token: string) {
-    return apiGet<AdminSettings>("/api/admin/settings", undefined, token);
+    return defaultAdminSettings();
 }
 
 export async function saveAdminSettings(token: string, settings: AdminSettings) {
-    return apiPost<AdminSettings>("/api/admin/settings", settings, token);
+    return settings;
 }
 
 export type AdminChannelActionRequest = {
@@ -227,9 +231,64 @@ export type AdminChannelActionRequest = {
 };
 
 export async function fetchChannelModels(token: string, payload: AdminChannelActionRequest) {
-    return apiPost<string[]>("/api/admin/settings/channel-models", payload, token);
+    return fetchImageModels({ ...defaultAiConfig(), baseUrl: payload.channel.baseUrl, apiKey: payload.channel.apiKey || "local", model: payload.model || "", models: payload.channel.models });
 }
 
 export async function testChannelModel(token: string, payload: AdminChannelActionRequest) {
-    return apiPost<string>("/api/admin/settings/channel-test", payload, token);
+    return "前台直连配置已保存，请在前台生成时验证模型可用性";
+}
+
+const promptCategories: AdminPromptCategory[] = [
+    { category: "gpt-image-2-prompts", name: "GPT Image 2 Prompts", description: "", file: "", githubUrl: "https://github.com/EvoLinkAI/awesome-gpt-image-2-API-and-Prompts", remote: true },
+    { category: "awesome-gpt-image", name: "Awesome GPT Image", description: "", file: "", githubUrl: "https://github.com/ZeroLu/awesome-gpt-image", remote: true },
+    { category: "awesome-gpt4o-image-prompts", name: "Awesome GPT-4o Image Prompts", description: "", file: "", githubUrl: "https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts", remote: true },
+    { category: "youmind-gpt-image-2", name: "YouMind GPT Image 2", description: "", file: "", githubUrl: "https://github.com/YouMind-OpenLab/awesome-gpt-image-2", remote: true },
+    { category: "youmind-nano-banana-pro", name: "YouMind Nano Banana Pro", description: "", file: "", githubUrl: "https://github.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts", remote: true },
+    { category: "davidwu-gpt-image2-prompts", name: "DavidWu GPT Image2 Prompts", description: "", file: "", githubUrl: "https://github.com/davidwuw0811-boop/awesome-gpt-image2-prompts", remote: true },
+];
+
+function emptyAdminUser(): AdminUser {
+    const now = new Date().toISOString();
+    return { id: "", username: "", email: "", displayName: "", avatarUrl: "", role: "user", credits: 0, affCode: "", affCount: 0, inviterId: "", linuxDoId: "", status: "active", lastLoginAt: "", createdAt: now, updatedAt: now };
+}
+
+function defaultAdminSettings(): AdminSettings {
+    return {
+        public: {
+            modelChannel: { availableModels: [], modelCosts: [], defaultModel: "", defaultImageModel: "", defaultVideoModel: "", defaultTextModel: "", systemPrompt: "", allowCustomChannel: true },
+            auth: { allowRegister: false, linuxDo: { enabled: false } },
+        },
+        private: { channels: [], promptSync: { enabled: false, cron: "" }, auth: { linuxDo: { clientId: "", clientSecret: "" } } },
+    };
+}
+
+function defaultAiConfig() {
+    return {
+        channelMode: "local" as const,
+        baseUrl: "",
+        apiKey: "",
+        model: "",
+        imageModel: "",
+        videoModel: "",
+        textModel: "",
+        audioModel: "",
+        audioVoice: "",
+        audioFormat: "",
+        audioSpeed: "",
+        audioInstructions: "",
+        videoSeconds: "",
+        vquality: "",
+        videoGenerateAudio: "",
+        videoWatermark: "",
+        systemPrompt: "",
+        models: [],
+        imageModels: [],
+        videoModels: [],
+        textModels: [],
+        audioModels: [],
+        quality: "",
+        size: "",
+        count: "",
+        canvasImageCount: "",
+    };
 }

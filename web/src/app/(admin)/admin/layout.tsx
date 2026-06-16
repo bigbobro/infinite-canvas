@@ -1,19 +1,15 @@
 "use client";
 
-import { FileTextOutlined, HomeOutlined, LogoutOutlined, PictureOutlined, SettingOutlined, TransactionOutlined, UserOutlined } from "@ant-design/icons";
+import { FileTextOutlined, HomeOutlined, PictureOutlined, SettingOutlined } from "@ant-design/icons";
 import { Button, Flex, Layout, Menu, Typography, theme } from "antd";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-import { useEffect } from "react";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { adminLayoutStyle } from "@/lib/app-theme";
-import { useUserStore } from "@/stores/use-user-store";
 
 const adminMenus = [
-    { key: "/admin/users", icon: <UserOutlined />, label: "用户管理" },
-    { key: "/admin/credit-logs", icon: <TransactionOutlined />, label: "算力点日志" },
     { key: "/admin/prompts", icon: <FileTextOutlined />, label: "提示词管理" },
     { key: "/admin/assets", icon: <PictureOutlined />, label: "素材库" },
     { key: "/admin/settings", icon: <SettingOutlined />, label: "系统设置" },
@@ -21,43 +17,15 @@ const adminMenus = [
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
     const { token: antToken } = theme.useToken();
-    const router = useRouter();
     const pathname = usePathname();
-    const token = useUserStore((state) => state.token);
-    const user = useUserStore((state) => state.user);
-    const isReady = useUserStore((state) => state.isReady);
-    const logout = useUserStore((state) => state.clearSession);
     const activeKey = pathname.startsWith("/admin/settings")
         ? "/admin/settings"
         : pathname.startsWith("/admin/assets")
           ? "/admin/assets"
           : pathname.startsWith("/admin/prompts")
             ? "/admin/prompts"
-            : pathname.startsWith("/admin/credit-logs")
-              ? "/admin/credit-logs"
-              : pathname.startsWith("/admin/users")
-                ? "/admin/users"
-                : "";
-    const pageTitle = pathname.startsWith("/admin/settings") ? "系统设置" : pathname.startsWith("/admin/assets") ? "素材库管理" : pathname.startsWith("/admin/prompts") ? "提示词管理" : pathname.startsWith("/admin/credit-logs") ? "算力点日志" : "用户管理";
-
-    useEffect(() => {
-        if (!isReady) return;
-        if (!token) {
-            router.replace("/login?redirect=/admin");
-            return;
-        }
-        if (user?.role !== "admin") {
-            router.replace("/");
-        }
-    }, [isReady, router, token, user?.role]);
-
-    if (!isReady || !token || user?.role !== "admin") {
-        return (
-            <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center", background: antToken.colorBgLayout }}>
-                <span />
-            </div>
-        );
-    }
+            : "";
+    const pageTitle = pathname.startsWith("/admin/settings") ? "系统设置" : pathname.startsWith("/admin/assets") ? "素材库管理" : "提示词管理";
 
     return (
         <Layout hasSider style={{ height: "100vh", overflow: "hidden", background: antToken.colorBgLayout }}>
@@ -85,9 +53,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
                 <Flex vertical gap={8} style={{ position: "absolute", bottom: 0, insetInline: 0, padding: 12, borderTop: `1px solid ${antToken.colorBorder}`, background: antToken.colorBgContainer }}>
                     <Button block icon={<HomeOutlined />} href="/canvas" target="_blank" rel="noreferrer">
                         前往画布
-                    </Button>
-                    <Button block icon={<LogoutOutlined />} onClick={logout}>
-                        退出登录
                     </Button>
                 </Flex>
             </Layout.Sider>

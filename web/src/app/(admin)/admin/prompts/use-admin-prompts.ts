@@ -6,15 +6,13 @@ import { App } from "antd";
 
 import { deleteAdminPrompt, deleteAdminPrompts, fetchAdminPrompts, fetchAdminPromptCategories, saveAdminPrompt, syncAdminPromptCategory, type AdminPromptCategory } from "@/services/api/admin";
 import type { Prompt } from "@/services/api/prompts";
-import { useUserStore } from "@/stores/use-user-store";
 
 const defaultPageSize = 10;
+const localToken = "";
 
 export function useAdminPrompts() {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
-    const token = useUserStore((state) => state.token);
-    const clearSession = useUserStore((state) => state.clearSession);
     const [keyword, setKeyword] = useState("");
     const [category, setCategory] = useState("");
     const [tag, setTag] = useState<string[]>([]);
@@ -22,23 +20,21 @@ export function useAdminPrompts() {
     const [pageSize, setPageSize] = useState(defaultPageSize);
 
     const categoriesQuery = useQuery({
-        queryKey: ["admin", "prompt-categories", token],
-        queryFn: () => fetchAdminPromptCategories(token),
-        enabled: Boolean(token),
+        queryKey: ["admin", "prompt-categories"],
+        queryFn: () => fetchAdminPromptCategories(localToken),
         retry: false,
     });
 
     const promptsQuery = useQuery({
-        queryKey: ["admin", "prompts", token, keyword, category, tag, page, pageSize],
-        queryFn: () => fetchAdminPrompts(token, { keyword, category, tag, page, pageSize }),
-        enabled: Boolean(token),
+        queryKey: ["admin", "prompts", keyword, category, tag, page, pageSize],
+        queryFn: () => fetchAdminPrompts(localToken, { keyword, category, tag, page, pageSize }),
         retry: false,
     });
 
     const syncMutation = useMutation({
-        mutationFn: (category: string) => syncAdminPromptCategory(token, category),
+        mutationFn: (category: string) => syncAdminPromptCategory(localToken, category),
         onSuccess: async (categories) => {
-            queryClient.setQueryData<AdminPromptCategory[]>(["admin", "prompt-categories", token], categories);
+            queryClient.setQueryData<AdminPromptCategory[]>(["admin", "prompt-categories"], categories);
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompts"] });
             message.success("远程提示词源已同步");
         },
@@ -48,7 +44,7 @@ export function useAdminPrompts() {
     });
 
     const saveMutation = useMutation({
-        mutationFn: (prompt: Partial<Prompt>) => saveAdminPrompt(token, prompt),
+        mutationFn: (prompt: Partial<Prompt>) => saveAdminPrompt(localToken, prompt),
         onSuccess: async (_, prompt) => {
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompt-categories"] });
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompts"] });
@@ -60,7 +56,7 @@ export function useAdminPrompts() {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: (id: string) => deleteAdminPrompt(token, id),
+        mutationFn: (id: string) => deleteAdminPrompt(localToken, id),
         onSuccess: async () => {
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompt-categories"] });
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompts"] });
@@ -72,7 +68,7 @@ export function useAdminPrompts() {
     });
 
     const batchDeleteMutation = useMutation({
-        mutationFn: (ids: string[]) => deleteAdminPrompts(token, ids),
+        mutationFn: (ids: string[]) => deleteAdminPrompts(localToken, ids),
         onSuccess: async () => {
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompt-categories"] });
             await queryClient.invalidateQueries({ queryKey: ["admin", "prompts"] });
@@ -88,8 +84,7 @@ export function useAdminPrompts() {
         if (!error) return;
         const errorMessage = error instanceof Error ? error.message : "读取提示词失败";
         message.error(errorMessage);
-        if (errorMessage.includes("未登录") || errorMessage.includes("权限不足") || errorMessage.includes("登录状态无效")) clearSession();
-    }, [categoriesQuery.error, clearSession, message, promptsQuery.error]);
+    }, [categoriesQuery.error, message, promptsQuery.error]);
 
     const updateFilters = (next: Partial<{ keyword: string; category: string; tag: string[]; page: number; pageSize: number }>) => {
         const queryState = { keyword, category, tag, page, pageSize, ...next };

@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { AUTH_TOKEN_KEY, fetchCurrentUser, login, register, type AuthPayload, type AuthUser } from "@/services/api/auth";
+import { AUTH_TOKEN_KEY, type AuthPayload, type AuthUser } from "@/services/api/auth";
 
 type UserStore = {
     token: string;
@@ -27,44 +27,17 @@ export const useUserStore = create<UserStore>()(
             setSession: (token, user) => set({ token, user, isReady: true }),
             clearSession: () => set({ token: "", user: null, isReady: true }),
             hydrateUser: async () => {
-                const token = get().token;
-                if (!token) {
-                    set({ user: null, isReady: true });
-                    return;
-                }
-                set({ isLoading: true });
-                try {
-                    const user = await fetchCurrentUser(token);
-                    if (user.role === "guest") {
-                        set({ token: "", user: null, isReady: true, isLoading: false });
-                        return;
-                    }
-                    set({ user, isReady: true, isLoading: false });
-                } catch {
-                    set({ token: "", user: null, isReady: true, isLoading: false });
-                }
+                set({ token: "", user: null, isReady: true, isLoading: false });
             },
             login: async (payload) => {
                 set({ isLoading: true });
-                try {
-                    const session = await login(payload);
-                    set({ token: session.token, user: session.user, isReady: true, isLoading: false });
-                    return session.user;
-                } catch (error) {
-                    set({ isLoading: false });
-                    throw error;
-                }
+                const now = new Date().toISOString();
+                const user: AuthUser = { id: "local-user", username: payload.username || "local", displayName: payload.username || "本地用户", avatarUrl: "", role: "user", credits: 0, createdAt: now, updatedAt: now };
+                set({ token: "", user, isReady: true, isLoading: false });
+                return user;
             },
             register: async (payload) => {
-                set({ isLoading: true });
-                try {
-                    const session = await register(payload);
-                    set({ token: session.token, user: session.user, isReady: true, isLoading: false });
-                    return session.user;
-                } catch (error) {
-                    set({ isLoading: false });
-                    throw error;
-                }
+                return get().login(payload);
             },
         }),
         {

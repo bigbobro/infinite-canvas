@@ -5,15 +5,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
 import { deleteAdminAsset, fetchAdminAssets, saveAdminAsset, type AdminAsset } from "@/services/api/admin";
-import { useUserStore } from "@/stores/use-user-store";
 
 const defaultPageSize = 10;
+const localToken = "";
 
 export function useAdminAssets() {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
-    const token = useUserStore((state) => state.token);
-    const clearSession = useUserStore((state) => state.clearSession);
     const [keyword, setKeyword] = useState("");
     const [type, setType] = useState("");
     const [tag, setTag] = useState<string[]>([]);
@@ -21,14 +19,13 @@ export function useAdminAssets() {
     const [pageSize, setPageSize] = useState(defaultPageSize);
 
     const query = useQuery({
-        queryKey: ["admin", "assets", token, keyword, type, tag, page, pageSize],
-        queryFn: () => fetchAdminAssets(token, { keyword, type, tag, page, pageSize }),
-        enabled: Boolean(token),
+        queryKey: ["admin", "assets", keyword, type, tag, page, pageSize],
+        queryFn: () => fetchAdminAssets(localToken, { keyword, type, tag, page, pageSize }),
         retry: false,
     });
 
     const saveMutation = useMutation({
-        mutationFn: (asset: Partial<AdminAsset>) => saveAdminAsset(token, asset),
+        mutationFn: (asset: Partial<AdminAsset>) => saveAdminAsset(localToken, asset),
         onSuccess: async (_, asset) => {
             await queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
             message.success(asset.id ? "素材已保存" : "素材已新增");
@@ -39,7 +36,7 @@ export function useAdminAssets() {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: (id: string) => deleteAdminAsset(token, id),
+        mutationFn: (id: string) => deleteAdminAsset(localToken, id),
         onSuccess: async () => {
             await queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
             message.success("素材已删除");
@@ -53,9 +50,8 @@ export function useAdminAssets() {
         if (query.isError) {
             const errorMessage = query.error instanceof Error ? query.error.message : "读取素材失败";
             message.error(errorMessage);
-            if (errorMessage.includes("未登录") || errorMessage.includes("权限不足") || errorMessage.includes("登录状态无效")) clearSession();
         }
-    }, [clearSession, message, query.error, query.isError]);
+    }, [message, query.error, query.isError]);
 
     const updateFilters = (next: Partial<{ keyword: string; type: string; tag: string[]; page: number; pageSize: number }>) => {
         const queryState = { keyword, type, tag, page, pageSize, ...next };
