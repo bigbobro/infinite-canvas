@@ -29,7 +29,7 @@
 - 本地 Agent：通过本机 Canvas Agent 连接 Codex / Claude Code，让 Agent 通过 MCP 操作当前画布。
 - 提示词库：Next.js route 抓取多个 GitHub 开源项目，并缓存在运行实例内存中。
 
-完整功能说明见 [docs/features.md](docs2/features.md)。
+完整功能说明见 [功能介绍](docs/content/docs/overview/features.mdx)。
 
 如果你在为担心没有合适的生图API来发愁，可以查看该免费生图项目：[chatgpt2api](https://github.com/basketikun/chatgpt2api)
 
@@ -88,15 +88,23 @@ https://canvas.best?apiKey={key}&baseUrl={address}
     <td width="50%"><img src="https://i.ibb.co/bj30FtS5/5.png" alt="5" border="0"></td>
     <td width="50%"><img src="https://i.ibb.co/hxRvjw51/image.png" alt="image" border="0"></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="https://i.ibb.co/jkWsF8q1/image.png" alt="image" border="0"></td>
+    <td width="50%"><img src="https://i.ibb.co/XrnfXHx7/image.png" alt="image" border="0"></td>
+  </tr>
 </table>
 
 ## 文档
 
-- [功能介绍](docs2/features.md)
-- [部署说明](docs2/deployment.md)
-- [画布节点操作手册](docs2/canvas-node-manual.md)
-- [画布快捷键](docs2/canvas-shortcuts.md)
-- [待办事项](docs2/todo.md)
+- [快速开始](docs/content/docs/overview/quick-start.mdx)
+- [功能介绍](docs/content/docs/overview/features.mdx)
+- [Render 部署](docs/content/docs/overview/render.mdx)
+- [Docker 部署](docs/content/docs/overview/docker.mdx)
+- [画布节点操作手册](docs/content/docs/canvas/canvas-node-manual.mdx)
+- [画布快捷键](docs/content/docs/canvas/canvas-shortcuts.mdx)
+- [贡献者协议](CLA.md)
+- [漏洞提交](SECURITY.md)
+- [待办事项](docs/content/docs/progress/todo.mdx)
 - [本地 Canvas Agent](canvas-agent/README.md)
 
 ## 赞助支持

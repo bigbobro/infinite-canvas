@@ -21,11 +21,12 @@
 ## 商务合作
 
 - [开源协议](/docs/business/license)
+- [贡献者协议](/docs/business/cla)
 - [商务合作](/docs/business/business)
 
-## 赞助支持
+## 支持与安全
 
-- [文档](/docs/support/docs)
+- [漏洞提交](/docs/support/security)
 - [打赏支持](/docs/support/donate)
 - [广告赞助](/docs/support/sponsor)
 

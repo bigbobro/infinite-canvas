@@ -7,9 +7,61 @@ import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 
-export type ChatCompletionMessage = {
+export type AiTextMessage = {
     role: "system" | "user" | "assistant";
     content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
+};
+
+export type ResponseToolCall = {
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+};
+
+export type ResponseInputMessage =
+    | AiTextMessage
+    | { type: "function_call"; call_id: string; name: string; arguments: string }
+    | { role: "tool"; tool_call_id: string; content: string };
+
+export type ResponseFunctionTool = {
+    type: "function";
+    function: {
+        name: string;
+        description?: string;
+        parameters: Record<string, unknown>;
+        strict?: boolean;
+    };
+};
+
+export type ToolResponseResult = {
+    content: string;
+    toolCalls: ResponseToolCall[];
+};
+
+type ToolChoice = "auto" | "required" | { type: "function"; name: string };
+type ResponseMessageContent = AiTextMessage["content"] | string;
+type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
+type ResponseInputItem =
+    | { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] }
+    | { type: "function_call"; call_id: string; name: string; arguments: string }
+    | { type: "function_call_output"; call_id: string; output: string };
+type ResponseApiToolDefinition = {
+    type: "function";
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+    strict?: boolean;
+};
+type ResponseApiOutputItem =
+    | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
+    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+type ResponseApiPayload = {
+    id?: string;
+    output?: ResponseApiOutputItem[];
+    output_text?: string;
+    error?: { message?: string };
+    code?: number;
+    msg?: string;
 };
 
 type ImageApiResponse = {
@@ -148,20 +200,6 @@ function readStatusError(status: number | undefined, fallback: string) {
     return status ? `${fallback}：${status}` : fallback;
 }
 
-function parseStreamChunk(chunk: string, onDelta: (value: string) => void) {
-    let deltaText = "";
-    for (const eventBlock of chunk.split("\n\n")) {
-        const data = eventBlock
-            .split("\n")
-            .find((line) => line.startsWith("data: "))
-            ?.slice(6);
-        if (!data || data === "[DONE]") continue;
-        const delta = (JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }).choices?.[0]?.delta?.content || "";
-        deltaText += delta;
-    }
-    if (deltaText) onDelta(deltaText);
-}
-
 function withSystemPrompt(config: AiConfig, prompt: string) {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
@@ -178,9 +216,51 @@ function aiHeaders(config: AiConfig, contentType?: string) {
     };
 }
 
-function withSystemMessage(config: AiConfig, messages: ChatCompletionMessage[]) {
+function withSystemMessage<T extends ResponseInputMessage>(config: AiConfig, messages: T[]): ResponseInputMessage[] {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? [{ role: "system" as const, content: systemPrompt }, ...messages] : messages;
+}
+
+function toResponseInput(messages: ResponseInputMessage[]): ResponseInputItem[] {
+    return messages.flatMap((message): ResponseInputItem[] => {
+        if ("type" in message) return [message];
+        if (message.role === "tool") return [{ type: "function_call_output", call_id: message.tool_call_id, output: message.content }];
+        return [{ role: message.role, content: toResponseContent(message.content || "") }];
+    });
+}
+
+function toResponseContent(content: ResponseMessageContent): string | ResponseInputContent[] {
+    if (!Array.isArray(content)) return String(content || "");
+    return content.map((item) => (item.type === "text" ? { type: "input_text" as const, text: item.text } : { type: "input_image" as const, image_url: item.image_url.url }));
+}
+
+function toResponseTool(tool: ResponseFunctionTool): ResponseApiToolDefinition {
+    return {
+        type: "function",
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters: tool.function.parameters,
+        strict: tool.function.strict,
+    };
+}
+
+function parseToolResponse(payload: ResponseApiPayload): ToolResponseResult {
+    const output = payload.output || [];
+    const content =
+        payload.output_text ||
+        output
+            .flatMap((item) => (item.type === "message" ? item.content || [] : []))
+            .map((item) => item.text || "")
+            .join("");
+    const toolCalls = output
+        .filter((item): item is Extract<ResponseApiOutputItem, { type?: "function_call" }> => item.type === "function_call")
+        .map((item) => ({
+            id: item.call_id || item.id || "",
+            type: "function" as const,
+            function: { name: item.name || "", arguments: item.arguments || "{}" },
+        }))
+        .filter((item) => item.id && item.function.name);
+    return { content, toolCalls };
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string) {
@@ -242,66 +322,51 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
 }
 
-export async function requestImageQuestion(config: AiConfig, messages: ChatCompletionMessage[], onDelta: (text: string) => void) {
+export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
-    let buffer = "";
-    let answer = "";
-    let processedLength = 0;
-
     try {
-        const response = await axios.post(
-            aiApiUrl(requestConfig, "/chat/completions"),
+        const response = await axios.post<ResponseApiPayload>(
+            aiApiUrl(requestConfig, "/responses"),
             {
                 model: requestConfig.model,
-                messages: withSystemMessage(requestConfig, messages),
-                stream: true,
+                input: toResponseInput(withSystemMessage(requestConfig, messages)),
             },
             {
-                headers: {
-                    ...aiHeaders(requestConfig, "application/json"),
-                } as Record<string, string>,
-                responseType: "text",
-                onDownloadProgress: (event) => {
-                    const responseText = String(event.event?.target?.responseText || "");
-                    const nextText = responseText.slice(processedLength);
-                    processedLength = responseText.length;
-                    buffer += nextText;
-                    const chunks = buffer.split("\n\n");
-                    buffer = chunks.pop() || "";
-                    for (const chunk of chunks) {
-                        parseStreamChunk(chunk, (delta) => {
-                            answer += delta;
-                            onDelta(answer);
-                        });
-                    }
-                },
+                headers: aiHeaders(requestConfig, "application/json"),
             },
         );
-        if (typeof response.data === "object" && response.data && "code" in response.data && (response.data as { code?: number; msg?: string }).code !== 0) {
-            throw new Error((response.data as { msg?: string }).msg || "请求失败");
-        }
-        if (typeof response.data === "string") {
-            let apiError = "";
-            try {
-                const payload = JSON.parse(response.data) as { code?: number; msg?: string };
-                if (typeof payload.code === "number" && payload.code !== 0) {
-                    apiError = payload.msg || "请求失败";
-                }
-            } catch {
-                // ignore plain text stream content
-            }
-            if (apiError) throw new Error(apiError);
-        }
-        if (buffer) {
-            parseStreamChunk(buffer, (delta) => {
-                answer += delta;
-                onDelta(answer);
-            });
-        }
+        if (typeof response.data.code === "number" && response.data.code !== 0) throw new Error(response.data.msg || "请求失败");
+        if (response.data.error?.message) throw new Error(response.data.error.message);
+        const answer = parseToolResponse(response.data).content || "没有返回内容";
+        onDelta(answer);
+        return answer;
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
     }
-    return answer || "没有返回内容";
+}
+
+export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto"): Promise<ToolResponseResult> {
+    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    try {
+        const response = await axios.post<ResponseApiPayload>(
+            aiApiUrl(requestConfig, "/responses"),
+            {
+                model: requestConfig.model,
+                input: toResponseInput(withSystemMessage(requestConfig, messages)),
+                tools: tools.map(toResponseTool),
+                tool_choice: toolChoice,
+                parallel_tool_calls: false,
+            },
+            {
+                headers: aiHeaders(requestConfig, "application/json"),
+            },
+        );
+        if (typeof response.data.code === "number" && response.data.code !== 0) throw new Error(response.data.msg || "请求失败");
+        if (response.data.error?.message) throw new Error(response.data.error.message);
+        return parseToolResponse(response.data);
+    } catch (error) {
+        throw new Error(readAxiosError(error, "请求失败"));
+    }
 }
 
 export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey">) {

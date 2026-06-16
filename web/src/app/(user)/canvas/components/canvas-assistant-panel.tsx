@@ -9,7 +9,7 @@ import { motion } from "motion/react";
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
-import { requestImageQuestion, type ChatCompletionMessage } from "@/services/api/image";
+import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@/services/api/image";
 import { imageToDataUrl } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -22,17 +22,115 @@ import { AgentChatComposer, AgentChatMessage, AgentModeSwitch, AgentPanelTabs, A
 import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
 import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "../types";
 import { useCanvasAgentStore } from "../stores/use-canvas-agent-store";
-import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
+import { type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
 const ONLINE_AGENT_MAX_STEPS = 4;
 const ONLINE_AGENT_PROMPT =
-    '你是 Infinite Canvas 网页内置在线画布助手。你只能返回 JSON，不要 Markdown，不要解释。格式：{"reply":"给用户看的中文说明","ops":[...]}。用户只是询问、查看、总结、描述或分析当前画布内容时，必须返回 ops:[]，reply 直接回答画布现状，不要出现“等待确认”。只有需要修改画布时才返回 ops，且 reply 只能说明“准备执行/等待确认”，不能说“已完成/已删除/已连接/已调整”，因为工具操作需要用户确认后才会执行。返回 ops 时必须使用当前画布 JSON 里的真实 node.id / connection.id，不要使用节点标题、类型名、Note、生成配置等别名当 id。工具执行结果返回后，你要判断用户任务是否完成；完成时返回 ops:[]，未完成时返回下一步 ops。ops 可用类型：add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。add_node 支持 nodeType: text/image/config/video/audio，position:{x,y}，metadata。delete_node 必须带 id/ids，或用 nodeType:"config" 删除全部生成配置节点。delete_connections 可用 all:true 删除全部连线。文本内容放 metadata.content。用户要求生图、生成文字、视频或音频时，不要直接生成最终内容，要创建提示词文本节点、config 节点、connect_nodes，并追加 run_generation 触发画布已有生成工具；config 节点 metadata 至少包含 generationMode、composerContent、prompt、status:"idle"，composerContent/prompt 用 @[node:id] 引用提示词节点或参考节点。只输出能直接 JSON.parse 的对象。';
+    "你是 Infinite Canvas 网页内置在线画布助手。当前画布 JSON 会随用户消息提供。首轮必须调用工具：只读问题调用 canvas_get_state，需要修改画布时调用对应写工具。不要输出 JSON ops，不要编造执行结果。工具参数必须完全符合 schema，并且必须使用当前画布 JSON 中真实存在的 id；不要把 title、type、Note、生成配置等名称当 id。缺少必要 id 或用户意图不明确时直接说明需要用户明确选择或说明，不要猜测。生图、生成文本、视频或音频时，如果使用节点作为输入，先调用 canvas_connect_nodes 连接输入节点到生成配置节点，再调用 canvas_configure_generation，最后调用 canvas_run_generation。工具返回结果后，再根据真实结果回答用户。";
+const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
+    {
+        type: "function",
+        function: {
+            name: "canvas_get_state",
+            description: "读取当前画布状态。只读问题或需要确认节点 id 时使用。",
+            parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+            strict: true,
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "canvas_connect_nodes",
+            description: "连接两个已存在节点。必须传真实 fromNodeId 和 toNodeId。",
+            parameters: {
+                type: "object",
+                properties: {
+                    fromNodeId: { type: "string" },
+                    toNodeId: { type: "string" },
+                },
+                required: ["fromNodeId", "toNodeId"],
+                additionalProperties: false,
+            },
+            strict: true,
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "canvas_configure_generation",
+            description: "配置一个生成配置节点的生成模式和提示词引用。必须传真实 configNodeId；promptNodeIds 必须已连接到该生成配置节点。",
+            parameters: {
+                type: "object",
+                properties: {
+                    configNodeId: { type: "string" },
+                    mode: { type: "string", enum: ["text", "image", "video", "audio"] },
+                    promptNodeIds: { type: "array", items: { type: "string" } },
+                    prompt: { type: "string" },
+                },
+                required: ["configNodeId", "mode", "promptNodeIds", "prompt"],
+                additionalProperties: false,
+            },
+            strict: true,
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "canvas_run_generation",
+            description: "触发一个生成配置节点执行生成。必须传真实 configNodeId。",
+            parameters: {
+                type: "object",
+                properties: {
+                    configNodeId: { type: "string" },
+                    mode: { type: "string", enum: ["text", "image", "video", "audio"] },
+                },
+                required: ["configNodeId", "mode"],
+                additionalProperties: false,
+            },
+            strict: true,
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "canvas_delete_nodes",
+            description: "删除指定节点。必须传真实 nodeIds。",
+            parameters: {
+                type: "object",
+                properties: { nodeIds: { type: "array", items: { type: "string" }, minItems: 1 } },
+                required: ["nodeIds"],
+                additionalProperties: false,
+            },
+            strict: true,
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "canvas_delete_connections",
+            description: "删除指定连线，或删除全部连线。",
+            parameters: {
+                type: "object",
+                properties: {
+                    connectionIds: { type: "array", items: { type: "string" } },
+                    all: { type: "boolean" },
+                },
+                required: ["connectionIds", "all"],
+                additionalProperties: false,
+            },
+            strict: true,
+        },
+    },
+];
 type OnlineAgentTab = "setup" | "chat" | "history" | "log";
 type OnlineAgentLog = { id: string; time: string; title: string; data?: unknown };
 type OnlineAgentLogContext = { model: string; running: boolean; confirmTools: boolean; messages: number; nodes: number; connections: number };
-type OnlineLoopContext = { step: number; previous?: unknown };
+type OnlineLoopContext = { step: number };
+type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
+type OnlineExecutedToolCall = { toolCallId: string; name: string; result: OnlineToolResult };
+type PendingOnlineToolContext = { messages: ResponseInputMessage[]; toolCalls: ResponseToolCall[]; assistantId: string; step: number };
 
 type CanvasAssistantPanelProps = {
     nodes: CanvasNodeData[];
@@ -73,6 +171,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     const [localSessions, setLocalSessions] = useState<CanvasAssistantSession[]>(() => (sessions.length ? sessions : [createSession()]));
     const [localActiveSessionId, setLocalActiveSessionId] = useState<string | null>(activeSessionId);
     const snapshotRef = useRef(snapshot);
+    const pendingToolContextRef = useRef(new Map<string, PendingOnlineToolContext>());
 
     useEffect(() => {
         if (!sessions.length) return;
@@ -184,77 +283,204 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
 
     const runOnlineAgentStep = async (sessionId: string, assistantId: string, history: CanvasAssistantMessage[], userMessage: CanvasAssistantMessage, loop: OnlineLoopContext) => {
         const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
-        let continued = false;
         try {
             setIsRunning(true);
-            addOnlineLog(`Agent Loop ${loop.step} 开始`, loop.previous);
-            const answer = await requestImageQuestion({ ...requestConfig, systemPrompt: "" }, await buildAgentMessages(snapshotRef.current, history, userMessage, loop), (streamText) => {
-                const reply = partialAgentReply(streamText);
-                if (reply) upsertMessage(sessionId, { id: assistantId, role: "assistant", text: pendingReply(reply) });
-            });
-            addOnlineLog("模型原始回复", answer);
-            const result = parseAgentResult(answer);
-            const readOnly = isReadOnlyCanvasQuestion(userMessage.text);
-            const reply = readOnly ? cleanReadOnlyReply(result.reply, snapshotRef.current) : result.reply;
-            addOnlineLog("解析结果", result);
-            const ops = readOnly ? [] : normalizeOnlineOps(result.ops, userMessage.text, snapshotRef.current);
-            addOnlineLog("归一化操作", ops);
-            if (ops.length && sameOps(ops, objectDetail(loop.previous).ops)) {
-                addOnlineLog(`Agent Loop ${loop.step} 停止`, { reason: "same_ops", ops });
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: "画布状态已更新，后续操作与上一轮重复，已停止继续执行。" });
-                return;
-            }
-            if (ops.length) {
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: pendingReply(reply) });
-                const toolMessage: CanvasAssistantMessage = { id: nanoid(), role: "tool", title: confirmTools ? "确认工具调用" : "画布操作执行中", text: summarizeCanvasAgentOps(ops) || "画布操作", detail: { name: "canvas_apply_ops", ops, intent: userMessage.text, assistantId, step: loop.step, status: confirmTools ? "pending" : "running" } };
-                appendMessage(sessionId, toolMessage);
-                addOnlineLog(confirmTools ? "等待用户确认" : "自动执行工具", { step: loop.step, ops });
-                if (!confirmTools) continued = executeOnlineTool(sessionId, toolMessage.id, ops, { assistantId, userMessage, history, step: loop.step });
+            const messages = await buildToolAgentMessages(snapshotRef.current, history, userMessage);
+            addOnlineLog(`Agent Tool Loop ${loop.step} 开始`, { toolChoice: "required" });
+            const result = await requestToolResponse({ ...requestConfig, systemPrompt: "" }, messages, ONLINE_AGENT_TOOLS, "required");
+            addOnlineLog("模型工具回复", result);
+            if (result.toolCalls.length) {
+                const writableCalls = result.toolCalls.filter(isWritableToolCall);
+                if (confirmTools && writableCalls.length) {
+                    upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || "准备执行工具，等待确认。" });
+                    const toolMessageId = nanoid();
+                    pendingToolContextRef.current.set(toolMessageId, { messages, toolCalls: result.toolCalls, assistantId, step: loop.step });
+                    const toolMessage: CanvasAssistantMessage = { id: toolMessageId, role: "tool", title: "确认工具调用", text: summarizeToolCalls(result.toolCalls), detail: { status: "pending", step: loop.step, toolCalls: result.toolCalls } };
+                    appendMessage(sessionId, toolMessage);
+                    addOnlineLog("等待用户确认", result.toolCalls);
+                    return;
+                }
+                await continueOnlineToolLoop(sessionId, assistantId, messages, result, loop.step);
             } else {
-                addOnlineLog(`Agent Loop ${loop.step} 结束`, { reply, reason: readOnly ? "readonly" : "no_ops" });
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: reply });
+                if (!result.content.trim()) throw new Error("模型没有返回工具调用，画布操作未执行。");
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.content || "没有返回内容。" });
+                addOnlineLog(`Agent Tool Loop ${loop.step} 结束`, { reply: result.content });
             }
         } catch (error) {
             addOnlineLog("请求失败", error instanceof Error ? error.message : error);
             appendMessage(sessionId, { id: nanoid(), role: "error", title: "操作失败", text: error instanceof Error ? error.message : "操作失败" });
         } finally {
-            if (!continued) setIsRunning(false);
+            setIsRunning(false);
         }
     };
 
-    const executeOnlineTool = (sessionId: string, messageId: string, ops: CanvasAgentOp[], loop?: { assistantId?: string; userMessage?: CanvasAssistantMessage; history?: CanvasAssistantMessage[]; step?: number }) => {
+    const continueOnlineToolLoop = async (sessionId: string, assistantId: string, messages: ResponseInputMessage[], result: { content: string; toolCalls: ResponseToolCall[] }, step: number) => {
+        const toolResults = executeOnlineToolCalls(result.toolCalls);
+        addOnlineLog("工具执行结果", toolResults);
+        await continueOnlineToolLoopAfterResults(sessionId, assistantId, messages, result.toolCalls, toolResults, step);
+    };
+
+    const continueOnlineToolLoopAfterResults = async (sessionId: string, assistantId: string, messages: ResponseInputMessage[], toolCalls: ResponseToolCall[], toolResults: OnlineExecutedToolCall[], step: number) => {
+        const nextMessages: ResponseInputMessage[] = [
+            ...messages,
+            ...toolCalls.map(toolCallToResponseInput),
+            ...toolResults.map((item) => ({ role: "tool" as const, tool_call_id: item.toolCallId, content: JSON.stringify(item.result) })),
+        ];
+        if (step >= ONLINE_AGENT_MAX_STEPS) {
+            upsertMessage(sessionId, { id: assistantId, role: "assistant", text: toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
+            addOnlineLog("Agent Tool Loop 达到步数上限", { maxSteps: ONLINE_AGENT_MAX_STEPS });
+            return;
+        }
+        const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
+        const next = await requestToolResponse({ ...requestConfig, systemPrompt: "" }, nextMessages, ONLINE_AGENT_TOOLS);
+        addOnlineLog(`Agent Tool Loop ${step + 1} 回复`, next);
+        if (next.toolCalls.length) {
+            const writableCalls = next.toolCalls.filter(isWritableToolCall);
+            if (confirmTools && writableCalls.length) {
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || "准备执行工具，等待确认。" });
+                const toolMessageId = nanoid();
+                pendingToolContextRef.current.set(toolMessageId, { messages: nextMessages, toolCalls: next.toolCalls, assistantId, step: step + 1 });
+                appendMessage(sessionId, { id: toolMessageId, role: "tool", title: "确认工具调用", text: summarizeToolCalls(next.toolCalls), detail: { status: "pending", step: step + 1, toolCalls: next.toolCalls } });
+                addOnlineLog("等待用户确认", next.toolCalls);
+                return;
+            }
+            await continueOnlineToolLoop(sessionId, assistantId, nextMessages, next, step + 1);
+            return;
+        }
+        upsertMessage(sessionId, { id: assistantId, role: "assistant", text: next.content || toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行。" });
+    };
+
+    const executeOps = (ops: CanvasAgentOp[]) => {
         const beforeSnapshot = snapshotRef.current;
         const before = snapshotSignature(beforeSnapshot);
         const next = onApplyOps(ops);
         snapshotRef.current = next;
-        const ranGeneration = ops.some((op) => op.type === "run_generation" && op.nodeId && beforeSnapshot.nodes.some((node) => node.id === op.nodeId));
+        const ranGeneration = ops.some((op) => op.type === "run_generation" && Boolean(op.nodeId));
         const changed = before !== snapshotSignature(next) || ranGeneration;
         const noopReason = changed ? "" : explainNoop(ops, beforeSnapshot);
-        addOnlineLog(changed ? "执行成功" : "执行未生效", { ops, ranGeneration, noopReason, before: JSON.parse(before), after: JSON.parse(snapshotSignature(next)) });
-        upsertMessage(sessionId, { id: messageId, role: "tool", title: changed ? "画布操作完成" : "画布操作未生效", text: changed ? summarizeCanvasAgentOps(ops) || "画布操作" : noopReason, detail: { name: "canvas_apply_ops", ops, status: changed ? "completed" : "noop", noopReason } });
-        if (changed && loop?.assistantId && loop.userMessage) {
-            const step = loop.step || 1;
-            if (step < ONLINE_AGENT_MAX_STEPS) {
-                void runOnlineAgentStep(sessionId, nanoid(), loop.history || [], loop.userMessage, { step: step + 1, previous: { changed, ops, snapshot: compactSnapshot(next) } });
-                return true;
-            }
-            else addOnlineLog("Agent Loop 达到步数上限", { maxSteps: ONLINE_AGENT_MAX_STEPS });
-        }
-        return false;
+        return { changed, ops, ranGeneration, noopReason, before: JSON.parse(before), after: JSON.parse(snapshotSignature(next)) };
     };
 
-    const approveOnlineTool = (messageId: string) => {
+    const executeOnlineTool = (name: string, args: Record<string, unknown>): OnlineToolResult => {
+        const current = snapshotRef.current;
+        const requireNode = (id: unknown, expectedType?: CanvasNodeType) => {
+            if (typeof id !== "string" || !id) throw new Error("缺少真实节点 id");
+            const node = current.nodes.find((item) => item.id === id);
+            if (!node) throw new Error(`节点不存在：${id}`);
+            if (expectedType && node.type !== expectedType) throw new Error(`节点类型不匹配：${id}`);
+            return node;
+        };
+        try {
+            if (name === "canvas_get_state") return { ok: true, message: describeCanvasSnapshot(current), data: compactSnapshot(current) };
+            if (name === "canvas_connect_nodes") {
+                const fromNode = requireNode(args.fromNodeId);
+                const toNode = requireNode(args.toNodeId);
+                if (fromNode.id === toNode.id) throw new Error("不能连接同一个节点");
+                const existed = current.connections.some((conn) => conn.fromNodeId === fromNode.id && conn.toNodeId === toNode.id);
+                const result = executeOps([{ type: "connect_nodes", fromNodeId: fromNode.id, toNodeId: toNode.id }]);
+                return { ok: true, message: result.changed ? "已连接节点。" : existed ? "节点已存在连线。" : result.noopReason, data: result };
+            }
+            if (name === "canvas_configure_generation") {
+                const configNode = requireNode(args.configNodeId, CanvasNodeType.Config);
+                const mode = requireGenerationMode(args.mode);
+                const promptNodeIds = requireStringArray(args.promptNodeIds, "promptNodeIds").map((id) => requireNode(id).id);
+                promptNodeIds.forEach((id) => {
+                    if (!snapshotRef.current.connections.some((conn) => conn.fromNodeId === id && conn.toNodeId === configNode.id)) throw new Error(`提示词节点未连接到生成配置节点：${id}`);
+                });
+                if (typeof args.prompt !== "string") throw new Error("prompt 必须是字符串");
+                const prompt = args.prompt.trim();
+                if (!prompt && !promptNodeIds.length) throw new Error("缺少提示词文本或提示词节点 id");
+                const composerContent = promptNodeIds.map((id) => `@[node:${id}]`).concat(prompt ? [prompt] : []).join("\n");
+                const result = executeOps([{ type: "update_node", id: configNode.id, metadata: { generationMode: mode, composerContent, prompt: composerContent, status: "idle" } }]);
+                return { ok: true, message: result.changed ? "已配置生成节点。" : "生成节点配置已是目标值。", data: result };
+            }
+            if (name === "canvas_run_generation") {
+                const configNode = requireNode(args.configNodeId, CanvasNodeType.Config);
+                const mode = requireGenerationMode(args.mode);
+                const result = executeOps([{ type: "run_generation", nodeId: configNode.id, mode }]);
+                return { ok: result.changed, message: result.changed ? "已触发生成。" : result.noopReason, data: result };
+            }
+            if (name === "canvas_delete_nodes") {
+                const nodeIds = requireStringArray(args.nodeIds, "nodeIds");
+                if (!nodeIds.length) throw new Error("缺少要删除的节点 id");
+                nodeIds.forEach((id) => requireNode(id));
+                const result = executeOps([{ type: "delete_node", ids: nodeIds }]);
+                return { ok: result.changed, message: result.changed ? "已删除节点。" : result.noopReason, data: result };
+            }
+            if (name === "canvas_delete_connections") {
+                if (typeof args.all !== "boolean") throw new Error("all 必须是布尔值");
+                const all = args.all;
+                const connectionIds = requireStringArray(args.connectionIds, "connectionIds");
+                if (!all && !connectionIds.length) throw new Error("缺少要删除的连线 id");
+                if (!all) connectionIds.forEach((id) => {
+                    if (!current.connections.some((conn) => conn.id === id)) throw new Error(`连线不存在：${id}`);
+                });
+                const result = executeOps([{ type: "delete_connections", all, ids: connectionIds }]);
+                return { ok: result.changed, message: result.changed ? "已删除连线。" : result.noopReason, data: result };
+            }
+            return { ok: false, message: `不支持的工具：${name}` };
+        } catch (error) {
+            return { ok: false, message: error instanceof Error ? error.message : "工具执行失败" };
+        }
+    };
+
+    const executeOnlineToolCall = (toolCall: ResponseToolCall): OnlineExecutedToolCall => {
+        try {
+            const result = executeOnlineTool(toolCall.function.name, parseToolArguments(toolCall.function.arguments));
+            return { toolCallId: toolCall.id, name: toolCall.function.name, result };
+        } catch (error) {
+            return { toolCallId: toolCall.id, name: toolCall.function.name, result: { ok: false, message: error instanceof Error ? error.message : "工具参数错误" } };
+        }
+    };
+
+    const executeOnlineToolCalls = (toolCalls: ResponseToolCall[]) => {
+        const results: OnlineExecutedToolCall[] = [];
+        let stopped = false;
+        toolCalls.forEach((toolCall) => {
+            if (stopped) {
+                results.push({ toolCallId: toolCall.id, name: toolCall.function.name, result: { ok: false, message: "前一个工具调用失败，未继续执行。" } });
+                return;
+            }
+            const result = executeOnlineToolCall(toolCall);
+            results.push(result);
+            if (!result.result.ok) stopped = true;
+        });
+        return results;
+    };
+
+    const approveOnlineTool = async (messageId: string) => {
         const message = safeSessions.flatMap((session) => session.messages).find((item) => item.id === messageId);
         const detail = objectDetail(message?.detail);
-        const ops = normalizeOnlineOps(toolOps(detail), String(detail.intent || ""), snapshotRef.current);
+        const pendingContext = pendingToolContextRef.current.get(messageId);
+        const toolCalls = pendingContext?.toolCalls || toolCallsFromDetail(detail);
+        const previousMessages = pendingContext?.messages || [];
         const session = safeSessions.find((session) => session.messages.some((item) => item.id === messageId));
-        addOnlineLog("批准工具", { messageId, ops });
-        if (session && ops.length) executeOnlineTool(session.id, messageId, ops, { assistantId: String(detail.assistantId || ""), userMessage: { id: "", role: "user", text: String(detail.intent || "") }, history: messages, step: Number(detail.step) || 1 });
+        addOnlineLog("批准工具", { messageId, toolCalls });
+        const assistantId = pendingContext?.assistantId || "";
+        if (!session) return;
+        if (!toolCalls.length || !previousMessages.length || !assistantId) {
+            upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行失败", text: "工具上下文不完整，无法执行。", detail: { ...detail, status: "failed" } });
+            return;
+        }
+        try {
+            setIsRunning(true);
+            const results = executeOnlineToolCalls(toolCalls);
+            addOnlineLog("工具执行结果", results);
+            upsertMessage(session.id, { id: messageId, role: "tool", title: "工具执行完成", text: results.map((item) => toolResultText(item.result)).join("\n"), detail: { ...detail, results, status: "completed" } });
+            pendingToolContextRef.current.delete(messageId);
+            await continueOnlineToolLoopAfterResults(session.id, assistantId, previousMessages, toolCalls, results, pendingContext?.step || Number(detail.step) || 1);
+        } catch (error) {
+            addOnlineLog("工具续跑失败", error instanceof Error ? error.message : error);
+            appendMessage(session.id, { id: nanoid(), role: "error", title: "操作失败", text: error instanceof Error ? error.message : "操作失败" });
+        } finally {
+            setIsRunning(false);
+        }
     };
 
     const rejectOnlineTool = (messageId: string) => {
         const session = safeSessions.find((session) => session.messages.some((item) => item.id === messageId));
         addOnlineLog("拒绝工具", { messageId });
+        pendingToolContextRef.current.delete(messageId);
         if (session) upsertMessage(session.id, { id: messageId, role: "tool", title: "已拒绝执行", text: "工具调用已取消", detail: { ...objectDetail(session.messages.find((item) => item.id === messageId)?.detail), status: "rejected" } });
     };
 
@@ -708,15 +934,6 @@ function objectDetail(value: unknown) {
     return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-function toolOps(value: unknown) {
-    const ops = objectDetail(value).ops;
-    return Array.isArray(ops) ? (ops as CanvasAgentOp[]) : [];
-}
-
-function sameOps(a: CanvasAgentOp[], b: unknown) {
-    return Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b);
-}
-
 function stringifyLog(value: unknown) {
     return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
@@ -740,28 +957,6 @@ function formatOnlineLogJson(logs: OnlineAgentLog[], context: OnlineAgentLogCont
     return JSON.stringify({ context, logs: logs.map(({ time, title, data }) => ({ time, title, data })) }, null, 2);
 }
 
-function pendingReply(text: string) {
-    return text
-        .replace(/已(?:经)?完成/g, "准备执行")
-        .replace(/已(?:经)?删除/g, "准备删除")
-        .replace(/已(?:经)?连接/g, "准备连接")
-        .replace(/已(?:经)?调整/g, "准备调整")
-        .replace(/已(?:经)?整理/g, "准备整理")
-        .replace(/已(?:经)?移动/g, "准备移动")
-        .replace(/已(?:经)?创建/g, "准备创建")
-        .replace(/已(?:经)?帮你/g, "准备帮你")
-        .replace(/已(?:经)?将/g, "准备将");
-}
-
-function isReadOnlyCanvasQuestion(text: string) {
-    return /(?:有什么|有哪些|看一下|查看|说一下|总结|概括|描述|介绍|分析|当前|现在).*(?:画布|内容|节点|连线)|(?:画布|内容|节点|连线).*(?:有什么|有哪些|是什么|多少|情况|状态)/.test(text);
-}
-
-function cleanReadOnlyReply(reply: string, snapshot: CanvasAgentSnapshot) {
-    const text = reply.replace(/^等待确认[:：]\s*/, "").trim();
-    return text || describeCanvasSnapshot(snapshot);
-}
-
 function describeCanvasSnapshot(snapshot: CanvasAgentSnapshot) {
     const counts = snapshot.nodes.reduce<Record<string, number>>((acc, node) => {
         acc[node.type] = (acc[node.type] || 0) + 1;
@@ -770,44 +965,61 @@ function describeCanvasSnapshot(snapshot: CanvasAgentSnapshot) {
     return `当前画布有 ${snapshot.nodes.length} 个节点、${snapshot.connections.length} 条连线。文本 ${counts[CanvasNodeType.Text] || 0} 个，图片 ${counts[CanvasNodeType.Image] || 0} 个，生成配置 ${counts[CanvasNodeType.Config] || 0} 个，视频 ${counts[CanvasNodeType.Video] || 0} 个，音频 ${counts[CanvasNodeType.Audio] || 0} 个。`;
 }
 
-function normalizeOnlineOps(ops: CanvasAgentOp[], intent: string, snapshot: CanvasAgentSnapshot) {
-    if (/删|删除|移除|清空/.test(intent) && /连线|连接线|线条|边/.test(intent)) return snapshot.connections.length ? [...ops.filter((op) => op.type !== "connect_nodes"), { type: "delete_connections", all: true }] : ops;
-    if (/删|删除|移除/.test(intent) && /生成配置|配置节点|config/i.test(intent)) {
-        const ids = snapshot.nodes.filter((node) => node.type === CanvasNodeType.Config).map((node) => node.id);
-        return ids.length ? (ops.some((op) => op.type === "delete_node") ? ops.map((op) => (op.type === "delete_node" && !op.id && !op.ids?.length ? { ...op, ids } : op)) : [...ops, { type: "delete_node", ids }]) : ops;
+function parseToolArguments(value: string) {
+    try {
+        const parsed = JSON.parse(value || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("工具参数必须是 JSON 对象");
+        return parsed as Record<string, unknown>;
+    } catch {
+        throw new Error("工具参数不是合法 JSON 对象");
     }
-    if (/连线|连接|串联/.test(intent)) {
-        const connectOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "connect_nodes" }> => op.type === "connect_nodes");
-        const resolved = connectOps.map((op) => ({ ...op, fromNodeId: resolveCanvasNodeId(op.fromNodeId, snapshot, intent), toNodeId: resolveCanvasNodeId(op.toNodeId, snapshot, intent) })).filter((op) => op.fromNodeId && op.toNodeId && op.fromNodeId !== op.toNodeId);
-        if (resolved.length) return [...ops.filter((op) => op.type !== "connect_nodes"), ...resolved];
-        const fallback = fallbackConnectOps(snapshot);
-        return fallback.length ? [...ops.filter((op) => op.type !== "connect_nodes"), ...fallback] : ops;
-    }
-    return ops;
 }
 
-function fallbackConnectOps(snapshot: CanvasAgentSnapshot) {
-    const textNode = snapshot.nodes.find((node) => node.type === CanvasNodeType.Text);
-    const configNode = snapshot.nodes.find((node) => node.type === CanvasNodeType.Config);
-    if (textNode && configNode) return [{ type: "connect_nodes" as const, fromNodeId: textNode.id, toNodeId: configNode.id }];
-    const nodes = snapshot.nodes.filter((node) => node.type !== CanvasNodeType.Config).sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
-    return nodes.slice(1).map((node, index) => ({ type: "connect_nodes" as const, fromNodeId: nodes[index].id, toNodeId: node.id }));
+function isWritableToolCall(call: ResponseToolCall) {
+    return call.function.name !== "canvas_get_state";
 }
 
-function resolveCanvasNodeId(value: unknown, snapshot: CanvasAgentSnapshot, intent: string) {
-    const raw = typeof value === "string" ? value : "";
-    if (!raw) return "";
-    if (snapshot.nodes.some((node) => node.id === raw)) return raw;
-    const text = normalizeNodeToken(raw);
-    const titleMatch = snapshot.nodes.find((node) => normalizeNodeToken(node.title) === text);
-    if (titleMatch) return titleMatch.id;
-    if (/note|文本|文字|提示词|prompt/i.test(raw) || /文本节点|note/i.test(intent)) return snapshot.nodes.find((node) => node.type === CanvasNodeType.Text)?.id || raw;
-    if (/config|生成配置|配置节点|配置/i.test(raw) || /生成配置|配置节点|config/i.test(intent)) return snapshot.nodes.find((node) => node.type === CanvasNodeType.Config)?.id || raw;
-    return raw;
+function toolCallsFromDetail(detail: Record<string, unknown>): ResponseToolCall[] {
+    return Array.isArray(detail.toolCalls) ? (detail.toolCalls.filter(isResponseToolCall) as ResponseToolCall[]) : [];
 }
 
-function normalizeNodeToken(value: unknown) {
-    return (typeof value === "string" ? value : "").trim().toLowerCase().replace(/\s+/g, "");
+function isResponseToolCall(value: unknown): value is ResponseToolCall {
+    const item = objectDetail(value);
+    const fn = objectDetail(item.function);
+    return typeof item.id === "string" && item.type === "function" && typeof fn.name === "string" && typeof fn.arguments === "string";
+}
+
+function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMessage {
+    return { type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments };
+}
+
+function summarizeToolCalls(calls: ResponseToolCall[]) {
+    return calls.map((call) => toolCallLabel(call.function.name)).join("，") || "工具调用";
+}
+
+function toolCallLabel(name: string) {
+    if (name === "canvas_get_state") return "读取画布";
+    if (name === "canvas_connect_nodes") return "连接节点";
+    if (name === "canvas_configure_generation") return "配置生成";
+    if (name === "canvas_run_generation") return "触发生成";
+    if (name === "canvas_delete_nodes") return "删除节点";
+    if (name === "canvas_delete_connections") return "删除连线";
+    return name;
+}
+
+function toolResultText(result: OnlineToolResult) {
+    return result.message;
+}
+
+function requireGenerationMode(value: unknown): "text" | "image" | "video" | "audio" {
+    if (value === "text" || value === "image" || value === "video" || value === "audio") return value;
+    throw new Error("生成模式必须是 text、image、video 或 audio");
+}
+
+function requireStringArray(value: unknown, field: string): string[] {
+    if (!Array.isArray(value)) throw new Error(`${field} 必须是字符串数组`);
+    if (!value.every((item) => typeof item === "string" && Boolean(item))) throw new Error(`${field} 必须只包含非空字符串`);
+    return value as string[];
 }
 
 function snapshotSignature(snapshot: CanvasAgentSnapshot) {
@@ -835,7 +1047,7 @@ function explainNoop(ops: CanvasAgentOp[], snapshot: CanvasAgentSnapshot) {
     if (generationOps.length && generationOps.every((op) => !nodeIds.has(op.nodeId))) return "没有找到要触发生成的节点。";
     if (ops.every((op) => op.type === "set_viewport")) return "视图已经是目标状态。";
     if (selectOps.length && selectOps.every((op) => JSON.stringify(op.ids || []) === JSON.stringify(snapshot.selectedNodeIds))) return "选区已经是目标状态。";
-    return "工具已执行，但画布状态没有变化；请在日志 tab 查看归一化操作和执行前后状态。";
+    return "工具已执行，但画布状态没有变化；请在日志 tab 查看工具参数和执行前后状态。";
 }
 
 function nodeToReference(node: CanvasNodeData): CanvasAssistantReference | null {
@@ -857,17 +1069,19 @@ function buildAssistantReferences(nodes: CanvasNodeData[], selectedNodeIds: Set<
         .filter((item): item is CanvasAssistantReference => Boolean(item));
 }
 
-async function buildAgentMessages(snapshot: CanvasAgentSnapshot, history: CanvasAssistantMessage[], userMessage: CanvasAssistantMessage, loop?: OnlineLoopContext): Promise<ChatCompletionMessage[]> {
+async function buildToolAgentMessages(snapshot: CanvasAgentSnapshot, history: CanvasAssistantMessage[], userMessage: CanvasAssistantMessage): Promise<ResponseInputMessage[]> {
     const refs = userMessage.references || [];
-    const loopText = loop?.previous ? `\n\n上一轮工具执行结果：${JSON.stringify(loop.previous)}\n请判断用户任务是否已经完成。完成则返回 {"reply":"完成说明","ops":[]}；未完成则只返回下一步 ops。` : "";
     return [
         { role: "system", content: ONLINE_AGENT_PROMPT },
-        ...history.slice(-8).map((message): ChatCompletionMessage => ({ role: message.role === "user" ? "user" : message.role === "system" ? "system" : "assistant", content: message.text })),
+        ...history
+            .filter((message) => message.role === "user" || message.role === "assistant" || message.role === "system")
+            .slice(-8)
+            .map((message): ResponseInputMessage => ({ role: message.role, content: message.text })),
         {
             role: "user",
             content: [
                 ...refs.flatMap((item) => (item.text ? [{ type: "text" as const, text: `选中节点 ${item.title}：${item.text}` }] : [])),
-                { type: "text", text: `当前画布：${JSON.stringify(compactSnapshot(snapshot))}\n\n用户需求：${userMessage.text}${loopText}` },
+                { type: "text", text: `当前画布：${JSON.stringify(compactSnapshot(snapshot))}\n\n用户需求：${userMessage.text}` },
                 ...(await Promise.all(refs.filter((item) => item.dataUrl).map(async (item) => ({ type: "image_url" as const, image_url: { url: await imageToDataUrl(item) } })))),
             ],
         },
@@ -901,22 +1115,6 @@ function compactMetadata(metadata: CanvasNodeData["metadata"]) {
         model: metadata?.model,
         size: metadata?.size,
     };
-}
-
-function parseAgentResult(text: string): { reply: string; ops: CanvasAgentOp[] } {
-    const payload = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")) as { reply?: unknown; ops?: unknown };
-    const ops = Array.isArray(payload.ops) ? (payload.ops.filter((op) => op && typeof op === "object" && typeof (op as CanvasAgentOp).type === "string") as CanvasAgentOp[]) : [];
-    return { reply: String(payload.reply || (ops.length ? "已完成画布操作" : "没有需要执行的画布操作")), ops };
-}
-
-function partialAgentReply(text: string) {
-    const match = text.match(/"reply"\s*:\s*"((?:\\.|[^"\\])*)/);
-    if (!match) return "";
-    try {
-        return JSON.parse(`"${match[1].replace(/\\?$/, "")}"`);
-    } catch {
-        return match[1];
-    }
 }
 
 function createSession(): CanvasAssistantSession {
