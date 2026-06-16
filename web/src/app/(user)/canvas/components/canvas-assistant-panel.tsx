@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import copyToClipboard from "copy-to-clipboard";
 import { Bot, Copy, Cpu, History, PanelRightClose, Plus, Settings2, Trash2, X } from "lucide-react";
-import { Button, Modal, Switch, Tooltip } from "antd";
+import { Button, Modal, Segmented, Switch, Tooltip } from "antd";
 import { motion } from "motion/react";
 
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -28,9 +28,10 @@ export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
 const ONLINE_AGENT_MAX_STEPS = 4;
 const ONLINE_AGENT_PROMPT =
-    '你是 Infinite Canvas 网页内置在线画布助手。你只能返回 JSON，不要 Markdown，不要解释。格式：{"reply":"给用户看的中文说明","ops":[...]}。reply 只能说明“准备执行/等待确认”，不能说“已完成/已删除/已连接/已调整”，因为工具操作需要用户确认后才会执行。工具执行结果返回后，你要判断任务是否完成；完成时返回 ops:[]，未完成时返回下一步 ops。ops 可用类型：add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。add_node 支持 nodeType: text/image/config/video/audio，position:{x,y}，metadata。delete_node 必须带 id/ids，或用 nodeType:"config" 删除全部生成配置节点。delete_connections 可用 all:true 删除全部连线。文本内容放 metadata.content。用户要求生图、生成文字、视频或音频时，不要直接生成最终内容，要创建提示词文本节点、config 节点、connect_nodes，并追加 run_generation 触发画布已有生成工具；config 节点 metadata 至少包含 generationMode、composerContent、prompt、status:"idle"，composerContent/prompt 用 @[node:id] 引用提示词节点或参考节点。只输出能直接 JSON.parse 的对象。';
+    '你是 Infinite Canvas 网页内置在线画布助手。你只能返回 JSON，不要 Markdown，不要解释。格式：{"reply":"给用户看的中文说明","ops":[...]}。用户只是询问、查看、总结、描述或分析当前画布内容时，必须返回 ops:[]，reply 直接回答画布现状，不要出现“等待确认”。只有需要修改画布时才返回 ops，且 reply 只能说明“准备执行/等待确认”，不能说“已完成/已删除/已连接/已调整”，因为工具操作需要用户确认后才会执行。返回 ops 时必须使用当前画布 JSON 里的真实 node.id / connection.id，不要使用节点标题、类型名、Note、生成配置等别名当 id。工具执行结果返回后，你要判断用户任务是否完成；完成时返回 ops:[]，未完成时返回下一步 ops。ops 可用类型：add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。add_node 支持 nodeType: text/image/config/video/audio，position:{x,y}，metadata。delete_node 必须带 id/ids，或用 nodeType:"config" 删除全部生成配置节点。delete_connections 可用 all:true 删除全部连线。文本内容放 metadata.content。用户要求生图、生成文字、视频或音频时，不要直接生成最终内容，要创建提示词文本节点、config 节点、connect_nodes，并追加 run_generation 触发画布已有生成工具；config 节点 metadata 至少包含 generationMode、composerContent、prompt、status:"idle"，composerContent/prompt 用 @[node:id] 引用提示词节点或参考节点。只输出能直接 JSON.parse 的对象。';
 type OnlineAgentTab = "setup" | "chat" | "history" | "log";
 type OnlineAgentLog = { id: string; time: string; title: string; data?: unknown };
+type OnlineAgentLogContext = { model: string; running: boolean; confirmTools: boolean; messages: number; nodes: number; connections: number };
 type OnlineLoopContext = { step: number; previous?: unknown };
 
 type CanvasAssistantPanelProps = {
@@ -193,8 +194,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             });
             addOnlineLog("模型原始回复", answer);
             const result = parseAgentResult(answer);
+            const readOnly = isReadOnlyCanvasQuestion(userMessage.text);
+            const reply = readOnly ? cleanReadOnlyReply(result.reply, snapshotRef.current) : result.reply;
             addOnlineLog("解析结果", result);
-            const ops = normalizeOnlineOps(result.ops, userMessage.text, snapshotRef.current);
+            const ops = readOnly ? [] : normalizeOnlineOps(result.ops, userMessage.text, snapshotRef.current);
             addOnlineLog("归一化操作", ops);
             if (ops.length && sameOps(ops, objectDetail(loop.previous).ops)) {
                 addOnlineLog(`Agent Loop ${loop.step} 停止`, { reason: "same_ops", ops });
@@ -202,14 +205,14 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
                 return;
             }
             if (ops.length) {
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: pendingReply(result.reply) });
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: pendingReply(reply) });
                 const toolMessage: CanvasAssistantMessage = { id: nanoid(), role: "tool", title: confirmTools ? "确认工具调用" : "画布操作执行中", text: summarizeCanvasAgentOps(ops) || "画布操作", detail: { name: "canvas_apply_ops", ops, intent: userMessage.text, assistantId, step: loop.step, status: confirmTools ? "pending" : "running" } };
                 appendMessage(sessionId, toolMessage);
                 addOnlineLog(confirmTools ? "等待用户确认" : "自动执行工具", { step: loop.step, ops });
                 if (!confirmTools) continued = executeOnlineTool(sessionId, toolMessage.id, ops, { assistantId, userMessage, history, step: loop.step });
             } else {
-                addOnlineLog(`Agent Loop ${loop.step} 结束`, { reply: result.reply, reason: "no_ops" });
-                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: result.reply });
+                addOnlineLog(`Agent Loop ${loop.step} 结束`, { reply, reason: readOnly ? "readonly" : "no_ops" });
+                upsertMessage(sessionId, { id: assistantId, role: "assistant", text: reply });
             }
         } catch (error) {
             addOnlineLog("请求失败", error instanceof Error ? error.message : error);
@@ -305,11 +308,6 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
                                 <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={iconButtonStyle} icon={<X className="size-4" />} disabled={!historySessions.length} onClick={() => setDeleteChatIds(historySessions.map((session) => session.id))} />
                             </Tooltip>
                         ) : null}
-                        {view === "log" ? (
-                            <Tooltip title="复制日志">
-                                <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" style={iconButtonStyle} icon={<Copy className="size-4" />} disabled={!onlineLogs.length} onClick={() => copyToClipboard(formatOnlineLogs(onlineLogs))} />
-                            </Tooltip>
-                        ) : null}
                         <Tooltip title="新对话">
                             <Button
                                 type="text"
@@ -346,7 +344,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
                             onDelete={(id) => setDeleteChatIds([id])}
                         />
                     ) : view === "log" ? (
-                        <OnlineAgentLogView logs={onlineLogs} theme={theme} />
+                        <OnlineAgentLogView logs={onlineLogs} theme={theme} context={{ model: activeModel, running: isRunning, confirmTools, messages: messages.length, nodes: snapshot.nodes.length, connections: snapshot.connections.length }} onClear={() => setOnlineLogs([])} />
                     ) : messages.length ? (
                         <>
                             {messages.map((message) => (
@@ -615,19 +613,35 @@ function OnlineAgentSetupView({ theme, activeModel, onOpenConfig }: { theme: (ty
     );
 }
 
-function OnlineAgentLogView({ logs, theme }: { logs: OnlineAgentLog[]; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+function OnlineAgentLogView({ logs, theme, context, onClear }: { logs: OnlineAgentLog[]; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; context: OnlineAgentLogContext; onClear: () => void }) {
+    const [mode, setMode] = useState<"text" | "json">("text");
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const content = mode === "text" ? formatOnlineLogText(logs, context) : formatOnlineLogJson(logs, context);
+    const lastError = [...logs].reverse().find((item) => /错误|失败|error/i.test(`${item.title}\n${stringifyLog(item.data)}`));
+    const copy = async (value = content) => {
+        if (copyToClipboard(value)) return;
+        textareaRef.current?.focus();
+        textareaRef.current?.select();
+    };
     return (
-        <div className="space-y-2">
-            {!logs.length ? <div className="px-3 py-8 text-center text-sm" style={{ color: theme.node.muted }}>网站 Agent 的排查日志会显示在这里</div> : null}
-            {logs.map((log) => (
-                <details key={log.id} className="rounded-lg border px-3 py-2" style={{ borderColor: theme.node.stroke }}>
-                    <summary className="cursor-pointer list-none text-sm font-medium">
-                        {log.title}
-                        <span className="ml-2 text-xs font-normal opacity-50">{log.time}</span>
-                    </summary>
-                    {log.data !== undefined ? <pre className="thin-scrollbar mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs leading-5" style={{ color: theme.node.muted }}>{stringifyLog(log.data)}</pre> : null}
-                </details>
-            ))}
+        <div className="flex min-h-full flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <Segmented size="small" value={mode} onChange={(value) => setMode(value as "text" | "json")} options={[{ label: "排查日志", value: "text" }, { label: "原始 JSON", value: "json" }]} />
+                <div className="flex items-center gap-2">
+                    <span className="text-xs" style={{ color: theme.node.muted }}>{logs.length} 条</span>
+                    <Button size="small" icon={<Copy className="size-3.5" />} disabled={!logs.length} onClick={() => void copy()}>复制</Button>
+                    <Button size="small" disabled={!lastError} onClick={() => lastError && void copy(formatOnlineLogText([lastError], context))}>最近错误</Button>
+                    <Button size="small" danger type="text" icon={<Trash2 className="size-3.5" />} disabled={!logs.length} onClick={onClear}>清空</Button>
+                </div>
+            </div>
+            <textarea
+                ref={textareaRef}
+                readOnly
+                value={content}
+                className="thin-scrollbar min-h-[360px] flex-1 resize-none rounded-lg border bg-transparent p-3 font-mono text-xs leading-5 outline-none"
+                style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                onFocus={(event) => event.currentTarget.select()}
+            />
         </div>
     );
 }
@@ -707,8 +721,23 @@ function stringifyLog(value: unknown) {
     return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-function formatOnlineLogs(logs: OnlineAgentLog[]) {
-    return logs.map((log) => [`[${log.time}] ${log.title}`, log.data === undefined ? "" : stringifyLog(log.data)].filter(Boolean).join("\n")).join("\n\n");
+function formatOnlineLogText(logs: OnlineAgentLog[], context: OnlineAgentLogContext) {
+    const head = [
+        "Infinite Canvas 网站 Agent 诊断日志",
+        `model: ${context.model || "none"}`,
+        `running: ${context.running}`,
+        `confirmTools: ${context.confirmTools}`,
+        `messages: ${context.messages}`,
+        `nodes: ${context.nodes}`,
+        `connections: ${context.connections}`,
+        `logs: ${logs.length}`,
+    ].join("\n");
+    const body = logs.map((log, index) => [`#${index + 1} ${log.time} ${log.title}`, log.data === undefined ? "" : stringifyLog(log.data)].filter(Boolean).join("\n")).join("\n\n---\n\n");
+    return [head, body || "暂无事件日志"].join("\n\n");
+}
+
+function formatOnlineLogJson(logs: OnlineAgentLog[], context: OnlineAgentLogContext) {
+    return JSON.stringify({ context, logs: logs.map(({ time, title, data }) => ({ time, title, data })) }, null, 2);
 }
 
 function pendingReply(text: string) {
@@ -724,6 +753,23 @@ function pendingReply(text: string) {
         .replace(/已(?:经)?将/g, "准备将");
 }
 
+function isReadOnlyCanvasQuestion(text: string) {
+    return /(?:有什么|有哪些|看一下|查看|说一下|总结|概括|描述|介绍|分析|当前|现在).*(?:画布|内容|节点|连线)|(?:画布|内容|节点|连线).*(?:有什么|有哪些|是什么|多少|情况|状态)/.test(text);
+}
+
+function cleanReadOnlyReply(reply: string, snapshot: CanvasAgentSnapshot) {
+    const text = reply.replace(/^等待确认[:：]\s*/, "").trim();
+    return text || describeCanvasSnapshot(snapshot);
+}
+
+function describeCanvasSnapshot(snapshot: CanvasAgentSnapshot) {
+    const counts = snapshot.nodes.reduce<Record<string, number>>((acc, node) => {
+        acc[node.type] = (acc[node.type] || 0) + 1;
+        return acc;
+    }, {});
+    return `当前画布有 ${snapshot.nodes.length} 个节点、${snapshot.connections.length} 条连线。文本 ${counts[CanvasNodeType.Text] || 0} 个，图片 ${counts[CanvasNodeType.Image] || 0} 个，生成配置 ${counts[CanvasNodeType.Config] || 0} 个，视频 ${counts[CanvasNodeType.Video] || 0} 个，音频 ${counts[CanvasNodeType.Audio] || 0} 个。`;
+}
+
 function normalizeOnlineOps(ops: CanvasAgentOp[], intent: string, snapshot: CanvasAgentSnapshot) {
     if (/删|删除|移除|清空/.test(intent) && /连线|连接线|线条|边/.test(intent)) return snapshot.connections.length ? [...ops.filter((op) => op.type !== "connect_nodes"), { type: "delete_connections", all: true }] : ops;
     if (/删|删除|移除/.test(intent) && /生成配置|配置节点|config/i.test(intent)) {
@@ -731,11 +777,37 @@ function normalizeOnlineOps(ops: CanvasAgentOp[], intent: string, snapshot: Canv
         return ids.length ? (ops.some((op) => op.type === "delete_node") ? ops.map((op) => (op.type === "delete_node" && !op.id && !op.ids?.length ? { ...op, ids } : op)) : [...ops, { type: "delete_node", ids }]) : ops;
     }
     if (/连线|连接|串联/.test(intent)) {
-        const nodes = snapshot.nodes.filter((node) => node.type !== CanvasNodeType.Config).sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
-        const links = nodes.slice(1).map((node, index) => ({ type: "connect_nodes" as const, fromNodeId: nodes[index].id, toNodeId: node.id }));
-        return links.length && !ops.some((op) => op.type === "connect_nodes" && op.fromNodeId && op.toNodeId) ? [...ops, ...links] : ops;
+        const connectOps = ops.filter((op): op is Extract<CanvasAgentOp, { type: "connect_nodes" }> => op.type === "connect_nodes");
+        const resolved = connectOps.map((op) => ({ ...op, fromNodeId: resolveCanvasNodeId(op.fromNodeId, snapshot, intent), toNodeId: resolveCanvasNodeId(op.toNodeId, snapshot, intent) })).filter((op) => op.fromNodeId && op.toNodeId && op.fromNodeId !== op.toNodeId);
+        if (resolved.length) return [...ops.filter((op) => op.type !== "connect_nodes"), ...resolved];
+        const fallback = fallbackConnectOps(snapshot);
+        return fallback.length ? [...ops.filter((op) => op.type !== "connect_nodes"), ...fallback] : ops;
     }
     return ops;
+}
+
+function fallbackConnectOps(snapshot: CanvasAgentSnapshot) {
+    const textNode = snapshot.nodes.find((node) => node.type === CanvasNodeType.Text);
+    const configNode = snapshot.nodes.find((node) => node.type === CanvasNodeType.Config);
+    if (textNode && configNode) return [{ type: "connect_nodes" as const, fromNodeId: textNode.id, toNodeId: configNode.id }];
+    const nodes = snapshot.nodes.filter((node) => node.type !== CanvasNodeType.Config).sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
+    return nodes.slice(1).map((node, index) => ({ type: "connect_nodes" as const, fromNodeId: nodes[index].id, toNodeId: node.id }));
+}
+
+function resolveCanvasNodeId(value: unknown, snapshot: CanvasAgentSnapshot, intent: string) {
+    const raw = typeof value === "string" ? value : "";
+    if (!raw) return "";
+    if (snapshot.nodes.some((node) => node.id === raw)) return raw;
+    const text = normalizeNodeToken(raw);
+    const titleMatch = snapshot.nodes.find((node) => normalizeNodeToken(node.title) === text);
+    if (titleMatch) return titleMatch.id;
+    if (/note|文本|文字|提示词|prompt/i.test(raw) || /文本节点|note/i.test(intent)) return snapshot.nodes.find((node) => node.type === CanvasNodeType.Text)?.id || raw;
+    if (/config|生成配置|配置节点|配置/i.test(raw) || /生成配置|配置节点|config/i.test(intent)) return snapshot.nodes.find((node) => node.type === CanvasNodeType.Config)?.id || raw;
+    return raw;
+}
+
+function normalizeNodeToken(value: unknown) {
+    return (typeof value === "string" ? value : "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
 function snapshotSignature(snapshot: CanvasAgentSnapshot) {
