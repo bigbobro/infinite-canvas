@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import copyToClipboard from "copy-to-clipboard";
-import { Bot, Copy, History, PanelRightClose, Plus, Settings2, Trash2, X } from "lucide-react";
+import { Bot, Copy, Cpu, History, PanelRightClose, Plus, Settings2, Trash2, X } from "lucide-react";
 import { Button, Modal, Switch, Tooltip } from "antd";
 import { motion } from "motion/react";
 
-import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { requestImageQuestion, type ChatCompletionMessage } from "@/services/api/image";
@@ -16,6 +16,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { DiaTextReveal } from "@/components/ui/dia-text-reveal";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { AgentChatComposer, AgentChatMessage, AgentModeSwitch, AgentPanelTabs, AgentWorkingMessage, type CanvasAgentChatMessage, type CanvasAgentMode } from "./canvas-agent-chat-ui";
 import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
@@ -23,8 +24,8 @@ import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantRefere
 import { useCanvasAgentStore } from "../stores/use-canvas-agent-store";
 import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
 
-const PANEL_MOTION_MS = 500;
-const PANEL_MOTION_SECONDS = PANEL_MOTION_MS / 1000;
+export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
+const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
 const ONLINE_AGENT_MAX_STEPS = 4;
 const ONLINE_AGENT_PROMPT =
     '你是 Infinite Canvas 网页内置在线画布助手。你只能返回 JSON，不要 Markdown，不要解释。格式：{"reply":"给用户看的中文说明","ops":[...]}。reply 只能说明“准备执行/等待确认”，不能说“已完成/已删除/已连接/已调整”，因为工具操作需要用户确认后才会执行。工具执行结果返回后，你要判断任务是否完成；完成时返回 ops:[]，未完成时返回下一步 ops。ops 可用类型：add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。add_node 支持 nodeType: text/image/config/video/audio，position:{x,y}，metadata。delete_node 必须带 id/ids，或用 nodeType:"config" 删除全部生成配置节点。delete_connections 可用 all:true 删除全部连线。文本内容放 metadata.content。用户要求生图、生成文字、视频或音频时，不要直接生成最终内容，要创建提示词文本节点、config 节点、connect_nodes，并追加 run_generation 触发画布已有生成工具；config 节点 metadata 至少包含 generationMode、composerContent、prompt、status:"idle"，composerContent/prompt 用 @[node:id] 引用提示词节点或参考节点。只输出能直接 JSON.parse 的对象。';
@@ -46,26 +47,26 @@ type CanvasAssistantPanelProps = {
     onPasteImage: (file: File) => void;
     agentMode: CanvasAgentMode;
     onAgentModeChange: (mode: CanvasAgentMode) => void;
-    onCollapseStart: () => void;
+    closing: boolean;
     onCollapse: () => void;
 };
 
-export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, onUndoOps, onPasteImage, agentMode, onAgentModeChange, onCollapseStart, onCollapse }: CanvasAssistantPanelProps) {
+export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onApplyOps, canUndoOps, onUndoOps, onPasteImage, agentMode, onAgentModeChange, closing, onCollapse }: CanvasAssistantPanelProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const updateConfig = useConfigStore((state) => state.updateConfig);
     const confirmTools = useCanvasAgentStore((state) => state.confirmTools);
     const setAgentState = useCanvasAgentStore((state) => state.setAgentState);
-    const [width, setWidth] = useState(390);
+    const [width, setWidth] = useState(520);
     const [view, setView] = useState<OnlineAgentTab>("chat");
     const [prompt, setPrompt] = useState("");
     const [isRunning, setIsRunning] = useState(false);
     const [deleteChatIds, setDeleteChatIds] = useState<string[]>([]);
     const [onlineLogs, setOnlineLogs] = useState<OnlineAgentLog[]>([]);
-    const [closing, setClosing] = useState(false);
     const [resizing, setResizing] = useState(false);
     const [removedReferenceIds, setRemovedReferenceIds] = useState<Set<string>>(new Set());
     const [localSessions, setLocalSessions] = useState<CanvasAssistantSession[]>(() => (sessions.length ? sessions : [createSession()]));
@@ -282,9 +283,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
     };
 
     const collapse = () => {
-        setClosing(true);
-        onCollapseStart();
-        window.setTimeout(onCollapse, PANEL_MOTION_MS);
+        onCollapse();
     };
 
     const onlineContent = (
@@ -398,9 +397,7 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
                         left={
                             <>
                                 <CanvasPromptLibrary onSelect={setPrompt} />
-                                <button type="button" className="max-w-[180px] truncate rounded-full px-2 py-1 text-xs opacity-60 transition hover:opacity-100" style={{ background: theme.node.fill, color: theme.node.text }} onClick={() => openConfigDialog(true)} title="配置文本模型">
-                                    {activeModel || "配置模型"}
-                                </button>
+                                <AgentTextModelPicker config={effectiveConfig} value={effectiveConfig.textModel} onChange={(model) => updateConfig("textModel", model)} />
                             </>
                         }
                     />
@@ -486,6 +483,59 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
             </motion.aside>
         </motion.div>
     );
+}
+
+function AgentTextModelPicker({ config, value, onChange }: { config: AiConfig; value: string; onChange: (model: string) => void }) {
+    const options = useMemo(() => Array.from(new Set([value, ...selectableModelsByCapability(config, "text")].filter(Boolean))), [config, value]);
+    const current = value || "";
+    return (
+        <Select value={current} onValueChange={onChange}>
+            <SelectTrigger
+                hideChevron
+                className="h-7 min-w-0 max-w-[220px] gap-1.5 border-0 bg-transparent px-1 py-0 text-xs font-normal shadow-none hover:bg-transparent hover:opacity-75 focus-visible:border-transparent focus-visible:ring-0 data-[state=open]:ring-0 dark:bg-transparent dark:hover:bg-transparent"
+                title={current ? `${modelOptionName(current)} · ${resolveModelChannel(config, current).name}` : "选择文本模型"}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+            >
+                <AgentModelIcon model={current} />
+                <span className="min-w-0 truncate">{current ? modelOptionName(current) : "选择文本模型"}</span>
+                {current ? <span className="shrink-0 opacity-55">{resolveModelChannel(config, current).name}</span> : null}
+            </SelectTrigger>
+            <SelectContent data-canvas-no-zoom className="z-[1200] w-72 max-w-[calc(100vw-24px)]" position="popper" align="start" side="bottom" sideOffset={6} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+                {options.length ? (
+                    options.map((model) => (
+                        <SelectItem key={model} value={model} textValue={`${modelOptionName(model)} ${resolveModelChannel(config, model).name}`}>
+                            <span className="flex min-w-0 items-center gap-2">
+                                <AgentModelIcon model={model} />
+                                <span className="min-w-0 flex-1 truncate">{modelOptionName(model)}</span>
+                                <span className="shrink-0 text-xs opacity-55">{resolveModelChannel(config, model).name}</span>
+                            </span>
+                        </SelectItem>
+                    ))
+                ) : (
+                    <SelectItem value="__empty_text_model__" disabled>
+                        暂无文本模型
+                    </SelectItem>
+                )}
+            </SelectContent>
+        </Select>
+    );
+}
+
+function AgentModelIcon({ model }: { model: string }) {
+    const icon = resolveModelIcon(modelOptionName(model));
+    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <Cpu className="size-4 shrink-0 opacity-70" />;
+}
+
+function resolveModelIcon(model: string) {
+    const name = model.toLowerCase();
+    if (name.includes("claude") || name.includes("anthropic")) return "/icons/claude.svg";
+    if (name.includes("gemini") || name.includes("google")) return "/icons/gemini.svg";
+    if (name.includes("gpt") || name.includes("openai")) return "/icons/openai.svg";
+    if (name.includes("grok")) return "/icons/grok.svg";
+    if (name.includes("deepseek")) return "/icons/deepseek.svg";
+    if (name.includes("glm")) return "/icons/glm.svg";
+    return "";
 }
 
 function AssistantHistory({

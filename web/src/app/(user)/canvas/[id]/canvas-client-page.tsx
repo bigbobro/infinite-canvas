@@ -26,7 +26,7 @@ import { NODE_DEFAULT_SIZE, getNodeSpec } from "../constants";
 import { ActiveConnectionPath, ConnectionPath } from "../components/canvas-connections";
 import { CanvasConfigComposer } from "../components/canvas-config-composer";
 import { CanvasConfigNodePanel } from "../components/canvas-config-node-panel";
-import { CanvasAssistantPanel } from "../components/canvas-assistant-panel";
+import { CANVAS_AGENT_PANEL_MOTION_MS, CanvasAssistantPanel } from "../components/canvas-assistant-panel";
 import { CanvasNodeContextMenu } from "../components/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "../components/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "../components/canvas-node-crop-dialog";
@@ -291,6 +291,7 @@ function InfiniteCanvasPage() {
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [assistantCollapsed, setAssistantCollapsed] = useState(true);
     const [assistantMounted, setAssistantMounted] = useState(false);
+    const [assistantClosing, setAssistantClosing] = useState(false);
     const [agentMode, setAgentMode] = useState<CanvasAgentMode>("online");
     const [agentUndoSnapshot, setAgentUndoSnapshot] = useState<CanvasAgentSnapshot | null>(null);
     const [titleEditing, setTitleEditing] = useState(false);
@@ -308,6 +309,7 @@ function InfiniteCanvasPage() {
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
+    const agentCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
 
     const createHistoryEntry = useCallback(
@@ -392,6 +394,13 @@ function InfiniteCanvasPage() {
             }
         };
     }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded, showImageInfo]);
+
+    useEffect(
+        () => () => {
+            if (agentCloseTimerRef.current) clearTimeout(agentCloseTimerRef.current);
+        },
+        [],
+    );
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
@@ -2338,13 +2347,24 @@ function InfiniteCanvasPage() {
 
     const assistantOpen = assistantMounted && !assistantCollapsed;
     const openAgent = (mode: CanvasAgentMode = agentMode) => {
+        if (agentCloseTimerRef.current) {
+            clearTimeout(agentCloseTimerRef.current);
+            agentCloseTimerRef.current = null;
+        }
         setAgentMode(mode);
         setAssistantMounted(true);
+        setAssistantClosing(false);
         setAssistantCollapsed(false);
     };
     const closeAgent = () => {
+        if (!assistantMounted || assistantClosing) return;
         setAssistantCollapsed(true);
-        setAssistantMounted(false);
+        setAssistantClosing(true);
+        agentCloseTimerRef.current = setTimeout(() => {
+            agentCloseTimerRef.current = null;
+            setAssistantMounted(false);
+            setAssistantClosing(false);
+        }, CANVAS_AGENT_PANEL_MOTION_MS);
     };
 
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -2665,8 +2685,8 @@ function InfiniteCanvasPage() {
                     onPasteImage={pasteAssistantImage}
                     agentMode={agentMode}
                     onAgentModeChange={setAgentMode}
-                    onCollapseStart={() => setAssistantCollapsed(true)}
-                    onCollapse={() => setAssistantMounted(false)}
+                    closing={assistantClosing}
+                    onCollapse={closeAgent}
                 />
             ) : null}
         </main>
