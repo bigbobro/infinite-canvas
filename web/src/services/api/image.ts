@@ -16,11 +16,12 @@ export type ResponseToolCall = {
     id: string;
     type: "function";
     function: { name: string; arguments: string };
+    thoughtSignature?: string;
 };
 
 export type ResponseInputMessage =
     | AiTextMessage
-    | { type: "function_call"; call_id: string; name: string; arguments: string }
+    | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
     | { role: "tool"; tool_call_id: string; content: string };
 
 export type ResponseFunctionTool = {
@@ -71,6 +72,24 @@ type ImageApiResponse = {
     code?: number;
     msg?: string;
 };
+type GeminiPart = {
+    text?: string;
+    inlineData?: { mimeType?: string; data?: string };
+    inline_data?: { mime_type?: string; mimeType?: string; data?: string };
+    fileData?: { mimeType?: string; fileUri?: string };
+    functionCall?: { id?: string; name?: string; args?: Record<string, unknown> };
+    functionResponse?: { id?: string; name?: string; response?: Record<string, unknown> };
+    thoughtSignature?: string;
+    thought_signature?: string;
+};
+type GeminiContent = { role?: "user" | "model"; parts: GeminiPart[] };
+type GeminiPayload = {
+    candidates?: Array<{ content?: { parts?: GeminiPart[] }; finishReason?: string }>;
+    models?: Array<{ name?: string }>;
+    error?: { message?: string };
+    promptFeedback?: { blockReason?: string };
+};
+type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
 type RequestOptions = { signal?: AbortSignal };
 
 const QUALITY_BASE: Record<string, number> = {
@@ -220,6 +239,29 @@ function aiHeaders(config: AiConfig, contentType?: string) {
     };
 }
 
+function geminiBaseUrl(config: Pick<AiConfig, "baseUrl">) {
+    const normalizedBaseUrl = config.baseUrl.trim().replace(/\/+$/, "");
+    const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
+    return lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/v1beta") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1beta`;
+}
+
+function geminiModelName(model: string) {
+    return model.trim().replace(/^models\//, "");
+}
+
+function geminiApiUrl(config: Pick<AiConfig, "baseUrl" | "model">, action?: "generateContent" | "streamGenerateContent") {
+    const baseUrl = geminiBaseUrl(config);
+    if (!action) return `${baseUrl}/models`;
+    return `${baseUrl}/models/${encodeURIComponent(geminiModelName(config.model))}:${action}`;
+}
+
+function geminiHeaders(config: Pick<AiConfig, "apiKey">) {
+    return {
+        "x-goog-api-key": config.apiKey,
+        "Content-Type": "application/json",
+    };
+}
+
 function withSystemMessage<T extends ResponseInputMessage>(config: AiConfig, messages: T[]): ResponseInputMessage[] {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? [{ role: "system" as const, content: systemPrompt }, ...messages] : messages;
@@ -286,6 +328,11 @@ function stringValue(value: unknown) {
 function validateResponsePayload(payload: ResponseApiPayload) {
     if (typeof payload.code === "number" && payload.code !== 0) throw new Error(payload.msg || "请求失败");
     if (payload.error?.message) throw new Error(payload.error.message);
+}
+
+function validateGeminiPayload(payload: GeminiPayload) {
+    if (payload.error?.message) throw new Error(payload.error.message);
+    if (payload.promptFeedback?.blockReason) throw new Error(`Gemini 拒绝了本次请求：${payload.promptFeedback.blockReason}`);
 }
 
 async function readFetchError(response: Response, fallback: string) {
@@ -370,9 +417,206 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
     return { ...result, content: state.text || result.content };
 }
 
+function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
+    const systemText = [
+        config.systemPrompt.trim(),
+        ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : [])),
+    ]
+        .filter(Boolean)
+        .join("\n\n");
+    const contents = toGeminiContents(messages.filter((message) => ("type" in message ? true : message.role !== "system")));
+    return {
+        contents,
+        ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+        ...extra,
+    };
+}
+
+function toGeminiContents(messages: ResponseInputMessage[]): GeminiContent[] {
+    const callNameById = new Map<string, string>();
+    return messages.flatMap((message): GeminiContent[] => {
+        if ("type" in message) {
+            callNameById.set(message.call_id, message.name);
+            return [{ role: "model", parts: [{ functionCall: { id: message.call_id, name: message.name, args: jsonObject(message.arguments) }, ...(message.thoughtSignature ? { thoughtSignature: message.thoughtSignature } : {}) }] }];
+        }
+        if (message.role === "tool") {
+            const name = callNameById.get(message.tool_call_id) || "tool_result";
+            return [{ role: "user", parts: [{ functionResponse: { id: message.tool_call_id, name, response: { result: jsonValue(message.content) } } }] }];
+        }
+        return [{ role: message.role === "assistant" ? "model" : "user", parts: toGeminiParts(message.content) }];
+    });
+}
+
+function toGeminiParts(content: ResponseMessageContent): GeminiPart[] {
+    if (!Array.isArray(content)) return [{ text: String(content || "") }];
+    return content.map((item) => (item.type === "text" ? { text: item.text } : toGeminiImagePart(item.image_url.url)));
+}
+
+function toGeminiImagePart(url: string): GeminiPart {
+    const match = url.match(/^data:([^;,]+);base64,(.+)$/);
+    if (match) return { inlineData: { mimeType: match[1], data: match[2] } };
+    return { fileData: { fileUri: url, mimeType: "image/png" } };
+}
+
+function geminiTextContent(content: ResponseMessageContent) {
+    if (!Array.isArray(content)) return String(content || "");
+    return content.map((item) => (item.type === "text" ? item.text : item.image_url.url)).join("\n");
+}
+
+function jsonObject(value: string): Record<string, unknown> {
+    const parsed = jsonValue(value);
+    return isRecord(parsed) ? parsed : {};
+}
+
+function jsonValue(value: string): unknown {
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value;
+    }
+}
+
+function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoice) {
+    if (!tools.length) return {};
+    const functionDeclarations = tools.map((tool) => ({
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters: tool.function.parameters,
+    }));
+    const functionCallingConfig =
+        typeof toolChoice === "object"
+            ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] }
+            : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
+    return {
+        tools: [{ functionDeclarations }],
+        toolConfig: { functionCallingConfig },
+    };
+}
+
+async function requestGeminiStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    const response = await fetch(`${geminiApiUrl(config, "streamGenerateContent")}?alt=sse`, {
+        method: "POST",
+        headers: geminiHeaders(config),
+        body: JSON.stringify(body),
+        signal: options?.signal,
+    });
+    if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
+    if (!response.body) {
+        const payload = (await response.json()) as GeminiPayload;
+        return parseGeminiToolResponse(payload);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const state: GeminiStreamState = { buffer: "", text: "", toolCalls: [] };
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeGeminiStreamText(state, decoder.decode(value, { stream: true }), onDelta);
+        if (state.error) throw new Error(state.error);
+    }
+    consumeGeminiStreamText(state, decoder.decode(), onDelta, true);
+    if (state.error) throw new Error(state.error);
+    return { content: state.text, toolCalls: state.toolCalls };
+}
+
+function consumeGeminiStreamText(state: GeminiStreamState, text: string, onDelta?: (text: string) => void, flush = false) {
+    state.buffer += text;
+    for (;;) {
+        const match = state.buffer.match(/\r?\n\r?\n/);
+        if (!match) break;
+        consumeGeminiStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
+        state.buffer = state.buffer.slice(match.index + match[0].length);
+    }
+    if (flush && state.buffer.trim()) {
+        consumeGeminiStreamBlock(state.buffer, state, onDelta);
+        state.buffer = "";
+    }
+}
+
+function consumeGeminiStreamBlock(block: string, state: GeminiStreamState, onDelta?: (text: string) => void) {
+    const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n")
+        .trim();
+    if (!data || data === "[DONE]") return;
+    const result = parseGeminiToolResponse(JSON.parse(data) as GeminiPayload);
+    if (result.content) {
+        state.text += result.content;
+        onDelta?.(state.text);
+    }
+    state.toolCalls.push(...result.toolCalls);
+}
+
+function parseGeminiToolResponse(payload: GeminiPayload): ToolResponseResult {
+    validateGeminiPayload(payload);
+    const parts = payload.candidates?.flatMap((candidate) => candidate.content?.parts || []) || [];
+    const content = parts.map((part) => part.text || "").join("");
+    const toolCalls = parts
+        .map((part) => part.functionCall)
+        .filter((call): call is NonNullable<GeminiPart["functionCall"]> => Boolean(call?.name))
+        .map((call) => {
+            const part = parts.find((item) => item.functionCall === call);
+            const thoughtSignature = part?.thoughtSignature || part?.thought_signature;
+            return {
+                id: call.id || nanoid(),
+                type: "function" as const,
+                function: { name: call.name || "", arguments: JSON.stringify(call.args || {}) },
+                ...(thoughtSignature ? { thoughtSignature } : {}),
+            };
+        });
+    return { content, toolCalls };
+}
+
+async function requestGeminiImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
+    const requests = Array.from({ length: count }, () => requestGeminiImagesOnce(config, prompt, references, options));
+    return (await Promise.all(requests)).flat();
+}
+
+async function requestGeminiImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
+    const parts: GeminiPart[] = [{ text: prompt }];
+    for (const image of references) {
+        parts.push(toGeminiImagePart(await imageToDataUrl(image)));
+    }
+    const response = await axios.post<GeminiPayload>(
+        geminiApiUrl(config, "generateContent"),
+        {
+            ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"] } }),
+            contents: [{ role: "user", parts }],
+        },
+        { headers: geminiHeaders(config), signal: options?.signal },
+    );
+    return parseGeminiImagePayload(response.data);
+}
+
+function parseGeminiImagePayload(payload: GeminiPayload) {
+    validateGeminiPayload(payload);
+    const images =
+        payload.candidates
+            ?.flatMap((candidate) => candidate.content?.parts || [])
+            .map((part) => {
+                const inlineData = part.inlineData || (part.inline_data ? { mimeType: part.inline_data.mimeType || part.inline_data.mime_type, data: part.inline_data.data } : undefined);
+                if (inlineData?.data) return `data:${inlineData.mimeType || "image/png"};base64,${inlineData.data}`;
+                return part.fileData?.fileUri || null;
+            })
+            .filter((value): value is string => Boolean(value))
+            .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
+    if (!images.length) throw new Error("Gemini 接口没有返回图片");
+    return images;
+}
+
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
+    if (requestConfig.apiFormat === "gemini") {
+        try {
+            return await requestGeminiImages(requestConfig, prompt, [], n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     try {
@@ -402,9 +646,17 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const requestPrompt = buildImageReferencePromptText(prompt, references);
+    if (requestConfig.apiFormat === "gemini") {
+        if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
+        try {
+            return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
-    const requestPrompt = buildImageReferencePromptText(prompt, references);
     const formData = new FormData();
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
@@ -433,6 +685,11 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     try {
+        if (requestConfig.apiFormat === "gemini") {
+            const answer = (await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";
+            if (answer === "没有返回内容") onDelta(answer);
+            return answer;
+        }
         const answer = (await requestStreamingResponse(requestConfig, {
             model: requestConfig.model,
             input: toResponseInput(withSystemMessage(requestConfig, messages)),
@@ -447,6 +704,9 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto", onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     try {
+        if (requestConfig.apiFormat === "gemini") {
+            return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
+        }
         return await requestStreamingResponse(requestConfig, {
             model: requestConfig.model,
             input: toResponseInput(withSystemMessage(requestConfig, messages)),
@@ -459,8 +719,16 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
     }
 }
 
-export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey">) {
+export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
     try {
+        if (config.apiFormat === "gemini") {
+            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
+            validateGeminiPayload(response.data);
+            return (response.data.models || [])
+                .map((model) => model.name?.replace(/^models\//, ""))
+                .filter((id): id is string => Boolean(id))
+                .sort((a, b) => a.localeCompare(b));
+        }
         const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
             headers: {
                 Authorization: `Bearer ${config.apiKey}`,
@@ -476,5 +744,13 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey });
+    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
 }
+
+const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {
+    baseUrl: "https://generativelanguage.googleapis.com",
+    apiKey: "",
+    apiFormat: "gemini",
+    model: "",
+    systemPrompt: "",
+};

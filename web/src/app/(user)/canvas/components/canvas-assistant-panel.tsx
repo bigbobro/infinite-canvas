@@ -1056,7 +1056,7 @@ function isResponseToolCall(value: unknown): value is ResponseToolCall {
 }
 
 function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMessage {
-    return { type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments };
+    return { type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments, ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) };
 }
 
 function summarizeToolCalls(calls: ResponseToolCall[]) {

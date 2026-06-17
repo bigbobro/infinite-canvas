@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 渠道兼容Gemini格式。
+
 ## v0.4.0 - 2026-06-16
 
 + [新增] 新增网页版Agent Loop模式。

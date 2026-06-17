@@ -5,11 +5,14 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
+export type ApiCallFormat = "openai" | "gemini";
+
 export type ModelChannel = {
     id: string;
     name: string;
     baseUrl: string;
     apiKey: string;
+    apiFormat: ApiCallFormat;
     models: string[];
 };
 
@@ -17,6 +20,7 @@ export type AiConfig = {
     channelMode: "remote" | "local";
     baseUrl: string;
     apiKey: string;
+    apiFormat: ApiCallFormat;
     channels: ModelChannel[];
     model: string;
     imageModel: string;
@@ -55,17 +59,21 @@ export type WebdavSyncConfig = {
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 const CHANNEL_MODEL_SEPARATOR = "::";
+const OPENAI_BASE_URL = "https://api.openai.com";
+const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
-    baseUrl: "https://api.openai.com",
+    baseUrl: OPENAI_BASE_URL,
     apiKey: "",
+    apiFormat: "openai",
     channels: [
         {
             id: "default",
             name: "默认渠道",
-            baseUrl: "https://api.openai.com",
+            baseUrl: OPENAI_BASE_URL,
             apiKey: "",
+            apiFormat: "openai",
             models: ["gpt-image-2", "grok-imagine-video", "gpt-5.5", "gpt-4o-mini-tts"],
         },
     ],
@@ -204,6 +212,7 @@ export const useConfigStore = create<ConfigStore>()(
                     config: {
                         ...config,
                         channelMode: "local",
+                        apiFormat: normalizeApiFormat(config.apiFormat),
                         channels,
                         models,
                         imageModel: normalizeModelOptionValue(config.imageModel || config.model, channels),
@@ -243,11 +252,13 @@ export function useEffectiveConfig() {
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
+    const apiFormat = normalizeApiFormat(channel?.apiFormat);
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || "新渠道",
-        baseUrl: channel?.baseUrl?.trim() || "https://api.openai.com",
+        baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
         apiKey: channel?.apiKey || "",
+        apiFormat,
         models: uniqueRawModels(channel?.models || []),
     };
 }
@@ -297,7 +308,7 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
     const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.includes(model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, models: config.models.map(modelOptionName) });
+    return matched || config.channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
@@ -307,6 +318,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         model: modelOptionName(value || config.model),
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
+        apiFormat: channel.apiFormat,
     };
 }
 
@@ -327,6 +339,7 @@ function normalizeChannels(config: AiConfig) {
                 name: "默认渠道",
                 baseUrl: config.baseUrl || defaultConfig.baseUrl,
                 apiKey: config.apiKey || "",
+                apiFormat: config.apiFormat || defaultConfig.apiFormat,
                 models: uniqueRawModels([
                     ...(config.models || []),
                     config.model,
@@ -339,6 +352,14 @@ function normalizeChannels(config: AiConfig) {
         );
     }
     return channels.map((channel) => ({ ...channel, models: uniqueRawModels(channel.models) }));
+}
+
+export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
+    return apiFormat === "gemini" ? GEMINI_BASE_URL : OPENAI_BASE_URL;
+}
+
+function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
+    return apiFormat === "gemini" ? "gemini" : "openai";
 }
 
 function uniqueRawModels(models: string[]) {
