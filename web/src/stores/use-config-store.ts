@@ -48,7 +48,6 @@ export type AiConfig = {
 };
 
 export type WebdavSyncConfig = {
-    proxyMode: "direct" | "nextjs";
     url: string;
     username: string;
     password: string;
@@ -103,7 +102,6 @@ export const defaultConfig: AiConfig = {
 };
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
-    proxyMode: "direct",
     url: "",
     username: "",
     password: "",
