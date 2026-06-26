@@ -1,5 +1,3 @@
-"use client";
-
 import { Drawer } from "antd";
 import { Link } from "react-router-dom";
 

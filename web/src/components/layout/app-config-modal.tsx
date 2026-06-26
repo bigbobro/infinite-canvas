@@ -1,5 +1,3 @@
-"use client";
-
 import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import { CircleAlert, Cloud, Plus, RefreshCw, Trash2, Wifi } from "lucide-react";
 import { useState } from "react";

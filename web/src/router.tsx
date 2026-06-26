@@ -1,14 +1,14 @@
 import { createBrowserRouter, Outlet } from "react-router-dom";
 
-import NotFound from "@/app/not-found";
-import UserLayout from "@/app/(user)/layout";
-import IndexPage from "@/app/(user)/page";
-import ImagePage from "@/app/(user)/image/page";
-import VideoPage from "@/app/(user)/video/page";
-import AssetsPage from "@/app/(user)/assets/page";
-import PromptsPage from "@/app/(user)/prompts/page";
-import CanvasPage from "@/app/(user)/canvas/page";
-import CanvasProjectPage from "@/app/(user)/canvas/[id]/page";
+import UserLayout from "@/layouts/user-layout";
+import AssetsPage from "@/pages/assets";
+import CanvasPage from "@/pages/canvas";
+import CanvasProjectPage from "@/pages/canvas/project";
+import HomePage from "@/pages/home";
+import ImagePage from "@/pages/image";
+import NotFound from "@/pages/not-found";
+import PromptsPage from "@/pages/prompts";
+import VideoPage from "@/pages/video";
 
 export const router = createBrowserRouter([
     {
@@ -18,7 +18,7 @@ export const router = createBrowserRouter([
             </UserLayout>
         ),
         children: [
-            { path: "/", element: <IndexPage /> },
+            { path: "/", element: <HomePage /> },
             { path: "/image", element: <ImagePage /> },
             { path: "/video", element: <VideoPage /> },
             { path: "/assets", element: <AssetsPage /> },
