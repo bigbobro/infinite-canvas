@@ -47,7 +47,7 @@ const webdavDomainLabels: Record<AppSyncDomainKey, string> = {
 };
 const codexSetupSteps = [
     { title: "安装 Codex 插件", text: "先在 Codex App 安装 Infinite Canvas 插件，插件会注册 MCP 并尝试启动本地 Canvas Agent。" },
-    { title: "打开画布 Agent", text: "回到画布右侧 Agent 面板选择本地模式，网页会自动读取 Local URL 和 Connect token。" },
+    { title: "打开画布 Agent", text: "回到画布右侧 Agent 面板，网页会自动读取 Local URL 和 Connect token。" },
     { title: "手动启动备用", text: "如果插件没有自动启动本地服务，在终端运行下面命令。", command: "npx -y @basketikun/canvas-agent" },
 ];
 
