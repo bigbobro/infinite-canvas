@@ -64,14 +64,14 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         setAgentState({ loadingThreads: true });
         try {
             const data = await fetchAgentJson<AgentThreadsResponse>(endpoint, token, `/agent/codex/threads?canvasId=${encodeURIComponent(projectId)}`);
-            const current = useCanvasAgentStore.getState();
+            const nextThreadId = data.workspace?.activeThreadId || "";
             setAgentState({
                 threads: data.data || [],
-                workspacePath: data.workspace?.workspacePath || current.workspacePath,
-                activeThreadId: data.workspace?.activeThreadId || current.activeThreadId,
+                workspacePath: data.workspace?.workspacePath || "",
+                activeThreadId: nextThreadId,
+                messages: [],
             });
-            const nextThreadId = data.workspace?.activeThreadId || current.activeThreadId;
-            if (nextThreadId && !current.messages.length) {
+            if (nextThreadId) {
                 const thread = await fetchAgentJson<AgentThreadResponse>(endpoint, token, `/agent/codex/threads/${encodeURIComponent(nextThreadId)}?canvasId=${encodeURIComponent(projectId)}`);
                 setAgentState({ messages: normalizeHistoryMessages(thread.messages || []) });
             }
@@ -152,13 +152,17 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         return () => {
             source.close();
             connectedRef.current = false;
-            setAgentState({ connected: false });
         };
     }, [enabled, endpoint, loadThreads, message, setAgentState, token]);
 
     useEffect(() => {
         if (connected) void loadThreads();
-    }, [connected, loadThreads, snapshot.projectId]);
+    }, [connected, loadThreads]);
+
+    useEffect(() => {
+        clearAgentSession({ activity: connected ? "切换画布" : activity });
+        if (connected) void loadThreads();
+    }, [snapshot.projectId]);
 
     useEffect(() => {
         if (!connected) return;

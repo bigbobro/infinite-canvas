@@ -35,8 +35,16 @@ async function runCodexTurnNow(prompt: string, emit: AgentEmit, attachments: Age
     try {
         files = await writeAttachmentFiles(attachments);
         codexApp ||= await CodexAppClient.start(emit);
-        const threadId = await ensureCodexThread(codexApp, options);
-        await codexApp.startTurn(threadId, prompt, files);
+        let threadId = await ensureCodexThread(codexApp, options, emit);
+        try {
+            await codexApp.startTurn(threadId, prompt, files);
+        } catch (error) {
+            if (!isRecoverableThreadError(error)) throw error;
+            emit("agent_log", { text: `Codex thread unavailable, starting a new thread: ${errorMessage(error)}` });
+            codexThreadId = "";
+            threadId = await ensureCodexThread(codexApp, { cwd: options.cwd }, emit);
+            await codexApp.startTurn(threadId, prompt, files);
+        }
     } catch (error) {
         emit("agent_error", { message: errorMessage(error) });
     } finally {
@@ -96,20 +104,30 @@ export function runClaudeTurn(prompt: string, emit: AgentEmit) {
     pipeJsonLines(child, emit, "claude");
 }
 
-async function ensureCodexThread(app: CodexAppClient, options: CodexRunOptions) {
+async function ensureCodexThread(app: CodexAppClient, options: CodexRunOptions, emit: AgentEmit) {
     if (options.threadId) {
-        const result = await app.readThread(options.threadId, false);
-        assertThreadWorkspace(field(result, "thread") || {}, options.cwd);
-        const thread = await app.resumeThread(options.threadId, options.cwd);
-        assertThreadWorkspace(thread, options.cwd);
-        codexThreadId = String(field(thread, "id") || options.threadId);
-        return codexThreadId;
+        if (options.threadId === codexThreadId) return codexThreadId;
+        try {
+            const result = await app.readThread(options.threadId, false);
+            assertThreadWorkspace(field(result, "thread") || {}, options.cwd);
+            const thread = await app.resumeThread(options.threadId, options.cwd);
+            assertThreadWorkspace(thread, options.cwd);
+            codexThreadId = String(field(thread, "id") || options.threadId);
+            return codexThreadId;
+        } catch (error) {
+            if (!isRecoverableThreadError(error)) throw error;
+            emit("agent_log", { text: `Codex thread unavailable, starting a new thread: ${errorMessage(error)}` });
+        }
     }
     if (!codexThreadId) {
         const thread = await app.startThread(options.cwd);
         codexThreadId = String(field(thread, "id") || "");
     }
     return codexThreadId;
+}
+
+function isRecoverableThreadError(error: unknown) {
+    return /thread not loaded|no rollout found/i.test(errorMessage(error));
 }
 
 class CodexAppClient {

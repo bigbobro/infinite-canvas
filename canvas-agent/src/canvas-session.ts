@@ -18,13 +18,14 @@ export class CanvasSession {
 
     openEvents(url: URL, res: ServerResponse) {
         const clientId = url.searchParams.get("clientId") || crypto.randomUUID();
+        const statusOnly = url.searchParams.get("role") === "status";
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        this.clients.set(clientId, res);
+        if (!statusOnly) this.clients.set(clientId, res);
         sendEvent(res, "hello", { ok: true, clientId });
         const timer = setInterval(() => sendEvent(res, "ping", { time: Date.now() }), 15000);
         res.on("close", () => {
             clearInterval(timer);
-            this.clients.delete(clientId);
+            if (!statusOnly) this.clients.delete(clientId);
             if (this.canvasState?.clientId === clientId) this.canvasState = null;
         });
     }

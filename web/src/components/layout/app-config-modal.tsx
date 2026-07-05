@@ -1,6 +1,6 @@
 import { App, Button, Form, Input, Modal, Progress, Select, Switch, Tabs } from "antd";
 import { CircleAlert, Cloud, KeyRound, Link2, Plus, RefreshCw, ShieldCheck, Trash2, Wifi } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { fetchChannelModels } from "@/services/api/image";
@@ -8,7 +8,7 @@ import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent }
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
-import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -47,7 +47,7 @@ const webdavDomainLabels: Record<AppSyncDomainKey, string> = {
 };
 const codexSetupSteps = [
     { title: "安装 Codex 插件", text: "先在 Codex App 安装 Infinite Canvas 插件，插件会注册 MCP 并尝试启动本地 Canvas Agent。" },
-    { title: "打开画布 Agent", text: "回到画布右侧 Agent 面板，网页会自动读取 Local URL 和 Connect token。" },
+    { title: "连接本地 Agent", text: "在本页填入 Local URL 和 Connect token 后点击连接。" },
     { title: "手动启动备用", text: "如果插件没有自动启动本地服务，在终端运行下面命令。", command: "npx -y @basketikun/canvas-agent" },
 ];
 
@@ -61,9 +61,9 @@ function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProg
     );
 }
 
-export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: boolean }) {
+export function AppConfigPanel({ showDoneButton = false, initialTab = "channels" }: { showDoneButton?: boolean; initialTab?: ConfigTabKey }) {
     const { message } = App.useApp();
-    const [activeTab, setActiveTab] = useState("channels");
+    const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [loadingChannelId, setLoadingChannelId] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
@@ -81,10 +81,14 @@ export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: bo
     const agentConnected = useCanvasAgentStore((state) => state.connected);
     const agentEnabled = useCanvasAgentStore((state) => state.enabled);
     const agentActivity = useCanvasAgentStore((state) => state.activity);
+    const agentConnectError = useCanvasAgentStore((state) => state.connectError);
     const agentConfirmTools = useCanvasAgentStore((state) => state.confirmTools);
     const setAgentState = useCanvasAgentStore((state) => state.setAgentState);
+    const connectAgent = useCanvasAgentStore((state) => state.connectAgent);
+    const disconnectAgent = useCanvasAgentStore((state) => state.disconnectAgent);
     const modelOptions = config.models.map((model) => ({ label: modelOptionLabel(config, model), value: model }));
     const webdavReady = Boolean(webdav.url.trim());
+    useEffect(() => setActiveTab(initialTab), [initialTab]);
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
@@ -218,10 +222,12 @@ export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: bo
     };
 
     const updateAgentConfig = (patch: { url?: string; token?: string }) => {
-        setAgentState(patch);
+        setAgentState({ ...patch, connectError: "" });
         if (patch.url !== undefined) localStorage.setItem("canvas-agent-url", patch.url.trim().replace(/\/$/, ""));
         if (patch.token !== undefined) localStorage.setItem("canvas-agent-token", patch.token);
     };
+
+    const toggleAgentConnection = () => (agentEnabled ? disconnectAgent({ connectError: "" }) : connectAgent());
 
     return (
         <>
@@ -430,7 +436,7 @@ export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: bo
                                             </div>
                                             <div className="mt-1 text-xs text-stone-500">用于画布 Agent 连接本机 Codex 插件启动的 Canvas Agent。</div>
                                         </div>
-                                        <div className="text-xs text-stone-500">{agentConnected ? agentActivity || "已连接" : agentEnabled ? "连接中" : "未连接"}</div>
+                                        <div className={agentConnectError ? "text-xs text-red-600" : "text-xs text-stone-500"}>{agentConnectError ? "连接失败" : agentConnected ? agentActivity || "已连接" : agentEnabled ? "连接中" : "未连接"}</div>
                                     </div>
                                     <div className="mb-4 grid gap-2 md:grid-cols-3">
                                         {codexSetupSteps.map((step, index) => (
@@ -449,6 +455,12 @@ export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: bo
                                         <Form.Item label="Connect token" className="mb-4">
                                             <Input.Password prefix={<KeyRound className="mr-1 size-4 text-stone-400" />} value={agentToken} placeholder="自动发现，或手动填入 Connect token" onChange={(event) => updateAgentConfig({ token: event.target.value })} />
                                         </Form.Item>
+                                    </div>
+                                    {agentConnectError ? <div className="mb-3 rounded-md border border-red-200 px-3 py-2 text-xs text-red-600 dark:border-red-900/60">{agentConnectError}</div> : null}
+                                    <div className="mb-3 flex justify-end">
+                                        <Button type={agentEnabled ? "default" : "primary"} icon={<Wifi className="size-4" />} onClick={toggleAgentConnection}>
+                                            {agentConnected ? "断开" : agentEnabled ? "取消连接" : "连接"}
+                                        </Button>
                                     </div>
                                     <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-stone-200 px-3 py-2 dark:border-stone-800">
                                         <div className="flex min-w-0 items-center gap-2">
@@ -479,6 +491,7 @@ export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: bo
 
 export function AppConfigModal() {
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
+    const configTab = useConfigStore((state) => state.configTab);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     return (
         <Modal
@@ -495,7 +508,7 @@ export function AppConfigModal() {
             styles={{ body: { maxHeight: "72vh", overflowY: "auto", paddingRight: 12 } }}
             footer={null}
         >
-            <AppConfigPanel showDoneButton />
+            <AppConfigPanel showDoneButton initialTab={configTab} />
         </Modal>
     );
 }
