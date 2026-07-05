@@ -1,5 +1,5 @@
-import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
-import { CircleAlert, Cloud, Plus, RefreshCw, Trash2, Wifi } from "lucide-react";
+import { App, Button, Form, Input, Modal, Progress, Select, Switch, Tabs } from "antd";
+import { CircleAlert, Cloud, KeyRound, Link2, Plus, RefreshCw, ShieldCheck, Trash2, Wifi } from "lucide-react";
 import { useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
@@ -7,6 +7,7 @@ import { fetchChannelModels } from "@/services/api/image";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
+import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
 import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
@@ -44,6 +45,11 @@ const webdavDomainLabels: Record<AppSyncDomainKey, string> = {
     "image-workbench": "生图工作台",
     "video-workbench": "视频创作台",
 };
+const codexSetupSteps = [
+    { title: "安装 Codex 插件", text: "先在 Codex App 安装 Infinite Canvas 插件，插件会注册 MCP 并尝试启动本地 Canvas Agent。" },
+    { title: "打开画布 Agent", text: "回到画布右侧 Agent 面板选择本地模式，网页会自动读取 Local URL 和 Connect token。" },
+    { title: "手动启动备用", text: "如果插件没有自动启动本地服务，在终端运行下面命令。", command: "npx -y @basketikun/canvas-agent" },
+];
 
 function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProgress> {
     return webdavDomainKeys.reduce(
@@ -55,7 +61,7 @@ function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProg
     );
 }
 
-export function AppConfigModal() {
+export function AppConfigPanel({ showDoneButton = false }: { showDoneButton?: boolean }) {
     const { message } = App.useApp();
     const [activeTab, setActiveTab] = useState("channels");
     const [loadingChannelId, setLoadingChannelId] = useState("");
@@ -67,10 +73,16 @@ export function AppConfigModal() {
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
-    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
+    const agentUrl = useCanvasAgentStore((state) => state.url);
+    const agentToken = useCanvasAgentStore((state) => state.token);
+    const agentConnected = useCanvasAgentStore((state) => state.connected);
+    const agentEnabled = useCanvasAgentStore((state) => state.enabled);
+    const agentActivity = useCanvasAgentStore((state) => state.activity);
+    const agentConfirmTools = useCanvasAgentStore((state) => state.confirmTools);
+    const setAgentState = useCanvasAgentStore((state) => state.setAgentState);
     const modelOptions = config.models.map((model) => ({ label: modelOptionLabel(config, model), value: model }));
     const webdavReady = Boolean(webdav.url.trim());
 
@@ -205,25 +217,14 @@ export function AppConfigModal() {
         }
     };
 
+    const updateAgentConfig = (patch: { url?: string; token?: string }) => {
+        setAgentState(patch);
+        if (patch.url !== undefined) localStorage.setItem("canvas-agent-url", patch.url.trim().replace(/\/$/, ""));
+        if (patch.token !== undefined) localStorage.setItem("canvas-agent-token", patch.token);
+    };
+
     return (
-        <Modal
-            title={
-                <div>
-                    <div className="text-lg font-semibold">配置与用户偏好</div>
-                    <div className="mt-1 text-xs font-normal text-stone-500">渠道聚合、模型选择和同步偏好</div>
-                </div>
-            }
-            open={isConfigOpen}
-            width={980}
-            centered
-            onCancel={() => setConfigDialogOpen(false)}
-            styles={{ body: { maxHeight: "72vh", overflowY: "auto", paddingRight: 12 } }}
-            footer={
-                <Button type="primary" onClick={finishConfig}>
-                    完成
-                </Button>
-            }
-        >
+        <>
             <Tabs
                 activeKey={activeTab}
                 onChange={setActiveTab}
@@ -415,8 +416,86 @@ export function AppConfigModal() {
                             </Form>
                         ),
                     },
+                    {
+                        key: "codex",
+                        label: "Codex",
+                        children: (
+                            <Form layout="vertical" requiredMark={false}>
+                                <section className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
+                                    <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                                        <div>
+                                            <div className="flex items-center gap-2 text-sm font-semibold">
+                                                <Link2 className="size-4" />
+                                                连接本地 Codex
+                                            </div>
+                                            <div className="mt-1 text-xs text-stone-500">用于画布 Agent 连接本机 Codex 插件启动的 Canvas Agent。</div>
+                                        </div>
+                                        <div className="text-xs text-stone-500">{agentConnected ? agentActivity || "已连接" : agentEnabled ? "连接中" : "未连接"}</div>
+                                    </div>
+                                    <div className="mb-4 grid gap-2 md:grid-cols-3">
+                                        {codexSetupSteps.map((step, index) => (
+                                            <div key={step.title} className="rounded-md border border-stone-200 p-3 dark:border-stone-800">
+                                                <div className="text-xs font-semibold text-stone-500">步骤 {index + 1}</div>
+                                                <div className="mt-1 text-sm font-medium">{step.title}</div>
+                                                <div className="mt-1 text-xs leading-5 text-stone-500">{step.text}</div>
+                                                {step.command ? <code className="mt-2 block overflow-x-auto rounded bg-stone-100 px-2 py-1.5 text-[11px] text-stone-700 dark:bg-stone-900 dark:text-stone-200">{step.command}</code> : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <Form.Item label="Local URL" className="mb-4">
+                                            <Input prefix={<Link2 className="mr-1 size-4 text-stone-400" />} value={agentUrl} placeholder="http://127.0.0.1:17371" onChange={(event) => updateAgentConfig({ url: event.target.value })} />
+                                        </Form.Item>
+                                        <Form.Item label="Connect token" className="mb-4">
+                                            <Input.Password prefix={<KeyRound className="mr-1 size-4 text-stone-400" />} value={agentToken} placeholder="自动发现，或手动填入 Connect token" onChange={(event) => updateAgentConfig({ token: event.target.value })} />
+                                        </Form.Item>
+                                    </div>
+                                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-stone-200 px-3 py-2 dark:border-stone-800">
+                                        <div className="flex min-w-0 items-center gap-2">
+                                            <ShieldCheck className="size-4 text-stone-500" />
+                                            <div>
+                                                <div className="text-sm font-medium">执行画布操作前确认</div>
+                                                <div className="mt-0.5 text-xs text-stone-500">关闭后，本地 Codex 可直接执行画布工具调用。</div>
+                                            </div>
+                                        </div>
+                                        <Switch checked={agentConfirmTools} onChange={(confirmTools) => setAgentState({ confirmTools })} />
+                                    </div>
+                                </section>
+                            </Form>
+                        ),
+                    },
                 ]}
             />
+            {showDoneButton ? (
+                <div className="mt-4 flex justify-end">
+                    <Button type="primary" onClick={finishConfig}>
+                        完成
+                    </Button>
+                </div>
+            ) : null}
+        </>
+    );
+}
+
+export function AppConfigModal() {
+    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
+    const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
+    return (
+        <Modal
+            title={
+                <div>
+                    <div className="text-lg font-semibold">配置与用户偏好</div>
+                    <div className="mt-1 text-xs font-normal text-stone-500">渠道聚合、模型选择和同步偏好</div>
+                </div>
+            }
+            open={isConfigOpen}
+            width={980}
+            centered
+            onCancel={() => setConfigDialogOpen(false)}
+            styles={{ body: { maxHeight: "72vh", overflowY: "auto", paddingRight: 12 } }}
+            footer={null}
+        >
+            <AppConfigPanel showDoneButton />
         </Modal>
     );
 }
