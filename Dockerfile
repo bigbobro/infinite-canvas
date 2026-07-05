@@ -10,13 +10,9 @@ COPY web ./
 RUN bun run build
 
 # 运行镜像：只启动静态前端，AI 请求由浏览器前台直连用户自己的接口。
-FROM node:22-bookworm-slim
+FROM nginx:1.27-alpine
 
-WORKDIR /app
-COPY --from=web-build /app/web/dist /app/web/dist
-ENV NODE_ENV=production
-ENV PORT=3000
-RUN npm install -g serve@14.2.5
+COPY --from=web-build /app/web/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 3000
-CMD ["serve", "-s", "/app/web/dist", "-l", "3000"]

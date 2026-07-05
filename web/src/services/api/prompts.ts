@@ -28,19 +28,16 @@ export type PromptListResponse = {
     total: number;
 };
 
-const gptImage2RawBase = "https://raw.githubusercontent.com/EvoLinkAI/awesome-gpt-image-2-API-and-Prompts/main";
 const awesomeGptImageRawBase = "https://raw.githubusercontent.com/ZeroLu/awesome-gpt-image/main";
 const awesomeGpt4oImagePromptsBase = "https://raw.githubusercontent.com/ImgEdify/Awesome-GPT4o-Image-Prompts/main";
 const youMindGptImage2RawBase = "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-gpt-image-2/main";
 const youMindNanoBananaProRawBase = "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts/main";
 const davidWuGptImage2RawBase = "https://raw.githubusercontent.com/davidwuw0811-boop/awesome-gpt-image2-prompts/main";
-const gptImage2CaseFiles = ["README.md", "cases/ad-creative.md", "cases/character.md", "cases/comparison.md", "cases/ecommerce.md", "cases/portrait.md", "cases/poster.md", "cases/ui.md"];
 const cacheTtlMs = 1000 * 60 * 60;
 const promptCacheKey = "third-party-prompts";
 const promptCacheStore = localforage.createInstance({ name: "infinite-canvas", storeName: "prompt_cache" });
 
 const categories: PromptCategory[] = [
-    { category: "gpt-image-2-prompts", githubUrl: "https://github.com/EvoLinkAI/awesome-gpt-image-2-API-and-Prompts", build: buildGptImage2Prompts },
     { category: "awesome-gpt-image", githubUrl: "https://github.com/ZeroLu/awesome-gpt-image", build: buildAwesomeGptImagePrompts },
     { category: "awesome-gpt4o-image-prompts", githubUrl: "https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts", build: buildAwesomeGpt4oImagePrompts },
     { category: "youmind-gpt-image-2", githubUrl: "https://github.com/YouMind-OpenLab/awesome-gpt-image-2", build: () => buildYouMindPrompts(youMindGptImage2RawBase, "youmind-gpt-image-2", "gpt-image-2") },
@@ -99,27 +96,6 @@ function filterPrompts(items: Prompt[], options: { keyword: string; category: st
         if (!options.keyword) return true;
         return [item.title, item.prompt, item.category, ...item.tags].join(" ").toLowerCase().includes(options.keyword);
     });
-}
-
-async function buildGptImage2Prompts() {
-    const data = (await fetchJson<{ records?: Array<{ title?: string; tweet_url?: string; image_dir?: string; category?: string; added_at?: string }> }>(gptImage2RawBase, "data/ingested_tweets.json")).records || [];
-    const cases = new Map<string, string>();
-    const markdowns = await Promise.all(gptImage2CaseFiles.map((file) => fetchText(gptImage2RawBase, file)));
-    markdowns.forEach((markdown) => collectGptImage2Cases(cases, markdown));
-    const items: Omit<Prompt, "category" | "githubUrl">[] = [];
-    data.forEach((item) => {
-        const prompt = cases.get(item.tweet_url || "");
-        if (!item.title || !prompt || !item.image_dir) return;
-        const image = `${gptImage2RawBase}/${item.image_dir}/output.jpg`;
-        items.push({ id: `gpt-image-2-prompts-${leftPad(items.length + 1)}`, title: item.title, coverUrl: image, prompt, tags: tagsFromCategory(item.category || ""), preview: markdownPreview([image]), createdAt: item.added_at || "", updatedAt: item.added_at || "" });
-    });
-    return items;
-}
-
-function collectGptImage2Cases(cases: Map<string, string>, markdown: string) {
-    for (const match of markdown.matchAll(/### Case \d+: \[[^\]]+]\(([^)]+)\).*?\*\*Prompt:\*\*\s*\r?\n\s*```[\w-]*\r?\n(.*?)\r?\n```/gs)) {
-        cases.set(match[1], match[2].trim());
-    }
 }
 
 async function buildAwesomeGptImagePrompts() {
