@@ -467,7 +467,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <ShieldCheck className="size-4 text-stone-500" />
                                             <div>
                                                 <div className="text-sm font-medium">执行画布操作前确认</div>
-                                                <div className="mt-0.5 text-xs text-stone-500">关闭后，本地 Codex 可直接执行画布工具调用。</div>
+                                                <div className="mt-0.5 text-xs text-stone-500">关闭后，本地 Codex 可直接执行画布工具调用。不再需要人工确认</div>
                                             </div>
                                         </div>
                                         <Switch checked={agentConfirmTools} onChange={(confirmTools) => setAgentState({ confirmTools })} />
