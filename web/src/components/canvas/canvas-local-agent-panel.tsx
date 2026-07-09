@@ -16,10 +16,11 @@ const MAX_ATTACHMENTS = 6;
 const MAX_ATTACHMENT_PAYLOAD_BYTES = 28 * 1024 * 1024;
 const DEFAULT_AGENT_URL = "http://127.0.0.1:17371";
 const AGENT_CONNECT_STEPS = [
-    { title: "安装 Codex 插件", text: "在 Codex app 安装 Infinite Canvas 插件后，首次使用插件会自动启动本地 Agent。" },
-    { title: "打开画布连接", text: "回到这里点击连接，网页会自动读取本机 Agent 配置。" },
-    { title: "手动启动备用", text: "如果自动发现失败，再运行下面命令。", command: "npx -y @basketikun/canvas-agent" },
+    { title: "方式一：在 Codex 中使用插件", text: "在 Codex app 安装 Infinite Canvas 插件后，通过插件启动画布，插件会自动启动本地 Agent 并带上连接信息。" },
+    { title: "方式二：直接运行 Agent", text: "不使用 Codex 插件时，在终端运行下面命令，再回到网页里连接或手动填入 Local URL 和 Connect token。", command: "npx -y @basketikun/canvas-agent" },
 ];
+const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove infinite-canvas";
+const AGENT_MCP_REMOVE_COMMAND = "codex mcp remove infinite-canvas";
 
 type AgentEventPayload = {
     agent?: string;
@@ -635,7 +636,7 @@ function AgentConnectView({ theme, url, token, enabled, connected, activity, con
                 <div>
                     <div className="text-base font-semibold leading-6">连接本地 Agent</div>
                     <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>
-                        安装 Codex 插件后，画布会优先自动连接本机 Agent。
+                        按使用场景选择一种连接方式。
                     </div>
                 </div>
                 <div className="space-y-2">
@@ -656,6 +657,25 @@ function AgentConnectView({ theme, url, token, enabled, connected, activity, con
                             </div>
                         );
                     })}
+                </div>
+
+                <div className="rounded-lg border px-3 py-2.5 text-xs leading-5" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
+                    <div className="font-medium" style={{ color: theme.node.text }}>Codex 插件提醒</div>
+                    <div className="mt-1">只有安装 Codex 插件或手动添加 MCP 后，工具列表才会进入 Codex 上下文并增加 token 消耗；仅运行 `npx -y @basketikun/canvas-agent` 启动本地 Agent 不会安装 MCP。</div>
+                    <div className="mt-2 grid gap-1.5">
+                        {[
+                            ["移除插件", AGENT_PLUGIN_REMOVE_COMMAND],
+                            ["移除手动 MCP", AGENT_MCP_REMOVE_COMMAND],
+                        ].map(([label, command]) => (
+                            <div key={command} className="flex items-center gap-2 rounded-md border bg-transparent px-2 py-1.5" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
+                                <span className="shrink-0 text-[11px]" style={{ color: theme.node.muted }}>{label}</span>
+                                <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-[11px] leading-5">{command}</code>
+                                <Tooltip title="复制命令">
+                                    <Button size="small" type="text" className="!h-6 !w-6 !min-w-6" icon={<Copy className="size-3.5" />} onClick={() => copyCommand(command)} />
+                                </Tooltip>
+                            </div>
+                        ))}
+                    </div>
                 </div>
                 <div className="rounded-lg border p-3" style={{ borderColor: theme.node.stroke }}>
                     <div className="flex flex-wrap items-start justify-between gap-3">

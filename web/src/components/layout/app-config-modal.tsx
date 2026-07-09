@@ -46,10 +46,11 @@ const webdavDomainLabels: Record<AppSyncDomainKey, string> = {
     "video-workbench": "视频创作台",
 };
 const codexSetupSteps = [
-    { title: "安装 Codex 插件", text: "先在 Codex App 安装 Infinite Canvas 插件，插件会注册 MCP 并尝试启动本地 Canvas Agent。" },
-    { title: "连接本地 Agent", text: "在本页填入 Local URL 和 Connect token 后点击连接。" },
-    { title: "手动启动备用", text: "如果插件没有自动启动本地服务，在终端运行下面命令。", command: "npx -y @basketikun/canvas-agent" },
+    { title: "方式一：在 Codex 中使用插件", text: "先在 Codex App 安装 Infinite Canvas 插件，再通过插件启动画布，插件会自动启动本地 Canvas Agent 并带上连接信息。" },
+    { title: "方式二：直接运行 Agent", text: "不使用 Codex 插件时，在终端运行下面命令，再回到网页里连接或手动填入 Local URL 和 Connect token。", command: "npx -y @basketikun/canvas-agent" },
 ];
+const codexPluginRemoveCommand = "codex plugin remove infinite-canvas";
+const codexMcpRemoveCommand = "codex mcp remove infinite-canvas";
 
 function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProgress> {
     return webdavDomainKeys.reduce(
@@ -438,15 +439,22 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         </div>
                                         <div className={agentConnectError ? "text-xs text-red-600" : "text-xs text-stone-500"}>{agentConnectError ? "连接失败" : agentConnected ? agentActivity || "已连接" : agentEnabled ? "连接中" : "未连接"}</div>
                                     </div>
-                                    <div className="mb-4 grid gap-2 md:grid-cols-3">
+                                    <div className="mb-4 grid gap-2 md:grid-cols-2">
                                         {codexSetupSteps.map((step, index) => (
                                             <div key={step.title} className="rounded-md border border-stone-200 p-3 dark:border-stone-800">
-                                                <div className="text-xs font-semibold text-stone-500">步骤 {index + 1}</div>
+                                                <div className="text-xs font-semibold text-stone-500">连接方式 {index + 1}</div>
                                                 <div className="mt-1 text-sm font-medium">{step.title}</div>
                                                 <div className="mt-1 text-xs leading-5 text-stone-500">{step.text}</div>
                                                 {step.command ? <code className="mt-2 block overflow-x-auto rounded bg-stone-100 px-2 py-1.5 text-[11px] text-stone-700 dark:bg-stone-900 dark:text-stone-200">{step.command}</code> : null}
                                             </div>
                                         ))}
+                                    </div>
+
+                                    <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                                        <div className="font-semibold">Codex 插件提醒</div>
+                                        <div className="mt-1">只有安装 Codex 插件或手动添加 MCP 后，工具列表才会进入 Codex 上下文并增加 token 消耗；仅运行 `npx -y @basketikun/canvas-agent` 启动本地 Agent 不会安装 MCP。</div>
+                                        <code className="mt-2 block overflow-x-auto rounded bg-white/70 px-2 py-1.5 text-[11px] text-amber-900 dark:bg-black/20 dark:text-amber-100">移除插件：{codexPluginRemoveCommand}</code>
+                                        <code className="mt-1 block overflow-x-auto rounded bg-white/70 px-2 py-1.5 text-[11px] text-amber-900 dark:bg-black/20 dark:text-amber-100">移除手动 MCP：{codexMcpRemoveCommand}</code>
                                     </div>
                                     <div className="grid gap-4 md:grid-cols-2">
                                         <Form.Item label="Local URL" className="mb-4">
