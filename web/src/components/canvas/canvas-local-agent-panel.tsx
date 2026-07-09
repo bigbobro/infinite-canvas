@@ -9,6 +9,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useAgentStore, type AgentAttachment, type AgentChatItem, type AgentEventLog, type AgentPanelTab, type AgentPendingToolCall, type AgentThreadSummary } from "@/stores/use-agent-store";
 import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { isSiteTool, runSiteTool, SITE_TOOL_LABELS } from "@/lib/agent/agent-site-tools";
 import { AgentChatComposer, AgentChatMessage, AgentPanelTabs, AgentPendingToolCard, AgentWorkingMessage, type CanvasAgentChatAttachment } from "./canvas-agent-chat-ui";
 
 const MAX_ATTACHMENTS = 6;
@@ -252,6 +253,23 @@ export function CanvasLocalAgentPanel({ embedded, headless, autoConnect }: { emb
     };
 
     const runToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
+        if (isSiteTool(payload.name)) {
+            try {
+                setAgentState({ activity: SITE_TOOL_LABELS[payload.name], waiting: true });
+                addEventLog(toolName(payload.name), payload, payload);
+                const result = await runSiteTool(payload.name, payload.input || {}, navigate);
+                await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, result });
+                setAgentState({ activity: "工具完成", waiting: true });
+                addEventLog(`${toolName(payload.name)}完成`, result, result);
+                addMessage({ role: "tool", title: `${toolName(payload.name)}完成`, text: siteToolSummary(payload.name, result), detail: { requestId: payload.requestId, name: payload.name, input: payload.input, result } });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : "工具执行失败";
+                setAgentState({ activity: "工具失败", waiting: false });
+                addMessage({ role: "tool", title: "工具失败", text: message, detail: payload });
+                await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: message });
+            }
+            return;
+        }
         try {
             const input: { ops?: CanvasAgentOp[]; path?: string } = payload.input || {};
             setAgentState({ activity: payload.name === "canvas_apply_ops" ? "执行画布操作" : payload.name === "site_navigate" ? "跳转页面" : "读取画布", waiting: true });
@@ -877,7 +895,19 @@ function toolName(name: string) {
     if (name === "canvas_set_viewport") return "调整视口";
     if (name === "canvas_run_generation") return "触发生成";
     if (name === "site_navigate") return "网站跳转";
+    if (isSiteTool(name)) return SITE_TOOL_LABELS[name];
     return name;
+}
+
+function siteToolSummary(name: string, result: unknown) {
+    const data = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
+    if (name === "canvas_list_projects") return `共 ${numberField(data, "total")} 个画布`;
+    if (name === "prompts_search") return `找到 ${numberField(data, "total")} 条提示词`;
+    if (name === "assets_list") return `共 ${numberField(data, "total")} 个素材`;
+    if (name === "assets_add") return "已加入我的素材";
+    if (name === "workbench_image_generate" || name === "workbench_video_generate") return typeof data.note === "string" ? data.note : "已在工作台执行";
+    if (name === "workbench_image_get_config" || name === "workbench_video_get_config") return "已读取工作台配置";
+    return "已完成";
 }
 
 function isReadTool(name: string) {
