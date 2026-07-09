@@ -7,6 +7,7 @@ const nodeTypeSchema = z.enum(["image", "text", "config", "video", "audio"]);
 const generationModeSchema = z.enum(["text", "image", "video", "audio"]);
 
 export const toolNames = [
+    "site_navigate",
     "canvas_get_state",
     "canvas_get_selection",
     "canvas_export_snapshot",
@@ -77,6 +78,7 @@ const generationFlowSchema = z.object({
 });
 
 export const toolInputSchemas = {
+    site_navigate: z.object({ path: z.string() }),
     canvas_get_state: z.object({}).passthrough(),
     canvas_get_selection: z.object({}).passthrough(),
     canvas_export_snapshot: z.object({}).passthrough(),
@@ -103,6 +105,7 @@ export const toolInputSchemas = {
 } satisfies Record<ToolName, z.AnyZodObject>;
 
 export const toolDescriptions: Record<ToolName, string> = {
+    site_navigate: "跳转网站页面。path 可为 / (首页)、/canvas (我的画布)、/canvas/:id (指定画布)、/image (生图工作台)、/video (视频创作台)、/prompts (提示词库)、/assets (我的素材)、/config (配置)。操作画布前若不在画布页，先用本工具打开画布。",
     canvas_get_state: "读取当前网页画布的节点、连线、选区和视口。",
     canvas_get_selection: "读取当前网页画布选中的节点。",
     canvas_export_snapshot: "导出当前画布快照，用于理解布局。",

@@ -12,19 +12,19 @@ export type AiTextMessage = {
     content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 };
 
-export type ResponseToolCall = {
+type ResponseToolCall = {
     id: string;
     type: "function";
     function: { name: string; arguments: string };
     thoughtSignature?: string;
 };
 
-export type ResponseInputMessage =
+type ResponseInputMessage =
     | AiTextMessage
     | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
     | { role: "tool"; tool_call_id: string; content: string };
 
-export type ResponseFunctionTool = {
+type ResponseFunctionTool = {
     type: "function";
     function: {
         name: string;
@@ -34,7 +34,7 @@ export type ResponseFunctionTool = {
     };
 };
 
-export type ToolResponseResult = {
+type ToolResponseResult = {
     content: string;
     toolCalls: ResponseToolCall[];
 };
@@ -737,24 +737,6 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
         }, onDelta, options)).content || "没有返回内容";
         if (answer === "没有返回内容") onDelta(answer);
         return answer;
-    } catch (error) {
-        throw new Error(readAxiosError(error, "请求失败"));
-    }
-}
-
-export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto", onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
-    try {
-        if (requestConfig.apiFormat === "gemini") {
-            return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
-        }
-        return await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-            tools: tools.map(toResponseTool),
-            tool_choice: toolChoice,
-            parallel_tool_calls: false,
-        }, onDelta, options);
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
     }

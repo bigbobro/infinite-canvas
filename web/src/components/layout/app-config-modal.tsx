@@ -7,7 +7,7 @@ import { fetchChannelModels } from "@/services/api/image";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
+import { useAgentStore } from "@/stores/use-agent-store";
 import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
@@ -76,16 +76,16 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
-    const agentUrl = useCanvasAgentStore((state) => state.url);
-    const agentToken = useCanvasAgentStore((state) => state.token);
-    const agentConnected = useCanvasAgentStore((state) => state.connected);
-    const agentEnabled = useCanvasAgentStore((state) => state.enabled);
-    const agentActivity = useCanvasAgentStore((state) => state.activity);
-    const agentConnectError = useCanvasAgentStore((state) => state.connectError);
-    const agentConfirmTools = useCanvasAgentStore((state) => state.confirmTools);
-    const setAgentState = useCanvasAgentStore((state) => state.setAgentState);
-    const connectAgent = useCanvasAgentStore((state) => state.connectAgent);
-    const disconnectAgent = useCanvasAgentStore((state) => state.disconnectAgent);
+    const agentUrl = useAgentStore((state) => state.url);
+    const agentToken = useAgentStore((state) => state.token);
+    const agentConnected = useAgentStore((state) => state.connected);
+    const agentEnabled = useAgentStore((state) => state.enabled);
+    const agentActivity = useAgentStore((state) => state.activity);
+    const agentConnectError = useAgentStore((state) => state.connectError);
+    const agentConfirmTools = useAgentStore((state) => state.confirmTools);
+    const setAgentState = useAgentStore((state) => state.setAgentState);
+    const connectAgent = useAgentStore((state) => state.connectAgent);
+    const disconnectAgent = useAgentStore((state) => state.disconnectAgent);
     const modelOptions = config.models.map((model) => ({ label: modelOptionLabel(config, model), value: model }));
     const webdavReady = Boolean(webdav.url.trim());
     useEffect(() => setActiveTab(initialTab), [initialTab]);

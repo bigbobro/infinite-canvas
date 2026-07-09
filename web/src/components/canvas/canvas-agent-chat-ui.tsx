@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
-import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
+import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, Square, UserRound, Wrench, X, XCircle } from "lucide-react";
 
 import { isPlainEnterKey } from "@/lib/keyboard-event";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -152,6 +152,7 @@ export function AgentChatComposer({
     theme,
     onPromptChange,
     onSubmit,
+    onStop,
     onAddFiles,
     onRemoveAttachment,
     left,
@@ -164,6 +165,7 @@ export function AgentChatComposer({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     onPromptChange: (value: string) => void;
     onSubmit: () => void;
+    onStop?: () => void;
     onAddFiles?: (files: FileList | File[] | null) => void | Promise<void>;
     onRemoveAttachment?: (id: string) => void;
     left?: ReactNode;
@@ -221,7 +223,13 @@ export function AgentChatComposer({
                         ) : null}
                         {left}
                     </div>
-                    <Button type="primary" shape="circle" className="!h-10 !w-10 !min-w-10" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label="发送" />
+                    <div className="flex shrink-0 items-center gap-1.5">
+                        {sending && onStop ? (
+                            <Button danger shape="circle" className="!h-10 !w-10 !min-w-10" icon={<Square className="size-4" />} onClick={() => void onStop()} aria-label="停止" />
+                        ) : (
+                            <Button type="primary" shape="circle" className="!h-10 !w-10 !min-w-10" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label="发送" />
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
