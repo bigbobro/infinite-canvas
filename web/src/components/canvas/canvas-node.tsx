@@ -41,6 +41,7 @@ type CanvasNodeProps = {
     onConnectStart: (event: React.MouseEvent, nodeId: string, handleType: "source" | "target") => void;
     onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
     onContentChange: (nodeId: string, content: string) => void;
+    onTitleChange: (nodeId: string, title: string) => void;
     onToggleBatch?: (nodeId: string) => void;
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
     onRetry?: (node: CanvasNodeData) => void;
@@ -99,6 +100,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onConnectStart,
     onResize,
     onContentChange,
+    onTitleChange,
     onToggleBatch,
     onSetBatchPrimary,
     onRetry,
@@ -109,6 +111,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [hovered, setHovered] = useState(false);
     const [isEditingContent, setIsEditingContent] = useState(false);
+    const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [titleDraft, setTitleDraft] = useState(data.title || "");
     const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content);
@@ -118,6 +122,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const isActive = isConnectionTarget || isSelected || isFocusRelated;
     const imageBorderColor = isActive ? selectionBlue : isRelated && !isBatchChild ? theme.node.muted : "transparent";
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const titleInputRef = useRef<HTMLInputElement>(null);
     const resizeRef = useRef({
         isResizing: false,
         corner: "bottom-right" as ResizeCorner,
@@ -130,6 +135,34 @@ export const CanvasNode = React.memo(function CanvasNode({
         keepRatio: false,
         ratio: 1,
     });
+
+    useEffect(() => {
+        setTitleDraft(data.title || "");
+    }, [data.title]);
+
+    useEffect(() => {
+        if (!isEditingTitle) return;
+        titleInputRef.current?.focus();
+        titleInputRef.current?.select();
+    }, [isEditingTitle]);
+
+    const finishTitleEditing = useCallback(() => {
+        const title = titleDraft.trim() || data.title || "未命名节点";
+        setTitleDraft(title);
+        setIsEditingTitle(false);
+        if (title !== data.title) onTitleChange(data.id, title);
+    }, [data.id, data.title, onTitleChange, titleDraft]);
+
+    useEffect(() => {
+        if (!isEditingTitle) return;
+        const handleOutsidePointerDown = (event: PointerEvent) => {
+            const target = event.target;
+            if (target instanceof Node && titleInputRef.current?.contains(target)) return;
+            finishTitleEditing();
+        };
+        window.addEventListener("pointerdown", handleOutsidePointerDown, true);
+        return () => window.removeEventListener("pointerdown", handleOutsidePointerDown, true);
+    }, [finishTitleEditing, isEditingTitle]);
 
     useEffect(() => {
         const textarea = textareaRef.current;
@@ -261,6 +294,40 @@ export const CanvasNode = React.memo(function CanvasNode({
             }}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
+            <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                {isEditingTitle ? (
+                    <input
+                        ref={titleInputRef}
+                        value={titleDraft}
+                        maxLength={64}
+                        className="h-6 max-w-full border-0 border-b border-dashed bg-transparent px-0 text-left text-xs font-medium outline-none"
+                        style={{ borderColor: theme.node.muted, color: theme.node.text }}
+                        onChange={(event) => setTitleDraft(event.target.value)}
+                        onBlur={finishTitleEditing}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") finishTitleEditing();
+                            if (event.key === "Escape") {
+                                setTitleDraft(data.title || "");
+                                setIsEditingTitle(false);
+                            }
+                        }}
+                    />
+                ) : (
+                    <button
+                        type="button"
+                        className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0.5 text-left text-xs font-medium opacity-75 transition hover:border-current hover:opacity-100"
+                        style={{ color: theme.node.text }}
+                        title="双击修改节点名称"
+                        onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            setIsEditingTitle(true);
+                        }}
+                    >
+                        {data.title || "未命名节点"}
+                    </button>
+                )}
+            </div>
+
             <div
                 className="relative h-full w-full overflow-visible rounded-3xl border-2"
                 style={{
@@ -366,7 +433,7 @@ function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererP
                 <span className="grid size-8 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.muted }}>
                     <Group className="size-4" />
                 </span>
-                <span>{node.title || "组"}</span>
+                <span>组</span>
                 <span className="ml-auto rounded-full px-2 py-1 text-[11px] font-medium" style={{ background: theme.node.fill, color: theme.node.muted }}>
                     {groupChildCount} 个节点
                 </span>
@@ -547,7 +614,7 @@ function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
         <div className="flex h-full w-full flex-col justify-center gap-3 px-4" style={{ background: theme.node.fill, color: theme.node.text }}>
             <div className="flex min-w-0 items-center gap-2 text-sm opacity-70">
                 <Music2 className="size-4 shrink-0" />
-                <span className="truncate">{node.title || "音频"}</span>
+                <span className="truncate">音频</span>
             </div>
             <audio src={node.metadata.content} controls className="w-full" data-canvas-no-zoom />
         </div>
