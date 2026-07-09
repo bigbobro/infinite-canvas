@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [新增] Agent 新增站点级工具：`canvas_list_projects`（画布清单，仅标题/日期/节点数/连线数，配合 `site_navigate` 打开指定画布）、`workbench_image_get_config` / `workbench_image_generate`（生图工作台读取配置、填写提示词并触发生成）、`workbench_video_get_config` / `workbench_video_generate`（视频创作台同理）、`prompts_search`（分页搜索提示词库）、`assets_list` / `assets_add`（查看与新增「我的素材」）。
 + [新增] Agent 面板全站化：从画布页抽离为全局常驻右侧面板，开/关整体推动顶栏和内容（类似浏览器侧边栏扩展），顶栏和画布工具栏各有一个独立开关按钮。
 + [新增] Agent 新增 `site_navigate` 工具，Codex 可直接控制网站跳转至首页、画布、生图、视频、提示词库、素材、配置等页面。
 + [新增] Agent 添加停止对话按钮：对话运行中发送按钮变为红色停止按钮，点击后向后端发送 SIGINT 中断当前 Codex turn。
