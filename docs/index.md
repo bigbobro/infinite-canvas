@@ -15,8 +15,8 @@
 
 ## 开发与数据
 
-- [本地开发](/docs/backend/local-development)
-- [画布数据结构](/docs/backend/canvas-data-structure)
+- [本地开发](/docs/development/local-development)
+- [画布数据结构](/docs/development/canvas-data-structure)
 
 ## 商务合作
 
