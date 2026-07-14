@@ -125,7 +125,7 @@ pptRole?: "outline" | "style" | "page";
 
 | 日期 | 上游版本 | 影响评估 | 决策 | 执行结果 |
 |---|---|---|---|---|
-| （首条记录待产生） | | | | |
+| 2026-07-14 | v0.7.0（`a4dcc67`，含 v0.5/0.6/0.7） | 6 提交，扣 docs/version 后 3 功能：①空白双击建节点（改 `project.tsx`，本仓侵入点 #5/#7 所在文件）②图片比例解析调整+agent 面板精简（`image.ts`/`canvas-local-agent-panel.tsx`，本仓未碰）③本地 Agent 连接 silent mode+UI 重构（`app-config-modal`/`use-agent-store` 等，本仓未碰）。dry-run 实测：**合到 `main` 零冲突**；`project.tsx` 双击菜单改动区（~1061/~2535/~2677）与本仓 PPT 挂载（~38/~2702）、`createConnectedNode` fix（~575）不重叠，可自动合并 | **要合，延后到 PPT P0 收尾合回 `main` 后再执行**（用户拍板 2026-07-14；不打断在途 P0） | 待执行：P0 合回 main → `git merge upstream/main` → tsc → §7.4 侵入点核对 → 六步冒烟 → 部署 |
 
 ### 7.3 合并后核对流程
 
