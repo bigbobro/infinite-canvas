@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { App, Button, Input, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { Copy, FolderOpen, History, KeyRound, Link2, LoaderCircle, PlugZap, Plus, RefreshCw, RotateCcw, Square, Terminal, Trash2 } from "lucide-react";
+import { Copy, FolderOpen, History, KeyRound, Link2, LoaderCircle, PlugZap, Plus, RefreshCw, Square, Terminal, Trash2 } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -320,14 +320,6 @@ export function CanvasLocalAgentPanel({ embedded, headless, autoConnect }: { emb
         await runToolCall(endpoint, token, tool);
     };
 
-    const undoLastTool = () => {
-        const restored = canvasContextRef.current?.undoOps() || null;
-        if (!restored) return;
-        setAgentState({ activity: "已撤销" });
-        addMessage({ role: "tool", title: "已撤销", text: "上一次工具操作", detail: restored });
-        if (connected) void postState(endpoint, token, clientIdRef.current, restored);
-    };
-
     const toggleAgentConnection = async ({ silent = false }: { silent?: boolean } = {}) => {
         if (enabled) {
             clearAgentSession({ enabled: false, connected: false, activity: "离线", connectError: "" });
@@ -513,8 +505,8 @@ export function CanvasLocalAgentPanel({ embedded, headless, autoConnect }: { emb
                 }}
                 right={
                     <>
-                        <Button size="small" type="text" disabled={!canvasContext?.canUndo} icon={<RotateCcw className="size-3.5" />} onClick={undoLastTool}>
-                            撤销
+                        <Button size="small" type="text" disabled={!connected || loadingThreads} icon={<Plus className="size-3.5" />} onClick={startNewThread}>
+                            新对话
                         </Button>
                     </>
                 }
