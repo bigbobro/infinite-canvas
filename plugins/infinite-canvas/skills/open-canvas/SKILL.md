@@ -1,44 +1,31 @@
 ---
 name: open-canvas
-description: 下载、安装并打开 Infinite Canvas，自动连接本地 Canvas Agent。用户要求打开、启动、进入或使用 Infinite Canvas 画布时使用。
+description: 打开 Infinite Canvas 在线或本地画布，并自动连接本地 Canvas Agent。用户要求打开、启动、进入或使用 Infinite Canvas 画布时使用。
 ---
 
 # Open Infinite Canvas
 
-用户要求打开 Infinite Canvas 时直接执行，不要先搜索目录、扫描端口、检查进程归属、读取配置文件或让用户手动复制 URL 和 token。
+默认打开在线版。只有用户明确要求使用本地项目时，才启动本地前端。
 
-## 选择项目目录
+## 在线版
 
-只分两种情况：
-
-### 当前就在 Infinite Canvas 项目中
-
-当前目录存在 `web/package.json` 和 `plugins/infinite-canvas/.codex-plugin/plugin.json` 时，直接把当前目录作为项目目录。
-
-### 当前不在 Infinite Canvas 项目中
-
-固定使用 `~/plugins/infinite-canvas`：
+1. 启动本地 Canvas Agent 并保持运行：
 
 ```bash
-mkdir -p ~/plugins
-git clone https://github.com/basketikun/infinite-canvas.git ~/plugins/infinite-canvas
-cd ~/plugins/infinite-canvas
+npx -y @basketikun/canvas-agent
 ```
 
-如果该目录已经存在就直接进入，不要再查找其他副本。
+2. 从启动输出取得 `Local URL` 和 `Connect token`。
 
-## 一步启动
+3. 在 Codex 右侧浏览器打开：
 
-进入项目目录后依次执行：
-
-1. 安装当前项目内的 Codex 插件：
-
-```bash
-codex plugin marketplace add "$(pwd)"
-codex plugin add infinite-canvas@infinite-canvas-local
+```text
+https://canvas.best/canvas?mode=new&agentUrl=<Local URL>&agentToken=<Connect token>
 ```
 
-2. 安装前端依赖并启动开发服务：
+## 本地版
+
+1. 在 Infinite Canvas 项目中启动前端，并使用 Vite 输出的 `Local` 地址：
 
 ```bash
 cd web
@@ -46,31 +33,26 @@ bun install
 bun run dev
 ```
 
-保持开发服务运行，直接采用 Vite 输出的 `Local` 地址作为画布地址，不要另外探测端口。
-
-3. 在项目根目录启动网页连接所需的本地 Agent，并把 Vite 输出的地址传给它：
+2. 启动本地 Canvas Agent：
 
 ```bash
-CANVAS_URL=<Vite Local 地址> npx -y @basketikun/canvas-agent
+npx -y @basketikun/canvas-agent
 ```
 
-安装插件后，插件会自动启动 `npx -y @basketikun/canvas-agent mcp`；上面的命令只负责启动网页要连接的 HTTP Agent，两者都需要，不要再手动添加 MCP。
-
-4. 从 Agent 启动输出中直接取得 `Local URL` 和 `Connect token`，立即在浏览器打开：
+3. 从启动输出取得 `Local URL` 和 `Connect token`，在 Codex 右侧浏览器打开：
 
 ```text
 <Vite Local 地址>/canvas?mode=new&agentUrl=<Local URL>&agentToken=<Connect token>
 ```
 
-网页会自动新建画布并连接 Agent，不要再点击“新建画布”，也不要在打开后追加连接检查。
+## MCP 与连接地址
 
-如果插件是本轮对话中刚安装的，完成安装和服务启动后告知用户新开一个 Codex 对话即可加载 MCP；不要因此重复安装或重启前端。
+插件在新的 Codex 任务中加载时会自动启动 `npx -y @basketikun/canvas-agent mcp`。这个 MCP 进程负责提供画布工具，不提供网页连接服务；
+上面启动的普通 Canvas Agent 负责提供 `Local URL` 和 `Connect token`。两个进程读取同一份本地配置，因此不需要用户手动填写地址或 token。
 
 ## 打开模式
 
-默认使用 `mode=new`。只有用户明确要求时才替换为：
+用户没有明确指定打开方式时，始终使用 `mode=new` 新建画布。只有用户明确要求时才替换为：
 
 - 最近画布：`mode=recent`
 - 自己选择：`mode=choose`
-
-某条启动命令直接报错时，报告该错误并处理明确原因；不要提前执行额外诊断流程。
