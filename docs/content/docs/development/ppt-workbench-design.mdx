@@ -1,0 +1,199 @@
+---
+title: PPT 工作台设计（Handoff）
+description: PPT 工作台模块的架构设计、数据模型、侵入点清单、上游同步策略与 P0 任务分解
+---
+
+# PPT 工作台设计文档
+
+> **文档性质**：本文档是 PPT 工作台模块的设计定稿 + 开发 handoff。截至撰写时（2026-07-14），**方案已定稿、代码零改动**，仓库工作区干净。新会话/新 agent 从「P0 任务分解」一节直接开工，不需要重做代码探索——所需的全部代码坐标在附录。
+
+## 1. 背景与目标
+
+在现有生图能力之上，新增「PPT 工作台」模块，支撑以下业务流程：
+
+1. **输入原始材料**：用户提供文字材料（Markdown 或整份文档），明确 PPT 核心内容。
+2. **生成分页大纲（节点化）**：LLM 基于材料生成分页大纲（如 1–9 页），每页在画布上对应一个独立节点。
+3. **风格控制（前置配置）**：生图前配置风格——参考图和/或风格描述（如「专业咨询报告风」）。
+4. **批量生图**：结合大纲与风格，每页分别生成 16:9 页面图。
+5. **多轮精修**：对每页生成结果做第二轮、第三轮乃至多轮调整。
+6. **批量下载**：全部页面确认后，一次性打包下载整套图片。
+
+## 2. 范围界定
+
+- **交付物只有图片**：导出终点是按页序命名的图片 zip 包（`01_封面.png` … `09_总结.png`）。**明确不做 `.pptx` 生成**——那是另一套工作流，不在本模块范围内（用户拍板，2026-07-14）。
+- **维持纯前端**：不引入任何后端/服务端持久化，数据全部走现有 localforage/IndexedDB 体系。
+- **一个 deck = 一个专属画布工程**：PPT 结构数据住在 `CanvasProject` 内，导出/导入/WebDAV 同步免费获得，单一事实源。
+
+## 3. 架构决策
+
+### 3.1 选型：向导 + 画布 + 面板（混合架构）
+
+对比过三条路：
+
+- **方案 A：独立表单式工作台**（复刻 `/image` 三栏模式）——排除。步骤 2/5 与画布割裂，精修体验要在表单页重造一遍蒙版重绘/迭代链，重复建设。
+- **方案 B：纯画布模板**——排除。没有流程引导、页状态追踪和批量下载落点，相比手动拼节点价值增量太小。
+- **方案 C（采用）：混合架构**：
+  - **步骤 1–3 用向导承载**：新路由 `/ppt`（进顶部导航，与生图/视频工作台并列），deck 列表 + 新建向导：材料输入 → LLM 生成分页大纲（**向导内可编辑：改标题/要点、增删页；确认后才落画布**）→ 风格配置（预设描述 + 参考图）。
+  - **确认后程序化建图**：构造完整 `CanvasProject`（节点 + 连线 + `ppt` 字段）经 `importProject` 入库，跳转 `/canvas/:id`。建图不需要画布页面在场。
+  - **步骤 4–6 用画布内「PPT 面板」承载**（类似助手侧栏）：页状态总览、批量生成、单页重生成、确认此页、打包下载。
+  - **步骤 5 精修完全复用画布既有能力**（自身参考再生成、蒙版局部重绘、裁剪、放大、多视角），面板只追踪每页当前确认的图。
+
+### 3.2 执行层：PPT 编排伪装成一个「确定性 Agent」
+
+`project.tsx` 是 3263 行的巨型组件，禁止深度侵入。项目已有声明式逃生门：**online/local 双 Agent 收敛到 `applyAgentOps`**（`add_node` / `connect_nodes` / `run_generation` 等 op）。PPT 面板通过 `useAgentStore` 的 `canvasContext.applyOps` 下发 `run_generation` ops，与 Agent 走同一条已被验证的管线，天然获得状态写回、请求取消、结果子节点自动创建。
+
+这个选型有双重价值：
+
+1. 复用测试过的生成管线，面板不碰生成逻辑一行代码；
+2. 与上游的耦合面压到最薄——`project.tsx` 只占 1 个 import + 1 处 JSX 挂载（见第 7 节侵入点清单）。
+
+顺带为 P2 铺路：将来加 `workbench_ppt_*` Agent 站点工具（本地 Codex/Claude 一句话生成整套 deck）几乎免费，落在「MCP/Agent 操作画布」这条差异化护城河上。
+
+### 3.3 风格控制：走画布原生连线语义，不造新机制
+
+画布上放一个「风格说明」文本节点 + N 张参考图图片节点，全部连入每页的生成配置节点。既有行为（`buildNodeGenerationContext`）保证：上游文本自动拼进 prompt、上游图片自动作为参考图走图生图（`requestEdit`）。风格对用户可见、可改，改完重生成即生效。
+
+## 4. 数据模型
+
+```ts
+// CanvasProject（stores/canvas/use-canvas-store.ts）增加可选字段
+ppt?: {
+    sourceMaterial: string;           // 原始材料
+    requirements: string;             // PPT 要求
+    style: {
+        description: string;          // 风格描述（预设或自定义）
+        referenceStorageKeys: string[]; // 风格参考图（storageKey）
+    };
+    pages: Array<{
+        index: number;                // 页序（1 起）
+        title: string;
+        outline: string;              // 该页要点
+        visualHint: string;           // LLM 给的视觉建议
+        anchorNodeId: string;         // 该页大纲文本节点 id
+        confirmedNodeId?: string;     // 用户确认的最终图像节点 id
+    }>;
+};
+
+// CanvasNodeMetadata（types/canvas.ts）增加两个可选标记字段
+pptPageIndex?: number;
+pptRole?: "outline" | "style" | "page";
+```
+
+**防御性解析原则**：面板以 `ppt.pages` 为纲、以 metadata 标记做校验。用户在画布上删节点、改连线是自由的；面板发现某页结构缺失时显示「重建此页」，不崩溃、不阻止用户操作画布。
+
+## 5. 画布工程结构（deck 的形状）
+
+```
+[风格说明 文本节点]──┐
+[参考图1 图片节点]──┼──→ [第1页 生成配置] → (生成后出现) [第1页 页面图] → 精修链向右生长…
+[参考图N 图片节点]──┘        ↑
+[第1页大纲 文本节点]─────────┘
+（每页一列，横向排布；第 2–N 页结构同上）
+```
+
+生成结果节点由既有管线自动创建并连线（`handleGenerateNode` 行为），精修每一轮自动形成可追溯的迭代链。
+
+## 6. 关键设计难题与对策
+
+1. **风格一致性（成败点）**——三层叠加：
+   - 每页 prompt = deck 级统一风格前缀 + 该页大纲；
+   - 相同参考图集连入每页；
+   - **「首页锚定」两段式批量，默认开、可跳过**：先只生成第 1 页 → 用户精修确认 → 把确认图自动 `connect_nodes` 进第 2–N 页的配置节点 → 再批量生成。
+2. **文字渲染准确性（该路线的固有边界）**：生图模型渲染中文小字仍是短板。对策：引导选用文字渲染强的模型；大纲 prompt 约束每页文字量（标题 + 少量短要点）；错字用现成蒙版重绘修。产品预期：这是**图片型 PPT**，适合视觉冲击型提案/汇报，不适合频繁改数据的文档型 PPT。
+3. **并发与失败处理**：现有机制无并发上限（生图工作台 count=15 也是全并发），9 页规模 MVP 直接沿用；**必须给单页失败重试**（面板每页独立重生成按钮），一页失败不毁整批。更长 deck 的并发队列（3–4 并发）留 P1。
+4. **大纲质量**：向导内大纲**可编辑**（改标题/要点、增删页）后才落画布——大纲错了后面全错，这一步的人工把关是流程设计的一部分。
+
+## 7. 上游同步策略（fork 迭代管理，保守评估制）
+
+本仓库是 `basketikun/infinite-canvas` 的二开 fork（remote 已配好 `origin` + `upstream`）。
+
+### 7.1 原则：上游发版只触发「评估」，不自动触发「合并」
+
+每次上游发版，先做影响评估（读 release notes + diff 侵入点清单与依赖面），然后显式决策：
+
+- **情况 1：上游新功能对我们无影响** → 仍要主动决策「并还是不并」。默认**不并**；只有明确想要该功能/修复时才并。不追新。
+- **情况 2：上游改动影响到我们**（改了侵入点文件、`applyAgentOps` 管线、生成服务层等依赖面）→ 评估「改还是不改」：跟进适配，或暂缓合并冻结在当前基线。
+
+每次评估**留决策记录**（追加到下表），合并后执行固定核对流程。
+
+### 7.2 上游同步决策记录
+
+| 日期 | 上游版本 | 影响评估 | 决策 | 执行结果 |
+|---|---|---|---|---|
+| （首条记录待产生） | | | | |
+
+### 7.3 合并后核对流程
+
+```
+merge → tsc 通过 → 照 7.4 侵入点清单逐条核对 → PPT 六步冒烟（建 deck→生成→确认→下载）→ 部署
+```
+
+### 7.4 侵入点清单（薄接缝，随迭代维护）
+
+新功能 100% 住在新文件里（`web/src/pages/ppt/`、`web/src/lib/ppt/`、`web/src/components/canvas/canvas-ppt-panel.tsx`、本文档），上游改动不会与之冲突。对上游文件的全部侵入（均为追加式修改）：
+
+| # | 上游文件 | 改动 | 冲突风险 |
+|---|---|---|---|
+| 1 | `web/src/types/canvas.ts` | `CanvasNodeMetadata` 加 `pptPageIndex`/`pptRole` 可选字段 | 极低 |
+| 2 | `web/src/stores/canvas/use-canvas-store.ts` | `CanvasProject` 加可选 `ppt` 字段 + `importProject`/`updateProject` 透传 | 低 |
+| 3 | `web/src/router.tsx` | +1 路由 `/ppt` | 极低 |
+| 4 | `web/src/constant/navigation-tools.ts` | +1 导航项 | 极低 |
+| 5 | `web/src/pages/canvas/project.tsx` | 1 个 import + 1 处 JSX 挂载 PPT 面板 | 中（上游活跃重构区，但只占 2 行） |
+| 6 | `docs/content/docs/development/meta.json` | pages 数组 +1 | 极低 |
+
+（P2 若做 Agent 站点工具，追加：`canvas-agent/src/schemas.ts`、`canvas-agent/src/canvas-session.ts` 白名单、`web/src/lib/agent/agent-site-tools.ts`、`web/src/stores/use-workbench-agent-store.ts`、`web/src/services/app-sync.ts` 同步 domain。届时更新本清单。）
+
+另：二开功能提交统一用 `feat(ppt): …` 前缀，`git log --grep="(ppt)"` 可一键分离二开提交。
+
+## 8. 分期计划
+
+- **P0（MVP 闭环）**：`/ppt` 向导（材料 → 可编辑大纲 → 风格）→ 建图落画布 → 面板批量生成（含首页锚定）→ 确认此页 → 图片 zip 下载。
+- **P1（体验完整）**：风格预设库（咨询报告风/科技发布会/扁平插画等）、失败重试增强与并发队列（3–4 并发）、大纲导出 markdown。
+- **P2（护城河）**：`workbench_ppt_*` Agent 站点工具（照 `workbench_image_generate` 模板）、WebDAV 同步加 `ppt` 相关 domain、讲者备注。
+
+## 9. P0 任务分解（handoff 起点）
+
+按依赖顺序执行，每步有独立验收标准：
+
+1. **类型与数据模型**：`types/canvas.ts` 加 2 个 metadata 字段；`use-canvas-store.ts` 的 `CanvasProject` 加 `ppt` 字段并在 `importProject`/`updateProject` 透传。→ 验收：`tsc` 通过，现有画布功能无回归。
+2. **`web/src/lib/ppt/` 核心逻辑**（纯逻辑，先行可测）：
+   - `outline-prompt.ts`：调 `requestImageQuestion` 流式生成分页大纲 JSON（页数、标题、要点、视觉建议），含 JSON 解析容错；
+   - `deck-builder.ts`：由「材料 + 大纲 + 风格」构造完整 `CanvasProject`（风格区节点 + 每页列节点 + 连线 + `ppt` 字段），参考图先经 `uploadImage` 入库；
+   - `deck-export.ts`：按页序收集确认图（fallback：该页链上最新成功图）→ `createZip` → `saveAs`，文件名 `{序号}_{页标题}.png`。
+   → 验收：deck-builder 产出的工程经 `importProject` 入库后画布可正常打开、连线语义正确。
+3. **`/ppt` 向导页**：`pages/ppt/index.tsx`（deck 列表 + 三步向导），注册 `router.tsx` 与 `navigation-tools.ts`。→ 验收：完整走通 材料→大纲编辑→风格→建图跳转。
+4. **画布 PPT 面板**：`components/canvas/canvas-ppt-panel.tsx`，消费 `useAgentStore` 的 `canvasContext`（`applyOps` 下发 `run_generation`），实现页状态总览/全部生成（首页锚定，可跳过）/单页重生成/确认此页/打包下载；`project.tsx` 仅挂载。→ 验收：面板五个动作全部可用。
+5. **自测闭环**：`tsc` + 本地 dev server 走通六步闭环（生图用已配置 key，或至少验证到请求层参数正确），确认非 PPT 画布工程完全不受影响。
+
+## 10. 决策记录
+
+**已确认（用户拍板）**：
+
+- 混合架构（向导 + 专属画布工程 + 画布内面板）；
+- 交付物仅图片 zip，**不做 pptx**；
+- 首页锚定默认开、可跳过；
+- 大纲编辑轻量版（改标题/要点、增删页），重型结构化编辑（每页版式类型等）用起来之后再议；
+- 上游同步保守评估制（第 7 节）。
+
+**留待实现期细化**：风格预设的具体文案清单、并发队列阈值（P1）、16:9 的具体 size 档位映射。
+
+## 附录：关键代码坐标（免重复探索）
+
+> 行号基于 2026-07-14 的 main（`ebd8ae2`），合并上游后以符号名为准重新定位。
+
+| 能力 | 位置 | 说明 |
+|---|---|---|
+| Agent ops 类型 | `web/src/lib/canvas/canvas-agent-ops.ts` | `CanvasAgentOp`：`add_node`/`update_node`/`connect_nodes`/`run_generation`（支持 `nodeId`+`mode`+`prompt`）等 |
+| ops 执行入口 | `web/src/pages/canvas/project.tsx:716` `applyAgentOps` | `run_generation` 分流在 733–741，经 `generateNodeRef` 进生成管线 |
+| canvasContext 暴露 | `web/src/stores/use-agent-store.ts:10` | `AgentCanvasContext = { snapshot, applyOps, undoOps, canUndo }`，画布页挂载时 set，卸载时置 null |
+| 生成主函数 | `web/src/pages/canvas/project.tsx:1953` `handleGenerateNode` | 状态写回、结果子节点创建、batch 结构 |
+| 连线语义（参考图推断） | `web/src/lib/canvas/canvas-resource-references.ts` | 上游资源节点自动分类为参考图/参考文本 |
+| 生成上下文构建 | `web/src/components/canvas/canvas-node-generation.ts:30` `buildNodeGenerationContext` | prompt 拼接 + 参考图收集 |
+| 文本 LLM（大纲用） | `web/src/services/api/image.ts:726` `requestImageQuestion(config, messages, onDelta)` | 流式，OpenAI `/responses` + Gemini 双格式；生图/图生图 `requestGeneration`/`requestEdit` 同文件 |
+| 画布工程 store | `web/src/stores/canvas/use-canvas-store.ts` | `CanvasProject` 类型、`importProject`（接受完整 nodes/connections）、400ms 防抖持久化 |
+| 图片入库/读取 | `web/src/services/image-storage.ts` | `uploadImage`/`getImageBlob`/`resolveImageUrl`，长期标识是 `storageKey` |
+| zip 打包 | `web/src/lib/zip.ts` `createZip`；范式见 `web/src/lib/canvas/canvas-export.ts` | fflate + file-saver（`safeFileName`/`fileExtension` 可参考） |
+| 节点默认规格 | `web/src/constant/canvas.ts:47` `getNodeSpec` | 各类型默认尺寸/标题/metadata |
+| 路由/导航接入 | `web/src/router.tsx`、`web/src/constant/navigation-tools.ts` | 各 +1 项，`NavigationToolSlug` 自动推导 |
+| 工作台页面范式 | `web/src/pages/image/index.tsx`（863 行） | 三栏布局 + localforage 日志实例的自包含页面模式（向导页可参考其表单区） |
+| 画布数据结构文档 | `docs/content/docs/development/canvas-data-structure.mdx` | 存储位置、节点/连线结构、图片写入与清理机制 |
