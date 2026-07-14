@@ -15,6 +15,7 @@
 - `metadata.content` 里的图片/视频 URL 是**会话内展示用的 `blob:` URL**，刷新即失效；长期标识是 `metadata.storageKey`。
 - 新增图片一律经 `services/image-storage.ts` 的 `uploadImage(input)` 入库，节点 metadata 写入其返回的 `{url, storageKey, width, height, bytes, mimeType}`。
 - **引用清理机制**：删除节点/工程/素材/会话会触发 `cleanupImages` → `cleanupUnusedImages`，凡是不在「引用集合」里的 storageKey 对应 Blob 会被物理删除。⚠️ **新增任何持有 storageKey 的数据结构时，必须确认它被 used-set 收集逻辑覆盖**，否则它引用的图片会被清理误删——这是本项目已知的真实 bug 类别（历史案例：工作台生成记录 `image/video_generation_logs` 引用的 blob 曾不在 used-set 内）。
+- **storageKey 必须挂在对象属性上，不要存裸 `string[]`**：`collectImageStorageKeys`（`services/image-storage.ts:76`）只收集对象的 `storageKey` 字段，字符串数组不会进 used-set。正例：`references: Array<{ storageKey: string }>`（PPT deck 风格参考图，2026-07 check 阶段实证过裸数组会被误删）。
 
 ## 生成管线
 
