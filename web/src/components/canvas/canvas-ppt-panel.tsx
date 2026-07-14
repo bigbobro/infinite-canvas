@@ -94,18 +94,29 @@ export function CanvasPptPanel() {
     }
 
     const rebuildPage = (page: CanvasProjectPptPage) => {
-        if (!canvasContext) return;
+        if (!canvasContext) {
+            message.warning("画布尚未就绪，请稍后再试");
+            return;
+        }
         const outlineId = nanoid();
         const configId = nanoid();
         const outlineContent = [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
+        const staleIds = [page.anchorNodeId, page.configNodeId].filter((id) => nodeById.has(id));
         const ops: CanvasAgentOp[] = [
+            ...(staleIds.length ? [{ type: "delete_node", ids: staleIds } as CanvasAgentOp] : []),
             { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, metadata: { content: outlineContent, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
             { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, metadata: { prompt: PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" } },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...styleNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
         canvasContext.applyOps(ops);
-        updateProject(projectId, { ppt: { ...ppt, pages: pages.map((item) => (item.index === page.index ? { ...item, anchorNodeId: outlineId, configNodeId: configId, confirmedNodeId: undefined } : item)) } });
+        updateProject(projectId, {
+            ppt: {
+                ...ppt,
+                anchorConfirmed: page.index === 1 ? false : ppt.anchorConfirmed,
+                pages: pages.map((item) => (item.index === page.index ? { ...item, anchorNodeId: outlineId, configNodeId: configId, confirmedNodeId: undefined } : item)),
+            },
+        });
         message.success(`第 ${page.index} 页结构已重建`);
     };
 

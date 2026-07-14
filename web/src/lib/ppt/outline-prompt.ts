@@ -21,7 +21,11 @@ export async function generatePptOutline(config: AiConfig, material: string, req
         { role: "system", content: OUTLINE_SYSTEM_PROMPT },
         { role: "user", content: `材料：\n${material.trim()}\n\nPPT 要求：\n${requirements.trim() || "无特殊要求"}` },
     ];
-    const answer = await requestImageQuestion(config, messages, onDelta, options);
+    // config.model 是旧版全局字段（默认落在图片模型上），必须显式覆盖成 textModel，
+    // 否则 requestImageQuestion 内部 `config.model || config.textModel` 永远命中前者，
+    // 大纲生成会错误地打到图片生成模型（对齐 project.tsx buildGenerationConfig 的既有模式）。
+    const requestConfig: AiConfig = { ...config, model: config.textModel || config.model };
+    const answer = await requestImageQuestion(requestConfig, messages, onDelta, options);
     return parseOutlineJson(answer);
 }
 
