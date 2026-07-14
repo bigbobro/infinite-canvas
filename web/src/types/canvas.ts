@@ -58,6 +58,8 @@ export type CanvasNodeMetadata = {
     bytes?: number;
     durationMs?: number;
     groupId?: string;
+    pptPageIndex?: number;
+    pptRole?: "outline" | "style" | "page";
 };
 
 export type CanvasNodeData = {

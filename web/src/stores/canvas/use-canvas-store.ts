@@ -6,6 +6,24 @@ import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
+export type CanvasProjectPptPage = {
+    index: number;
+    title: string;
+    outline: string;
+    visualHint: string;
+    anchorNodeId: string;
+    configNodeId: string;
+    confirmedNodeId?: string;
+};
+
+export type CanvasProjectPpt = {
+    sourceMaterial: string;
+    requirements: string;
+    style: { description: string; references: { storageKey: string }[] };
+    pages: CanvasProjectPptPage[];
+    anchorConfirmed?: boolean;
+};
+
 export type CanvasProject = {
     id: string;
     title: string;
@@ -18,6 +36,7 @@ export type CanvasProject = {
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     viewport: ViewportTransform;
+    ppt?: CanvasProjectPpt;
 };
 
 type CanvasStore = {
@@ -29,7 +48,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "ppt">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
@@ -97,6 +116,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: source.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: source.viewport || initialViewport,
+                    ppt: source.ppt,
                 };
                 set((state) => ({ projects: [project, ...state.projects] }));
                 return project.id;
