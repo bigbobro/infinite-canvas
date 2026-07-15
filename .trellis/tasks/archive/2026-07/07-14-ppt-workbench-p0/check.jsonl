@@ -1,7 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/frontend/index.md", "reason": "Quality Check 章节：验证命令与门禁"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "质量门禁、禁止模式汇总、测试现状"}
-{"file": ".trellis/spec/frontend/canvas-guidelines.md", "reason": "检查 storageKey/清理误删/agent ops 通道是否被正确遵守"}
-{"file": ".trellis/spec/project/fork-and-upstream.md", "reason": "核对实际侵入点与清单一致"}
-{"file": ".trellis/spec/project/docs-and-release.md", "reason": "文档同步流水线检查项"}
-{"file": "docs/content/docs/development/ppt-workbench-design.mdx", "reason": "对照设计验收 P0 范围与验收标准"}

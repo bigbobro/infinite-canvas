@@ -1,8 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/frontend/index.md", "reason": "前端总规范入口：项目形态心智 + Pre-Dev Checklist"}
-{"file": ".trellis/spec/frontend/canvas-guidelines.md", "reason": "画布核心规范：storageKey 铁律、agent ops 唯一通道、project.tsx 侵入警戒线"}
-{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "文件落位规则与新页面注册流程"}
-{"file": ".trellis/spec/frontend/state-management.md", "reason": "store 模式、localforage 持久化、canvasContext 桥"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "组件/样式/画布 UI 主题红线"}
-{"file": ".trellis/spec/project/fork-and-upstream.md", "reason": "薄接缝原则与侵入点纪律"}
-{"file": "docs/content/docs/development/ppt-workbench-design.mdx", "reason": "PPT 工作台权威设计文档：数据模型、画布结构、关键代码坐标附录"}

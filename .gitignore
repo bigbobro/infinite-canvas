@@ -9,3 +9,5 @@ data/
 .DS_Store
 .idea
 web/dist
+# Trellis 本地工作区：任务实录 / 调研材料 / journal 可能含客户信息，不进公开仓
+.trellis/
