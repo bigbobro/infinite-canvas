@@ -11,7 +11,35 @@ export function resolvePageImageNode(project: CanvasProject, page: CanvasProject
         const confirmed = nodeById.get(page.confirmedNodeId);
         if (confirmed) return confirmed;
     }
-    return findLatestSuccessImageNode(project, page.configNodeId);
+    const candidates = collectPageCandidates(project, page);
+    return candidates.length ? candidates[candidates.length - 1] : null;
+}
+
+/**
+ * 收集某页 config 节点下游全部成功生成的候选图片节点。
+ *
+ * 剪枝规则（design §3.2）：BFS 遍历时，若遇到带 `pptPageIndex` 且不等于当前页 index 的节点，
+ * 立即停止（不收集、不入队）——用于斩断首页锚定连线（第 1 页图 → 第 2…N 页 config）导致的串页。
+ * `pptPageIndex` 只打在 outline/config 节点上，生成的图节点没有该字段，因此不会被误剪。
+ *
+ * 收集条件：Image 节点 + status === "success" + 不带 batchRootId（排除 batch 子节点，只留根节点，
+ * 根节点由 setBatchPrimary 持有当前挑中的那张）。
+ */
+export function collectPageCandidates(project: CanvasProject, page: CanvasProjectPptPage): CanvasNodeData[] {
+    const downstreamIds = new Set<string>();
+    const queue = [page.configNodeId];
+    while (queue.length) {
+        const currentId = queue.shift()!;
+        for (const connection of project.connections) {
+            if (connection.fromNodeId !== currentId || downstreamIds.has(connection.toNodeId)) continue;
+            const target = project.nodes.find((node) => node.id === connection.toNodeId);
+            if (target?.metadata?.pptPageIndex != null && target.metadata.pptPageIndex !== page.index) continue;
+            downstreamIds.add(connection.toNodeId);
+            queue.push(connection.toNodeId);
+        }
+    }
+
+    return project.nodes.filter((node) => downstreamIds.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.status === "success" && !node.metadata?.batchRootId);
 }
 
 export async function exportPptDeckImages(project: CanvasProject) {
@@ -30,22 +58,6 @@ export async function exportPptDeckImages(project: CanvasProject) {
 
     const zip = await createZip(files);
     saveAs(zip, `${safeFileName(project.title || "PPT")}.zip`);
-}
-
-function findLatestSuccessImageNode(project: CanvasProject, configNodeId: string): CanvasNodeData | null {
-    const downstreamIds = new Set<string>();
-    const queue = [configNodeId];
-    while (queue.length) {
-        const currentId = queue.shift()!;
-        for (const connection of project.connections) {
-            if (connection.fromNodeId !== currentId || downstreamIds.has(connection.toNodeId)) continue;
-            downstreamIds.add(connection.toNodeId);
-            queue.push(connection.toNodeId);
-        }
-    }
-
-    const candidates = project.nodes.filter((node) => downstreamIds.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.status === "success");
-    return candidates.length ? candidates[candidates.length - 1] : null;
 }
 
 function safeFileName(value: string) {
