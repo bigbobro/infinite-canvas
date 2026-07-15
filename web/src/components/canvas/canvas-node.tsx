@@ -41,6 +41,7 @@ type CanvasNodeProps = {
     batchRecovering?: boolean;
     batchMotion?: { x: number; y: number; index: number };
     onMouseDown: (event: React.MouseEvent, nodeId: string) => void;
+    onSelectCapture?: (event: React.MouseEvent, nodeId: string) => void;
     onHoverStart: (nodeId: string) => void;
     onHoverEnd: (nodeId: string) => void;
     onConnectStart: (event: React.MouseEvent, nodeId: string, handleType: "source" | "target") => void;
@@ -102,6 +103,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     batchRecovering = false,
     batchMotion,
     onMouseDown,
+    onSelectCapture,
     onHoverStart,
     onHoverEnd,
     onConnectStart,
@@ -118,7 +120,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [hovered, setHovered] = useState(false);
     const definition = getNodeDefinition(data.type);
-    const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost ? buildNodeContext(pluginHost, data, theme, scale) : null), [pluginHost, data, theme, scale]);
+    const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost ? buildNodeContext(pluginHost, data, theme, scale, isSelected) : null), [pluginHost, data, theme, scale, isSelected]);
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState(data.title || "");
@@ -301,6 +303,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 setHovered(false);
                 onHoverEnd(data.id);
             }}
+            onMouseDownCapture={(event) => onSelectCapture?.(event, data.id)}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
             <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>

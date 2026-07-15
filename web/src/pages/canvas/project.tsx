@@ -688,7 +688,10 @@ function InfiniteCanvasPage() {
     }, [collapsingBatchIds, nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-    const toolbarNode = toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null;
+    // 工具条跟随「单选节点」:点击/新建/框选/键盘选中任一节点都会显示,不再仅靠精确点中触发。
+    // 多选时不显示;拖拽中由下方 isNodeDragging 守卫隐藏。
+    const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
+    const toolbarNode = (toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null) || (singleSelectedNodeId ? nodeById.get(singleSelectedNodeId) || null : null);
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
@@ -861,7 +864,10 @@ function InfiniteCanvasPage() {
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
             const definition = getNodeDefinition(type);
-            if (definition?.Panel || (isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Group)) setDialogNodeId(newNode.id);
+            // 纯展示型插件节点(hidePanel)不弹面板;插件自定义 Panel 需显式 autoOpenPanel 才在新建时打开;
+            // 内置的图片/视频/配置类节点保持原有「新建即打开生图面板」行为。
+            const wantsPanel = definition?.hidePanel ? false : definition?.Panel ? Boolean(definition.autoOpenPanel) : isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Group;
+            if (wantsPanel) setDialogNodeId(newNode.id);
         },
         [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, getCanvasCenter],
     );
@@ -1161,30 +1167,42 @@ function InfiniteCanvasPage() {
         [cancelPendingConnectionCreate, screenToCanvas],
     );
 
-    const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
-        event.stopPropagation();
-        setContextMenu(null);
-        setHoveredNodeId(null);
-        setToolbarNodeId(null);
-        setSelectedConnectionId(null);
-
-        const currentSelected = selectedNodeIdsRef.current;
-        const currentNodes = nodesRef.current;
-        const nextSelected = new Set(currentSelected);
-
+    // 仅处理「选中」的纯逻辑,供 body 冒泡拖拽入口与外层 capture 入口共用。
+    // 返回本次点击后的单选目标 id(多选/取消时为 null),用于同步工具条。
+    const selectNodeByEvent = useCallback((event: Pick<ReactMouseEvent, "shiftKey" | "metaKey" | "ctrlKey">, nodeId: string) => {
+        const nextSelected = new Set(selectedNodeIdsRef.current);
         if (event.shiftKey || event.metaKey || event.ctrlKey) {
-            if (nextSelected.has(nodeId)) {
-                nextSelected.delete(nodeId);
-            } else {
-                nextSelected.add(nodeId);
-            }
+            if (nextSelected.has(nodeId)) nextSelected.delete(nodeId);
+            else nextSelected.add(nodeId);
         } else if (!nextSelected.has(nodeId)) {
             nextSelected.clear();
             nextSelected.add(nodeId);
         }
-
         setSelectedNodeIds(nextSelected);
-        setToolbarNodeId(nextSelected.size === 1 && nextSelected.has(nodeId) ? nodeId : null);
+        const soloId = nextSelected.size === 1 && nextSelected.has(nodeId) ? nodeId : null;
+        setToolbarNodeId(soloId);
+        return { nextSelected, soloId };
+    }, []);
+
+    // capture 阶段选中:点击节点内部任意元素(含吞掉 mousedown 的 textarea/iframe)都能选中并弹出工具条。
+    // 只做选中,不启动拖拽 —— 拖拽仍由 body 的 onMouseDown(冒泡)负责,故编辑器内选词不会拖动节点。
+    // capture 必先于同一次事件的 body 冒泡触发,故把算好的选中集暂存,供紧随其后的拖拽入口复用,避免二次选中(shift 反选被抵消)。
+    const pendingSelectionRef = useRef<Set<string> | null>(null);
+    const handleNodeSelectCapture = useCallback((event: ReactMouseEvent, nodeId: string) => {
+        if (event.button !== 0) return;
+        setContextMenu(null);
+        setHoveredNodeId(null);
+        setSelectedConnectionId(null);
+        const { nextSelected } = selectNodeByEvent(event, nodeId);
+        pendingSelectionRef.current = nextSelected;
+    }, [selectNodeByEvent]);
+
+    const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
+        event.stopPropagation();
+        // 选中已由 capture 阶段完成;这里只负责建立拖拽。若因故没走 capture,则兜底再选一次。
+        const currentNodes = nodesRef.current;
+        const nextSelected = pendingSelectionRef.current ?? selectNodeByEvent(event, nodeId).nextSelected;
+        pendingSelectionRef.current = null;
         const dragIds = new Set(nextSelected);
         currentNodes.forEach((node) => {
             if (!nextSelected.has(node.id)) return;
@@ -1248,7 +1266,11 @@ function InfiniteCanvasPage() {
         dragRef.current.initialSelectedNodes = [];
         if (wasClick && clickedNodeId) {
             const clickedNode = nodesRef.current.find((node) => node.id === clickedNodeId);
+            const clickedDefinition = clickedNode ? getNodeDefinition(clickedNode.type) : undefined;
             if (clickedNode?.type === CanvasNodeType.Text) {
+                setDialogNodeId((current) => (current === clickedNodeId ? current : null));
+            } else if (clickedDefinition?.hidePanel) {
+                // 纯展示型插件节点:单击只选中,不弹下方面板
                 setDialogNodeId((current) => (current === clickedNodeId ? current : null));
             } else if (clickedNode?.type !== CanvasNodeType.Group) {
                 setDialogNodeId(clickedNodeId);
@@ -2659,7 +2681,7 @@ function InfiniteCanvasPage() {
                             isConnectionTarget={connectionTargetNodeId === node.id}
                             isConnecting={Boolean(connectingParams)}
                             editRequestNonce={editingNodeId === node.id ? editRequestNonce : 0}
-                            showPanel={dialogNodeId === node.id && !selectionBox}
+                            showPanel={dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
                             batchCount={batchChildCountById.get(node.id) || 0}
                             groupChildCount={groupChildCountById.get(node.id) || 0}
                             isGroupDropTarget={dropTargetGroupId === node.id}
@@ -2714,6 +2736,7 @@ function InfiniteCanvasPage() {
                                 />
                             )}
                             onMouseDown={handleNodeMouseDown}
+                            onSelectCapture={handleNodeSelectCapture}
                             onHoverStart={(nodeId) => {
                                 if (nodeDraggingRef.current) return;
                                 setHoveredNodeId(nodeId);

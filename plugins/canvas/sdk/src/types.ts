@@ -150,6 +150,7 @@ export type CanvasNodeContext = {
     node: CanvasNodeData;
     theme: CanvasTheme;
     scale: number;
+    isSelected: boolean; // 该节点当前是否被选中(用于按需启用 iframe 交互等)
     updateMetadata: (patch: CanvasNodeMetadata) => void;
     updateNode: (patch: Partial<Pick<CanvasNodeData, "title" | "width" | "height">>) => void;
     // 图访问
@@ -194,6 +195,8 @@ export type CanvasNodeDefinition = {
     minimapColor?: string;
     showInCreateMenu?: boolean; // 默认 true
     hasSourceHandle?: boolean; // 右侧输出连接点,默认 true
+    hidePanel?: boolean; // 为 true 时:点击/新建不弹出下方面板(含内置生图面板),纯展示型节点用
+    autoOpenPanel?: boolean; // 为 true 时:单击节点自动打开自定义 Panel(默认仅内置节点单击自动打开)
     keepAspectRatio?: (node: CanvasNodeData) => boolean;
     resource?: (node: CanvasNodeData) => CanvasNodeResource | null;
     // 渲染
