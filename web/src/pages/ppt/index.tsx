@@ -1,13 +1,15 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { App, Button, Empty, Input, Progress, Steps, Tooltip } from "antd";
+import { App, Button, Empty, Input, Progress, Segmented, Steps, Tooltip } from "antd";
 import { ArrowLeft, ArrowRight, FolderOpen, Plus, Sparkles, Trash2, Upload } from "lucide-react";
 
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
-import { generatePptOutline, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
-import { buildPptDeckProject } from "@/lib/ppt/deck-builder";
+import { extractPptPages, generatePptOutline, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
+import { buildPptDeckProject, type BuildPptDeckParams } from "@/lib/ppt/deck-builder";
+
+type PptWizardMode = NonNullable<BuildPptDeckParams["mode"]>;
 
 const { TextArea } = Input;
 
@@ -104,6 +106,7 @@ function PptWizard({
     message: MessageApi;
 }) {
     const [step, setStep] = useState(0);
+    const [mode, setMode] = useState<PptWizardMode>("outline");
     const [deckTitle, setDeckTitle] = useState("");
     const [material, setMaterial] = useState("");
     const [requirements, setRequirements] = useState("");
@@ -123,11 +126,19 @@ function PptWizard({
         setOutlineLoading(true);
         setOutlineRaw("");
         try {
-            const result = await generatePptOutline(effectiveConfig, material, requirements, (text) => setOutlineRaw(text));
-            setPages(result.pages);
-            message.success(`已生成 ${result.pages.length} 页大纲`);
+            if (mode === "extract") {
+                const result = await extractPptPages(effectiveConfig, material, (text) => setOutlineRaw(text));
+                setPages(result.pages);
+                setStyleDescription(result.globalStyle);
+                if (result.droppedCount > 0) message.warning(`有 ${result.droppedCount} 页因边界识别失败被丢弃，请检查材料或手动补齐`);
+                message.success(`已展开 ${result.pages.length} 页`);
+            } else {
+                const result = await generatePptOutline(effectiveConfig, material, requirements, (text) => setOutlineRaw(text));
+                setPages(result.pages);
+                message.success(`已生成 ${result.pages.length} 页大纲`);
+            }
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "大纲生成失败，请重试");
+            message.error(error instanceof Error ? error.message : mode === "extract" ? "展开分页失败，请重试" : "大纲生成失败，请重试");
         } finally {
             setOutlineLoading(false);
         }
@@ -150,7 +161,7 @@ function PptWizard({
 
     const confirmBuild = async () => {
         if (!pages.length) {
-            message.error("大纲为空，请先生成或手动添加分页");
+            message.error(mode === "extract" ? "分页内容为空，请先展开或手动添加分页" : "大纲为空，请先生成或手动添加分页");
             return;
         }
         if (pages.some((page) => !page.title.trim())) {
@@ -167,6 +178,7 @@ function PptWizard({
                 style: { description: styleDescription.trim() },
                 pages,
                 uploadedRefs: styleRefs,
+                mode,
             });
             const id = importProject(deck);
             message.success("画布已创建");
@@ -193,17 +205,52 @@ function PptWizard({
                 {step === 0 ? (
                     <div className="flex flex-col gap-4">
                         <label className="grid gap-1.5">
+                            <span className="text-sm font-medium">生成方式</span>
+                            <Segmented
+                                block
+                                value={mode}
+                                onChange={(value) => setMode(value as PptWizardMode)}
+                                options={[
+                                    {
+                                        value: "outline",
+                                        label: (
+                                            <span className="flex min-h-12 flex-col justify-center px-1 py-1 text-left leading-5">
+                                                <span className="font-medium">从材料拆大纲</span>
+                                                <span className="text-xs opacity-55">工具帮你规划分页与要点，适合还没想清楚具体每页内容</span>
+                                            </span>
+                                        ),
+                                    },
+                                    {
+                                        value: "extract",
+                                        label: (
+                                            <span className="flex min-h-12 flex-col justify-center px-1 py-1 text-left leading-5">
+                                                <span className="font-medium">已有规格，直接生图</span>
+                                                <span className="text-xs opacity-55">你的稿子已写好每页提示词，按原样逐字展开、不改写</span>
+                                            </span>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        </label>
+                        <label className="grid gap-1.5">
                             <span className="text-sm font-medium">PPT 标题</span>
                             <Input value={deckTitle} onChange={(event) => setDeckTitle(event.target.value)} placeholder="例如：2026 年度产品发布提案" />
                         </label>
                         <label className="grid gap-1.5">
                             <span className="text-sm font-medium">材料内容</span>
-                            <TextArea value={material} onChange={(event) => setMaterial(event.target.value)} placeholder="粘贴 Markdown 或整份文字材料" autoSize={{ minRows: 8, maxRows: 16 }} />
+                            <TextArea
+                                value={material}
+                                onChange={(event) => setMaterial(event.target.value)}
+                                placeholder={mode === "extract" ? "粘贴已经写好的完整提示词稿，每页内容按原样展开" : "粘贴 Markdown 或整份文字材料"}
+                                autoSize={{ minRows: 8, maxRows: 16 }}
+                            />
                         </label>
-                        <label className="grid gap-1.5">
-                            <span className="text-sm font-medium">PPT 要求（可选）</span>
-                            <TextArea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="例如：9 页以内，专业咨询报告风格" autoSize={{ minRows: 2, maxRows: 6 }} />
-                        </label>
+                        {mode === "outline" ? (
+                            <label className="grid gap-1.5">
+                                <span className="text-sm font-medium">PPT 要求（可选）</span>
+                                <TextArea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="例如：9 页以内，专业咨询报告风格" autoSize={{ minRows: 2, maxRows: 6 }} />
+                            </label>
+                        ) : null}
                         <div className="flex justify-end">
                             <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" onClick={() => setStep(1)}>
                                 下一步
@@ -215,9 +262,9 @@ function PptWizard({
                 {step === 1 ? (
                     <div className="flex flex-col gap-4">
                         <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-medium">分页大纲</span>
+                            <span className="text-sm font-medium">{mode === "extract" ? "分页内容" : "分页大纲"}</span>
                             <Button size="small" icon={<Sparkles className="size-3.5" />} loading={outlineLoading} onClick={() => void runOutline()}>
-                                {pages.length ? "重新生成" : "生成大纲"}
+                                {mode === "extract" ? (pages.length ? "重新展开" : "展开分页") : pages.length ? "重新生成" : "生成大纲"}
                             </Button>
                         </div>
 
@@ -233,8 +280,13 @@ function PptWizard({
                                         </div>
                                         <div className="grid gap-2">
                                             <Input value={page.title} onChange={(event) => updatePage(index, { title: event.target.value })} placeholder="页标题" />
-                                            <TextArea value={page.outline} onChange={(event) => updatePage(index, { outline: event.target.value })} placeholder="该页要点" autoSize={{ minRows: 2, maxRows: 4 }} />
-                                            <Input value={page.visualHint} onChange={(event) => updatePage(index, { visualHint: event.target.value })} placeholder="视觉建议（可选）" />
+                                            <TextArea
+                                                value={page.outline}
+                                                onChange={(event) => updatePage(index, { outline: event.target.value })}
+                                                placeholder={mode === "extract" ? "该页完整提示词" : "该页要点"}
+                                                autoSize={mode === "extract" ? { minRows: 4, maxRows: 12 } : { minRows: 2, maxRows: 4 }}
+                                            />
+                                            {mode === "outline" ? <Input value={page.visualHint} onChange={(event) => updatePage(index, { visualHint: event.target.value })} placeholder="视觉建议（可选）" /> : null}
                                         </div>
                                     </div>
                                 ))}
@@ -243,7 +295,7 @@ function PptWizard({
                                 </Button>
                             </div>
                         ) : (
-                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="先生成大纲，或直接手动添加分页">
+                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={mode === "extract" ? "先展开分页，或直接手动添加分页" : "先生成大纲，或直接手动添加分页"}>
                                 <Button icon={<Plus className="size-3.5" />} onClick={addPage}>
                                     手动添加一页
                                 </Button>
@@ -265,7 +317,15 @@ function PptWizard({
                     <div className="flex flex-col gap-4">
                         <label className="grid gap-1.5">
                             <span className="text-sm font-medium">风格描述</span>
-                            <TextArea value={styleDescription} onChange={(event) => setStyleDescription(event.target.value)} placeholder="例如：专业咨询报告风，深蓝配色，扁平化图标" autoSize={{ minRows: 3, maxRows: 6 }} />
+                            {mode === "extract" ? (
+                                <p className="text-xs text-stone-500">以下内容是从原文中未被任何一页占用的部分自动摘录（可能混有与风格无关的说明文字），仅供参考。若每页已自带风格，删空即可；否则请自行删减到只剩全局视觉风格（配色、背景、字体等）。</p>
+                            ) : null}
+                            <TextArea
+                                value={styleDescription}
+                                onChange={(event) => setStyleDescription(event.target.value)}
+                                placeholder="例如：专业咨询报告风，深蓝配色，扁平化图标"
+                                autoSize={mode === "extract" ? { minRows: 6, maxRows: 20 } : { minRows: 3, maxRows: 6 }}
+                            />
                         </label>
 
                         <div>

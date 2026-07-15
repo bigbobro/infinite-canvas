@@ -11,7 +11,7 @@ import { useCanvasStore, type CanvasProjectPptPage } from "@/stores/canvas/use-c
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { exportPptDeckImages, resolvePageImageNode } from "@/lib/ppt/deck-export";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
 export function CanvasPptPanel() {
     const { message } = App.useApp();
@@ -22,7 +22,7 @@ export function CanvasPptPanel() {
     const updateProject = useCanvasStore((state) => state.updateProject);
     const canvasContext = useAgentStore((state) => state.canvasContext);
     const [open, setOpen] = useState(true);
-    const [skipAnchor, setSkipAnchor] = useState(false);
+    const [skipAnchorOverride, setSkipAnchorOverride] = useState<boolean | null>(null);
     const [exporting, setExporting] = useState(false);
 
     const nodeById = useMemo(() => new Map((currentProject?.nodes || []).map((node) => [node.id, node])), [currentProject?.nodes]);
@@ -30,9 +30,18 @@ export function CanvasPptPanel() {
     const ppt = currentProject?.ppt;
     if (!ppt || !currentProject) return null;
 
+    // 生图模式（extract）的 config 节点靠 composerContent: "" 挡住 project.tsx:2014 的 prompt 回写，
+    // 面板可以停传 PPT_PAGE_PROMPT；老模式（outline，含未标记 mode 的存量 deck）没有这道挡板，
+    // 必须继续传常量，否则第 2 次生成起上游大纲会被重复拼接进被污染的 prompt 字段（design.md §4.1）。
+    const isExtractMode = ppt.mode === "extract";
+    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => (isExtractMode ? { type: "run_generation", nodeId: configNodeId, mode: "image" } : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT });
+
     const pages = ppt.pages;
     const confirmedCount = pages.filter((page) => page.confirmedNodeId).length;
     const styleNodeIds = currentProject.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
+    // 生图模式且无风格节点 = 每页已自带风格，没有需要向后传播的全局视觉 → 锚定默认关（AC8）；
+    // 用户手动勾/取消后以其选择为准。
+    const skipAnchor = skipAnchorOverride ?? (isExtractMode && styleNodeIds.length === 0);
 
     const runGeneration = (page: CanvasProjectPptPage) => {
         if (!canvasContext) {
@@ -43,7 +52,7 @@ export function CanvasPptPanel() {
             message.warning(`第 ${page.index} 页结构缺失，请先重建此页`);
             return;
         }
-        canvasContext.applyOps([{ type: "run_generation", nodeId: page.configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT }]);
+        canvasContext.applyOps([buildRunGenerationOp(page.configNodeId)]);
     };
 
     const generateAll = (targetPages: CanvasProjectPptPage[]) => {
@@ -51,7 +60,7 @@ export function CanvasPptPanel() {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
-        const ops: CanvasAgentOp[] = targetPages.filter((page) => nodeById.has(page.configNodeId)).map((page) => ({ type: "run_generation", nodeId: page.configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT }));
+        const ops: CanvasAgentOp[] = targetPages.filter((page) => nodeById.has(page.configNodeId)).map((page) => buildRunGenerationOp(page.configNodeId));
         if (!ops.length) {
             message.warning("没有可生成的页面");
             return;
@@ -73,10 +82,7 @@ export function CanvasPptPanel() {
         const anchorNodeId = firstPage.confirmedNodeId;
         const restPages = pages.filter((page) => page.index !== firstPage.index && nodeById.has(page.configNodeId));
         if (!restPages.length) return;
-        const ops: CanvasAgentOp[] = [
-            ...restPages.map((page): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: anchorNodeId, toNodeId: page.configNodeId })),
-            ...restPages.map((page): CanvasAgentOp => ({ type: "run_generation", nodeId: page.configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT })),
-        ];
+        const ops: CanvasAgentOp[] = [...restPages.map((page): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: anchorNodeId, toNodeId: page.configNodeId })), ...restPages.map((page): CanvasAgentOp => buildRunGenerationOp(page.configNodeId))];
         canvasContext.applyOps(ops);
         updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: true } });
     };
@@ -100,12 +106,16 @@ export function CanvasPptPanel() {
         }
         const outlineId = nanoid();
         const configId = nanoid();
-        const outlineContent = [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
+        // 生图模式（extract）下 page.outline 已是原稿逐字切片，不加「标题：」「视觉建议：」前缀，
+        // 与 deck-builder.ts 的 outlineContent 组装规则保持一致（design.md §5）。
+        const outlineContent = isExtractMode ? page.outline : [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
         const staleIds = [page.anchorNodeId, page.configNodeId].filter((id) => nodeById.has(id));
+        const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
+        if (isExtractMode) configMetadata.composerContent = "";
         const ops: CanvasAgentOp[] = [
             ...(staleIds.length ? [{ type: "delete_node", ids: staleIds } as CanvasAgentOp] : []),
             { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, metadata: { content: outlineContent, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
-            { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, metadata: { prompt: PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" } },
+            { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, metadata: configMetadata },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...styleNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
@@ -170,7 +180,7 @@ export function CanvasPptPanel() {
             </div>
 
             <div className="flex items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: theme.toolbar.border }}>
-                <Checkbox checked={!skipAnchor} disabled={pages.length <= 1} onChange={(event) => setSkipAnchor(!event.target.checked)}>
+                <Checkbox checked={!skipAnchor} disabled={pages.length <= 1} onChange={(event) => setSkipAnchorOverride(!event.target.checked)}>
                     <span className="text-xs" style={{ color: theme.node.muted }}>
                         首页锚定
                     </span>

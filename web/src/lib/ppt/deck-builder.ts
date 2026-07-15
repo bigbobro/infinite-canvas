@@ -18,22 +18,36 @@ export type BuildPptDeckParams = {
     style: { description: string };
     pages: PptDeckPageInput[];
     uploadedRefs: UploadedImage[];
+    mode?: "outline" | "extract";
 };
 
 const COLUMN_GAP = 96;
 const ROW_GAP = 48;
 
 export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasProject> {
-    const { title, sourceMaterial, requirements, style, pages, uploadedRefs } = params;
+    const { title, sourceMaterial, requirements, style, pages, uploadedRefs, mode = "outline" } = params;
     const styleDescription = style.description.trim();
 
     const styleSpec = getNodeSpec(CanvasNodeType.Text);
     const imageSpec = getNodeSpec(CanvasNodeType.Image);
     const outlineSpec = getNodeSpec(CanvasNodeType.Text);
     const configSpec = getNodeSpec(CanvasNodeType.Config);
+    const sourceSpec = getNodeSpec(CanvasNodeType.Text);
 
     const nodes: CanvasNodeData[] = [];
     const connections: CanvasConnection[] = [];
+
+    if (mode === "extract") {
+        nodes.push({
+            id: nanoid(),
+            type: CanvasNodeType.Text,
+            title: "PPT 原始规格稿",
+            position: { x: -(sourceSpec.width + COLUMN_GAP), y: 0 },
+            width: sourceSpec.width,
+            height: sourceSpec.height,
+            metadata: { ...sourceSpec.metadata, content: sourceMaterial, status: "success", pptRole: "source" },
+        });
+    }
 
     const styleNodeIds: string[] = [];
     let styleY = 0;
@@ -76,7 +90,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
         const outlineId = nanoid();
         const configId = nanoid();
 
-        const outlineContent = [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
+        const outlineContent = mode === "extract" ? page.outline : [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
         nodes.push({
             id: outlineId,
             type: CanvasNodeType.Text,
@@ -87,6 +101,17 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
             metadata: { ...outlineSpec.metadata, content: outlineContent, status: "success", pptPageIndex: index, pptRole: "outline" },
         });
 
+        const configMetadata: CanvasNodeData["metadata"] = {
+            ...configSpec.metadata,
+            prompt: mode === "extract" ? "" : PPT_PAGE_PROMPT,
+            size: "16:9",
+            count: 1,
+            pptPageIndex: index,
+            pptRole: "page",
+        };
+        if (mode === "extract") {
+            configMetadata.composerContent = "";
+        }
         nodes.push({
             id: configId,
             type: CanvasNodeType.Config,
@@ -94,7 +119,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
             position: { x: configX, y: rowY },
             width: configSpec.width,
             height: configSpec.height,
-            metadata: { ...configSpec.metadata, prompt: PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: index, pptRole: "page" },
+            metadata: configMetadata,
         });
 
         connections.push({ id: nanoid(), fromNodeId: outlineId, toNodeId: configId });
@@ -113,6 +138,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
             style: { description: styleDescription, references: uploadedRefs.map((ref) => ({ storageKey: ref.storageKey })) },
             pages: pptPages,
             anchorConfirmed: false,
+            mode,
         },
     };
 }

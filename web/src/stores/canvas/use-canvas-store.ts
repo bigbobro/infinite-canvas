@@ -22,6 +22,7 @@ export type CanvasProjectPpt = {
     style: { description: string; references: { storageKey: string }[] };
     pages: CanvasProjectPptPage[];
     anchorConfirmed?: boolean;
+    mode?: "outline" | "extract";
 };
 
 export type CanvasProject = {

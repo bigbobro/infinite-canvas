@@ -59,7 +59,7 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     pptPageIndex?: number;
-    pptRole?: "outline" | "style" | "page";
+    pptRole?: "outline" | "style" | "page" | "source";
 };
 
 export type CanvasNodeData = {
