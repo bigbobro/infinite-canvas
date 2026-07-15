@@ -9,7 +9,7 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 
-// 在网页端执行 Agent 的「站点级」工具（画布列表、工作台生成、提示词搜索、素材增删查等）。
+// 在网页端执行 Agent 的「站点级」工具（画布列表、工作台生成、提示词搜索、资产增删查等）。
 // 这些工具的数据都在浏览器本地（localforage / zustand），因此由本模块直接读写对应 store 后返回结果。
 
 export const SITE_TOOL_NAMES = [
@@ -36,8 +36,8 @@ export const SITE_TOOL_LABELS: Record<SiteToolName, string> = {
     workbench_video_get_config: "视频配置",
     workbench_video_generate: "视频创作台生成",
     prompts_search: "搜索提示词",
-    assets_list: "素材列表",
-    assets_add: "添加素材",
+    assets_list: "资产列表",
+    assets_add: "添加资产",
 };
 
 type SiteToolInput = Record<string, unknown>;
@@ -194,7 +194,7 @@ async function searchPrompts(input: SiteToolInput) {
 
 function listAssets(input: SiteToolInput) {
     const { assets, hydrated } = useAssetStore.getState();
-    if (!hydrated) throw new Error("素材还在加载中，请稍后重试");
+    if (!hydrated) throw new Error("资产还在加载中，请稍后重试");
     const kind = input.kind === "text" || input.kind === "image" || input.kind === "video" ? input.kind : "all";
     const keyword = String(input.keyword || "").trim().toLowerCase();
     const filtered = assets.filter((asset) => {
@@ -221,7 +221,7 @@ function listAssets(input: SiteToolInput) {
 async function addAsset(input: SiteToolInput) {
     const kind = input.kind;
     const title = String(input.title || "").trim();
-    if (!title) throw new Error("请提供素材标题 title");
+    if (!title) throw new Error("请提供资产标题 title");
     const tags = Array.isArray(input.tags) ? input.tags.filter((tag): tag is string => typeof tag === "string") : [];
     const source = typeof input.source === "string" ? input.source : "Agent";
     const note = typeof input.note === "string" ? input.note : undefined;

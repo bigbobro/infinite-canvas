@@ -56,17 +56,17 @@ function withCacheBust(url: string) {
 }
 
 // 从 URL 安装(或覆盖更新)一个插件,成功后立即启用
-export async function installPluginFromUrl(url: string) {
+export async function installPluginFromUrl(url: string, opts?: { official?: boolean }) {
     const source = await fetchPluginSource(url);
     const plugin = await evaluatePluginSource(source);
     deactivatePlugin(plugin.id); // 覆盖旧版本
-    usePluginStore.getState().upsert({ id: plugin.id, name: plugin.name || plugin.id, version: plugin.version || "0.0.0", description: plugin.description, url, source, enabled: true });
+    usePluginStore.getState().upsert({ id: plugin.id, name: plugin.name || plugin.id, version: plugin.version || "0.0.0", description: plugin.description, url, source, enabled: true, official: opts?.official });
     activatePlugin(plugin);
     return plugin;
 }
 
 export async function updatePlugin(record: InstalledPlugin) {
-    return installPluginFromUrl(record.url);
+    return installPluginFromUrl(record.url, { official: record.official });
 }
 
 export async function setPluginEnabled(record: InstalledPlugin, enabled: boolean) {

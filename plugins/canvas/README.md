@@ -1,20 +1,38 @@
 # Infinite Canvas 画布节点插件
 
-给画布扩展自定义节点。每个插件是一个**独立目录**,自带 `package.json` / `build.mjs` / `src/index.jsx` / `dist/`,互不耦合,可单独构建、发布、升级。
+给画布扩展自定义节点。每个插件是一个**独立目录**,用 **TypeScript** 编写,自带 `package.json` / `build.mjs` / `src/index.tsx` / `dist/`,互不耦合,可单独构建、发布、升级。
 
 内置节点只有文本、图片、视频、音频、生成配置、组六种;其余节点(Markdown、SVG、HTML、3D 全景、便利贴……)都是插件。
+
+作者只写节点 UI 与逻辑,**类型、JSX、宿主 React、构建全部由 [`@infinite-canvas/plugin-sdk`](./sdk/README.md) 提供**,写 TSX 全程有代码提示;产物仍是宿主加载器现有契约的 ESM(React external、宿主单例)。
 
 ## 目录约定
 
 ```
 plugins/canvas/
+  sdk/            # 插件 SDK(类型 + automatic JSX 运行时 + 构建助手)
+  template/       # 起步模板:复制它开始写新插件
   markdown/       # 每个插件一个独立目录
     package.json
-    build.mjs     # esbuild 构建,产物名取目录名 → dist/markdown.js
-    src/index.jsx # 插件源码(默认导出工厂函数)
+    build.mjs     # 一行 buildPlugin,产物名取目录名 → dist/markdown.js
+    tsconfig.json
+    src/index.tsx # 插件源码(默认导出 definePlugin(...))
     README.md
   svg/ html/ panorama/ sticky-note/ ...
 ```
+
+## 快速开始
+
+```bash
+cp -r plugins/canvas/template plugins/canvas/my-plugin
+cd plugins/canvas/my-plugin
+# 改 package.json 的 name;改 src/index.tsx 里的 id / nodes[].type
+npm install
+npm run dev        # watch 构建,产物同步到 web/public/plugins/my-plugin.js
+npm run typecheck  # tsc --noEmit,类型自检
+```
+
+产物名取**目录名**,复制后记得把目录改成插件名。
 
 ## 构建 / 发布 / 升级
 
@@ -26,6 +44,10 @@ npm run dev     # watch,改动自动构建并同步
 ```
 
 把 `dist/<name>.js` 托管到任意静态地址(CDN、GitHub Raw、对象存储),用户在画布「节点插件」管理器填该 URL 安装。升级时重新构建覆盖同一 URL,用户点「更新」即可。
+
+## 官方插件注册表
+
+本项目官方插件由 CI 集中构建后发布到孤儿分支 `plugins-dist`(**构建产物不进 git**),画布「节点插件」面板顶部的**官方插件**区经 jsDelivr 从该分支远程拉取并一键安装;第三方插件仍走下方「第三方插件」的 JS URL 安装。构建脚本与发布说明见 [`registry/`](./registry/README.md);清单地址可用 `VITE_PLUGIN_REGISTRY_URL` 覆盖成自建来源。
 
 ## 本地开发
 
@@ -39,36 +61,36 @@ npm run dev     # watch,改动自动构建并同步
 VITE_DEV_PLUGINS=/plugins/markdown.js,/plugins/svg.js
 ```
 
-再起画布 `web`(`npm run dev`)。流程即:改 `src/index.jsx` → watch 自动构建 → 刷新画布看到最新效果,无需反复安装。
+再起画布 `web`(`npm run dev`)。流程即:改 `src/index.tsx` → watch 自动构建 → 刷新画布看到最新效果,无需反复安装。
 
-## 插件文件构成
+## 用 SDK 写插件
 
-每个插件最终打包成**单个 `.js` 文件**(加载器 `fetch 单文件 → import`),但源码可以随意拆分:
+默认导出 `definePlugin({...})`(对象形式,**无需再 `const { React } = runtime`**):
 
-- **多个 JS/JSX**:在 `src/index.jsx` 里 `import` 其它模块,esbuild `bundle` 会合并进一个产物。
-- **CSS**:写独立 `.css` 文件,`import css from "./styles.css"` 拿到字符串(esbuild 用 `text` loader),放到插件的 `css` 字段即可——启用时自动注入 `<style>`,禁用/卸载时自动清理。也可以在 `setup(app)` 里 `app.injectCSS(css, key)` 手动注入(返回移除函数)。参考 `markdown/`。
-- **静态资源**(图片/字体):用远程 URL,或让 esbuild 内联成 dataURL(在 `build.mjs` 的 `loader` 里给对应扩展名配 `dataurl`)。
-- **重依赖**(three.js、marked 等):不要打进 bundle,运行时 `await import("https://esm.sh/...")` 动态加载。参考 `panorama/`、`markdown/`。
-- **HTML**:HTML 节点是把 HTML 字符串塞进 sandbox iframe 的 `srcDoc`,自带 `<style>`,不需要插件级 CSS。参考 `html/`。
+```tsx
+import { definePlugin, useState } from "@infinite-canvas/plugin-sdk";
+import type { CanvasNodeContentProps } from "@infinite-canvas/plugin-sdk";
 
-## 插件契约
-
-默认导出**一个工厂函数**,接收宿主 `runtime`(内含宿主 React 实例,避免两份 React),返回插件对象:
-
-```js
-export default function (runtime) {
-    const { React } = runtime; // 也有 runtime.jsx / runtime.version / runtime.emit / runtime.on / runtime.injectCSS
-    return {
-        id: "my-plugin",          // 唯一 id
-        name: "我的插件",
-        version: "1.0.0",
-        description: "……",
-        css: "…",                 // 可选:插件样式,自动注入/清理
-        nodes: [ /* CanvasNodeDefinition[] */ ],
-        setup(app) { return () => {}; }, // 可选,返回清理函数;app 含 injectCSS/emit/on
-    };
+function Content({ ctx }: CanvasNodeContentProps) {
+    const [n, setN] = useState(0);
+    return (
+        <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setN((v) => v + 1)} style={{ color: ctx.theme.node.text }}>
+            {ctx.node.title}: {n}
+        </button>
+    );
 }
+
+export default definePlugin({
+    id: "my-plugin",
+    name: "我的插件",
+    version: "1.0.0",
+    css: "…",                 // 可选:插件样式,自动注入/清理
+    nodes: [ /* CanvasNodeDefinition[] */ ],
+    setup(app) { return () => {}; }, // 可选,返回清理函数;app 含 injectCSS/emit/on
+});
 ```
+
+SDK 导出的 hooks(`useState/useEffect/useMemo/useRef/...`)运行时转发宿主 React,类型来自 `@types/react`。SDK 与依赖接入见 [`sdk/README.md`](./sdk/README.md)。
 
 ### CanvasNodeDefinition
 
@@ -76,7 +98,7 @@ export default function (runtime) {
 {
     type: string;                 // 建议 "<pluginId>:<name>",全局唯一
     title: string;                // 创建菜单/默认标题
-    icon: ReactNode;              // 可以是 emoji 字符串,或 runtime.jsx(...)
+    icon: ReactNode;              // emoji 字符串或任意 ReactNode
     description?: string;
     defaultSize: { width, height };
     defaultMetadata?: object;     // 新建节点初始 metadata(文本内容放 content)
@@ -94,7 +116,7 @@ export default function (runtime) {
 
 ### ctx:节点与画布交互接口
 
-`Content` / `Panel` / `toolbar` 都会拿到 `ctx`:
+`Content` / `Panel` / `toolbar` 都会拿到 `ctx`(类型 `CanvasNodeContext`):
 
 | 能力 | 说明 |
 | --- | --- |
@@ -108,9 +130,11 @@ export default function (runtime) {
 | `ctx.emit(event, payload)` / `ctx.on(event, handler)` | 节点/插件间事件通信 |
 | `ctx.storage` | 插件私有持久化(按插件 id 命名空间) |
 
+> `metadata` 的**内置字段**(content、status、model…)是强类型;插件写入的**自定义字段**读出为 `unknown`,按需 `as` 断言(参考 `sticky-note` 的 `pluginColor`)。
+
 ### 画布指令集(ctx.applyOps)
 
-```js
+```ts
 ctx.applyOps([
     { type: "add_node", id?, nodeType, title?, x?, y?, width?, height?, metadata? },
     { type: "update_node", id, patch?, metadata? },
@@ -123,8 +147,17 @@ ctx.applyOps([
 ]);
 ```
 
+## 重依赖 / 资源
+
+- **重依赖**(three.js、marked 等):不要打进 bundle,运行时 `await import("https://esm.sh/...")` 动态加载(esbuild 自动 external);在 `src/env.d.ts` 声明该模块以通过 tsc。参考 `panorama/`、`markdown/`。
+- **CSS**:写独立 `.css`,`import css from "./styles.css"` 拿到字符串(esbuild `text` loader),放到 `css` 字段自动注入/清理;`src/env.d.ts` 声明 `*.css`。参考 `markdown/`。
+- **HTML**:HTML 节点把 HTML 字符串塞进 sandbox iframe 的 `srcDoc`,自带 `<style>`,不需要插件级 CSS。参考 `html/`。
+
+## 兼容说明
+
+加载器仍接受**默认导出为工厂函数** `(runtime) => CanvasPlugin`(用 `runtime.React`)或**普通对象**;老的 JS 插件无需改动即可运行。SDK 的 automatic JSX 让新插件走对象形式,更简洁。
+
 ## 注意
 
 - 插件代码会在画布页面内**直接执行**,可访问浏览器本地数据(含 AI API Key)。发布前请自审,用户也只应安装可信来源。
-- 交互控件记得 `onMouseDown={e => e.stopPropagation()}`(避免触发节点拖拽),滚动区域加 `onWheel={e => e.stopPropagation()}` 与容器 `data-canvas-no-zoom`(避免被画布缩放拦截)。
-- 需要重依赖(如 three.js、marked)时,在源码里 `await import("https://esm.sh/...")` 动态加载,不要打进插件体积(参考 `panorama`、`markdown`)。
+- 交互控件记得 `onMouseDown={(e) => e.stopPropagation()}`(避免触发节点拖拽),滚动区域加 `onWheel={(e) => e.stopPropagation()}` 与容器 `data-canvas-no-zoom`(避免被画布缩放拦截)。
