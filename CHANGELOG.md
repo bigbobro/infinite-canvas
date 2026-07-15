@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.7.1 - 2026-07-15
+
++ [修复] 修复通过 `crypto.randomUUID` 不可用导致页面白屏报错的问题，改用 nanoid 生成 id。
+
 ## v0.7.0 - 2026-07-14
 
 + [新增] Agent 对话消息改用 streamdown 流式渲染，提升Markdown 内容展示效果。
