@@ -6,15 +6,34 @@ import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
+export type CanvasProjectPptTake = {
+    anchorNodeId: string;
+    configNodeId: string;
+};
+
 export type CanvasProjectPptPage = {
     index: number;
     title: string;
     outline: string;
     visualHint: string;
-    anchorNodeId: string;
-    configNodeId: string;
     confirmedNodeId?: string;
+    takes?: CanvasProjectPptTake[];
+    /** @deprecated 用 takes；存量数据读时经 pageTakes() 视作 takes[0] */
+    anchorNodeId?: string;
+    /** @deprecated 用 takes；存量数据读时经 pageTakes() 视作 takes[0] */
+    configNodeId?: string;
 };
+
+/**
+ * 归一读取某页的全部线路（take）。存量数据只有单值 anchorNodeId/configNodeId，
+ * 读时视作单元素数组；不写迁移脚本、不做一次性升级（design §2.1，纯前端 localforage，
+ * 存量 PPT 工程躺在用户浏览器里，不可破坏）。
+ */
+export function pageTakes(page: CanvasProjectPptPage): CanvasProjectPptTake[] {
+    if (page.takes?.length) return page.takes;
+    if (page.anchorNodeId && page.configNodeId) return [{ anchorNodeId: page.anchorNodeId, configNodeId: page.configNodeId }];
+    return [];
+}
 
 export type CanvasProjectPpt = {
     sourceMaterial: string;

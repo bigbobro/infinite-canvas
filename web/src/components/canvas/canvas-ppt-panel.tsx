@@ -7,7 +7,7 @@ import { CheckCircle2, ChevronRight, Download, Layers, LoaderCircle, RotateCcw, 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useAgentStore } from "@/stores/use-agent-store";
-import { useCanvasStore, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
+import { pageTakes, useCanvasStore, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { exportPptDeckImages, resolvePageImageNode } from "@/lib/ppt/deck-export";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
@@ -48,11 +48,12 @@ export function CanvasPptPanel() {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
-        if (!nodeById.has(page.configNodeId)) {
+        const configNodeId = pageTakes(page)[0]?.configNodeId;
+        if (!configNodeId || !nodeById.has(configNodeId)) {
             message.warning(`第 ${page.index} 页结构缺失，请先重建此页`);
             return;
         }
-        canvasContext.applyOps([buildRunGenerationOp(page.configNodeId)]);
+        canvasContext.applyOps([buildRunGenerationOp(configNodeId)]);
     };
 
     const generateAll = (targetPages: CanvasProjectPptPage[]) => {
@@ -60,7 +61,10 @@ export function CanvasPptPanel() {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
-        const ops: CanvasAgentOp[] = targetPages.filter((page) => nodeById.has(page.configNodeId)).map((page) => buildRunGenerationOp(page.configNodeId));
+        const ops: CanvasAgentOp[] = targetPages
+            .map((page) => pageTakes(page)[0]?.configNodeId)
+            .filter((configNodeId): configNodeId is string => Boolean(configNodeId) && nodeById.has(configNodeId))
+            .map((configNodeId) => buildRunGenerationOp(configNodeId));
         if (!ops.length) {
             message.warning("没有可生成的页面");
             return;
@@ -80,9 +84,15 @@ export function CanvasPptPanel() {
     const confirmAnchorAndGenerateRest = () => {
         if (!canvasContext || !firstPage?.confirmedNodeId) return;
         const anchorNodeId = firstPage.confirmedNodeId;
-        const restPages = pages.filter((page) => page.index !== firstPage.index && nodeById.has(page.configNodeId));
-        if (!restPages.length) return;
-        const ops: CanvasAgentOp[] = [...restPages.map((page): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: anchorNodeId, toNodeId: page.configNodeId })), ...restPages.map((page): CanvasAgentOp => buildRunGenerationOp(page.configNodeId))];
+        const restConfigNodeIds = pages
+            .filter((page) => page.index !== firstPage.index)
+            .map((page) => pageTakes(page)[0]?.configNodeId)
+            .filter((configNodeId): configNodeId is string => Boolean(configNodeId) && nodeById.has(configNodeId));
+        if (!restConfigNodeIds.length) return;
+        const ops: CanvasAgentOp[] = [
+            ...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: anchorNodeId, toNodeId: configNodeId })),
+            ...restConfigNodeIds.map((configNodeId): CanvasAgentOp => buildRunGenerationOp(configNodeId)),
+        ];
         canvasContext.applyOps(ops);
         updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: true } });
     };
@@ -109,7 +119,9 @@ export function CanvasPptPanel() {
         // 生图模式（extract）下 page.outline 已是原稿逐字切片，不加「标题：」「视觉建议：」前缀，
         // 与 deck-builder.ts 的 outlineContent 组装规则保持一致（design.md §5）。
         const outlineContent = isExtractMode ? page.outline : [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
-        const staleIds = [page.anchorNodeId, page.configNodeId].filter((id) => nodeById.has(id));
+        const staleIds = pageTakes(page)
+            .flatMap((take) => [take.anchorNodeId, take.configNodeId])
+            .filter((id) => nodeById.has(id));
         const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
         if (isExtractMode) configMetadata.composerContent = "";
         const ops: CanvasAgentOp[] = [
@@ -124,7 +136,7 @@ export function CanvasPptPanel() {
             ppt: {
                 ...ppt,
                 anchorConfirmed: page.index === 1 ? false : ppt.anchorConfirmed,
-                pages: pages.map((item) => (item.index === page.index ? { ...item, anchorNodeId: outlineId, configNodeId: configId, confirmedNodeId: undefined } : item)),
+                pages: pages.map((item) => (item.index === page.index ? { ...item, takes: [{ anchorNodeId: outlineId, configNodeId: configId }], anchorNodeId: undefined, configNodeId: undefined, confirmedNodeId: undefined } : item)),
             },
         });
         message.success(`第 ${page.index} 页结构已重建`);
@@ -196,7 +208,7 @@ export function CanvasPptPanel() {
                         key={page.index}
                         page={page}
                         theme={theme}
-                        configNode={nodeById.get(page.configNodeId)}
+                        configNode={nodeById.get(pageTakes(page)[0]?.configNodeId ?? "")}
                         imageNode={resolvePageImageNode(currentProject, page)}
                         onGenerate={() => runGeneration(page)}
                         onConfirm={(nodeId) => setPageConfirmed(page, nodeId)}

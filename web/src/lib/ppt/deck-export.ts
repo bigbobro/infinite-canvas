@@ -2,7 +2,7 @@ import { saveAs } from "file-saver";
 
 import { createZip } from "@/lib/zip";
 import { getImageBlob } from "@/services/image-storage";
-import type { CanvasProject, CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
+import { pageTakes, type CanvasProject, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 export function resolvePageImageNode(project: CanvasProject, page: CanvasProjectPptPage): CanvasNodeData | null {
@@ -16,7 +16,7 @@ export function resolvePageImageNode(project: CanvasProject, page: CanvasProject
 }
 
 /**
- * 收集某页 config 节点下游全部成功生成的候选图片节点。
+ * 收集某页全部线路（take）的 config 节点下游成功生成的候选图片节点，取并集去重。
  *
  * 剪枝规则（design §3.2）：BFS 遍历时，若遇到带 `pptPageIndex` 且不等于当前页 index 的节点，
  * 立即停止（不收集、不入队）——用于斩断首页锚定连线（第 1 页图 → 第 2…N 页 config）导致的串页。
@@ -27,7 +27,7 @@ export function resolvePageImageNode(project: CanvasProject, page: CanvasProject
  */
 export function collectPageCandidates(project: CanvasProject, page: CanvasProjectPptPage): CanvasNodeData[] {
     const downstreamIds = new Set<string>();
-    const queue = [page.configNodeId];
+    const queue = pageTakes(page).map((take) => take.configNodeId);
     while (queue.length) {
         const currentId = queue.shift()!;
         for (const connection of project.connections) {

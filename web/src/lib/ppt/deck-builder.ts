@@ -125,7 +125,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
         connections.push({ id: nanoid(), fromNodeId: outlineId, toNodeId: configId });
         styleNodeIds.forEach((styleNodeId) => connections.push({ id: nanoid(), fromNodeId: styleNodeId, toNodeId: configId }));
 
-        return { index, title: page.title, outline: page.outline, visualHint: page.visualHint, anchorNodeId: outlineId, configNodeId: configId };
+        return { index, title: page.title, outline: page.outline, visualHint: page.visualHint, takes: [{ anchorNodeId: outlineId, configNodeId: configId }] };
     });
 
     return {
