@@ -32,7 +32,8 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
                 capability: "audio",
                 script,
                 config: requestConfig,
-                input: { prompt, params: { voice: normalizeAudioVoiceValue(config.audioVoice), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() } },
+                prompt,
+                params: { voice: normalizeAudioVoiceValue(config.audioVoice), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() },
                 signal: options?.signal,
             });
             return await audioPluginBlob(result, format);

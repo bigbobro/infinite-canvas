@@ -666,12 +666,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 capability: "image",
                 script,
                 config: requestConfig,
-                input: {
-                    prompt: withSystemPrompt(requestConfig, prompt),
-                    references: [],
-                    params: { size: requestSize, quality, count: n },
-                    body: { model: requestConfig.model, n, ...(quality ? { quality } : {}), ...(requestSize ? { size: requestSize } : {}), response_format: "b64_json", output_format: IMAGE_OUTPUT_FORMAT },
-                },
+                prompt: withSystemPrompt(requestConfig, prompt),
+                images: [],
+                params: { size: requestSize, quality, count: n },
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
@@ -726,12 +723,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 capability: "image",
                 script,
                 config: requestConfig,
-                input: {
-                    prompt: withSystemPrompt(requestConfig, requestPrompt),
-                    references: refs,
-                    params: { size: requestSize, quality, count: n },
-                    body: { model: requestConfig.model, n, ...(quality ? { quality } : {}), ...(requestSize ? { size: requestSize } : {}), response_format: "b64_json", output_format: IMAGE_OUTPUT_FORMAT },
-                },
+                prompt: withSystemPrompt(requestConfig, requestPrompt),
+                images: refs,
+                params: { size: requestSize, quality, count: n },
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
@@ -783,7 +777,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
                 capability: "text",
                 script,
                 config: requestConfig,
-                input: { messages: withSystemMessage(requestConfig, messages), body: { model: requestConfig.model } },
+                messages: withSystemMessage(requestConfig, messages),
                 signal: options?.signal,
                 onDelta,
             });
