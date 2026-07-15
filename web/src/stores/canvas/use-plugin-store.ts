@@ -11,6 +11,7 @@ export type InstalledPlugin = {
     url: string; // 安装来源,可用于更新
     source: string; // 缓存的插件源码,离线可用、版本固定
     enabled: boolean;
+    local?: boolean; // 自动发现于 web/public/plugins 的本地插件(默认关闭,启用时按 url 重新拉取)
     installedAt: string;
 };
 

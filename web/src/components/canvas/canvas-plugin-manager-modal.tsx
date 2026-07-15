@@ -80,6 +80,11 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
                                         <span className="rounded-full px-1.5 py-0.5 text-[10px]" style={{ background: theme.toolbar.activeBg, color: theme.node.muted }}>
                                             v{record.version}
                                         </span>
+                                        {record.local && (
+                                            <span className="rounded-full px-1.5 py-0.5 text-[10px]" style={{ background: "#22c55e22", color: "#16a34a" }}>
+                                                本地
+                                            </span>
+                                        )}
                                     </div>
                                     <div className="truncate text-xs" style={{ color: theme.node.muted }}>
                                         {record.description || record.url}
@@ -91,10 +96,14 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
                                     loading={busyId === record.id}
                                     onChange={(checked) => runOnPlugin(record, () => setPluginEnabled(record, checked), checked ? "已启用" : "已禁用")}
                                 />
-                                <Button type="text" size="small" icon={<RefreshCw className="size-4" />} loading={busyId === record.id} title="从来源更新" onClick={() => runOnPlugin(record, async () => void (await updatePlugin(record)), "已更新")} />
-                                <Popconfirm title="卸载该插件？" okText="卸载" cancelText="取消" onConfirm={() => uninstallPlugin(record.id)}>
-                                    <Button type="text" size="small" danger icon={<Trash2 className="size-4" />} title="卸载" />
-                                </Popconfirm>
+                                {!record.local && (
+                                    <>
+                                        <Button type="text" size="small" icon={<RefreshCw className="size-4" />} loading={busyId === record.id} title="从来源更新" onClick={() => runOnPlugin(record, async () => void (await updatePlugin(record)), "已更新")} />
+                                        <Popconfirm title="卸载该插件？" okText="卸载" cancelText="取消" onConfirm={() => uninstallPlugin(record.id)}>
+                                            <Button type="text" size="small" danger icon={<Trash2 className="size-4" />} title="卸载" />
+                                        </Popconfirm>
+                                    </>
+                                )}
                             </div>
                         ))
                     )}

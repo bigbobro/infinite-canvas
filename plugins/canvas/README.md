@@ -29,13 +29,17 @@ npm run dev     # watch,改动自动构建并同步
 
 ## 本地开发
 
-`npm run dev` 起 watch,在 `web/.env.local` 声明开发插件(逗号分隔多个):
+`npm run dev` 起 watch,产物会同步到 `web/public/plugins/<name>.js`。此后有两种方式在画布里用到它:
+
+**方式一(推荐):自动发现。** 画布启动时会扫描 `web/public/plugins/` 下的插件,自动加入「节点插件」管理器列表,**默认关闭**;打开开关即启用。无需手动填 URL,启用时会按文件重新拉取,配合 watch 改完刷新即最新。
+
+**方式二:`VITE_DEV_PLUGINS`。** 在 `web/.env.local` 声明(逗号分隔多个),这些插件每次刷新页面都**重新拉取并直接激活**(不缓存、不落库、无开关):
 
 ```env
 VITE_DEV_PLUGINS=/plugins/markdown.js,/plugins/svg.js
 ```
 
-再起画布 `web`(`npm run dev`)。`VITE_DEV_PLUGINS` 里的插件每次刷新页面都会**重新拉取**(不缓存、不落库),流程即:改 `src/index.jsx` → watch 自动构建 → 刷新画布看到最新效果,无需反复安装。
+再起画布 `web`(`npm run dev`)。流程即:改 `src/index.jsx` → watch 自动构建 → 刷新画布看到最新效果,无需反复安装。
 
 ## 插件文件构成
 

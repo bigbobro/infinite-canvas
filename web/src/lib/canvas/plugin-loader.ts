@@ -50,6 +50,11 @@ async function fetchPluginSource(url: string) {
     return response.text();
 }
 
+// 加缓存穿透参数,配合 watch 构建拿到最新产物
+function withCacheBust(url: string) {
+    return `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+}
+
 // 从 URL 安装(或覆盖更新)一个插件,成功后立即启用
 export async function installPluginFromUrl(url: string) {
     const source = await fetchPluginSource(url);
@@ -70,7 +75,9 @@ export async function setPluginEnabled(record: InstalledPlugin, enabled: boolean
         deactivatePlugin(record.id);
         return;
     }
-    const plugin = await evaluatePluginSource(record.source);
+    // 本地插件启用时按 url 重新拉取,拿到最新构建(缓存 source 可能已过期)
+    const source = record.local ? await fetchPluginSource(withCacheBust(record.url)) : record.source;
+    const plugin = await evaluatePluginSource(source);
     activatePlugin(plugin);
 }
 
@@ -86,17 +93,48 @@ export async function ensurePluginsLoaded() {
     if (loaded) return;
     loaded = true;
     await usePluginStore.persist.rehydrate();
+    await loadLocalPlugins(); // 先发现本地插件(默认关闭),再统一按 enabled 激活
     const records = usePluginStore.getState().plugins.filter((record) => record.enabled);
     await Promise.all(
         records.map(async (record) => {
             try {
-                activatePlugin(await evaluatePluginSource(record.source));
+                // 本地插件用最新产物,其余用缓存的源码
+                const source = record.local ? await fetchPluginSource(withCacheBust(record.url)) : record.source;
+                activatePlugin(await evaluatePluginSource(source));
             } catch (error) {
                 console.error(`[plugin] 加载失败: ${record.id}`, error);
             }
         }),
     );
     await loadDevPlugins();
+}
+
+// 自动发现 web/public/plugins 下的本地插件:加入列表但默认关闭,
+// 本地开发放好插件文件即可在管理器里看到并一键启用,无需手动填 URL。
+// 已在列表中的(用户装过/发现过)不覆盖,尊重其现有开关。
+async function loadLocalPlugins() {
+    let urls: unknown;
+    try {
+        const response = await fetch("/plugins/index.json");
+        if (!response.ok) return;
+        urls = await response.json();
+    } catch {
+        return; // 无本地清单(如生产环境未构建插件)则跳过
+    }
+    if (!Array.isArray(urls) || !urls.length) return;
+    const store = usePluginStore.getState();
+    await Promise.all(
+        urls.map(async (url: string) => {
+            try {
+                const source = await fetchPluginSource(withCacheBust(url));
+                const plugin = await evaluatePluginSource(source);
+                if (store.plugins.some((item) => item.id === plugin.id)) return;
+                store.upsert({ id: plugin.id, name: plugin.name || plugin.id, version: plugin.version || "0.0.0", description: plugin.description, url, source, enabled: false, local: true });
+            } catch (error) {
+                console.error(`[plugin] 本地插件发现失败: ${url}`, error);
+            }
+        }),
+    );
 }
 
 // 本地开发:VITE_DEV_PLUGINS 里的 URL 每次启动都重新拉取(不缓存、不落库),
@@ -108,7 +146,7 @@ async function loadDevPlugins() {
     await Promise.all(
         urls.map(async (url) => {
             try {
-                const source = await fetchPluginSource(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`);
+                const source = await fetchPluginSource(withCacheBust(url));
                 const plugin = await evaluatePluginSource(source);
                 deactivatePlugin(plugin.id);
                 activatePlugin(plugin);
