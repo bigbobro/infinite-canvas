@@ -9,3 +9,6 @@ data/
 .DS_Store
 .idea
 web/dist
+plugins/canvas/*/dist
+plugins/canvas/*/node_modules
+web/public/plugins
