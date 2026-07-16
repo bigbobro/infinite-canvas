@@ -13,6 +13,9 @@ import { exportPptDeckImages, resolvePageImageNode } from "@/lib/ppt/deck-export
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
+// 新增线路时新节点的行间距，与 deck-builder.ts 的 ROW_GAP 保持一致的间距感（该常量未导出，各自维护）。
+const ROW_GAP = 48;
+
 export function CanvasPptPanel() {
     const { message } = App.useApp();
     const params = useParams<{ id: string }>();
@@ -48,9 +51,9 @@ export function CanvasPptPanel() {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
-        const configNodeId = pageTakes(page)[0]?.configNodeId;
+        const configNodeId = pageTakes(page).at(-1)?.configNodeId;
         if (!configNodeId || !nodeById.has(configNodeId)) {
-            message.warning(`第 ${page.index} 页结构缺失，请先重建此页`);
+            message.warning(`第 ${page.index} 页结构缺失，请先新增线路`);
             return;
         }
         canvasContext.applyOps([buildRunGenerationOp(configNodeId)]);
@@ -62,8 +65,8 @@ export function CanvasPptPanel() {
             return;
         }
         const ops: CanvasAgentOp[] = targetPages
-            .map((page) => pageTakes(page)[0]?.configNodeId)
-            .filter((configNodeId): configNodeId is string => Boolean(configNodeId) && nodeById.has(configNodeId))
+            .map((page) => pageTakes(page).at(-1)?.configNodeId)
+            .filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId))
             .map((configNodeId) => buildRunGenerationOp(configNodeId));
         if (!ops.length) {
             message.warning("没有可生成的页面");
@@ -86,8 +89,8 @@ export function CanvasPptPanel() {
         const anchorNodeId = firstPage.confirmedNodeId;
         const restConfigNodeIds = pages
             .filter((page) => page.index !== firstPage.index)
-            .map((page) => pageTakes(page)[0]?.configNodeId)
-            .filter((configNodeId): configNodeId is string => Boolean(configNodeId) && nodeById.has(configNodeId));
+            .map((page) => pageTakes(page).at(-1)?.configNodeId)
+            .filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId));
         if (!restConfigNodeIds.length) return;
         const ops: CanvasAgentOp[] = [
             ...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: anchorNodeId, toNodeId: configNodeId })),
@@ -109,7 +112,9 @@ export function CanvasPptPanel() {
         }
     }
 
-    const rebuildPage = (page: CanvasProjectPptPage) => {
+    // 新增线路：追加一条平行的 outline/config，不销毁已有的（U3 情况②）。原 outline/config
+    // 节点、已确认图、锚定状态都保持不动——旧线路仍是合法候选（design.md §2）。
+    const addPageTake = (page: CanvasProjectPptPage) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
@@ -117,17 +122,22 @@ export function CanvasPptPanel() {
         const outlineId = nanoid();
         const configId = nanoid();
         // 生图模式（extract）下 page.outline 已是原稿逐字切片，不加「标题：」「视觉建议：」前缀，
-        // 与 deck-builder.ts 的 outlineContent 组装规则保持一致（design.md §5）。
+        // 与 deck-builder.ts 的 outlineContent 组装规则保持一致（design.md §5）。新线路的初始内容
+        // 复制自当前 page.outline（用户拍板：要「改」不要「重写」）。
         const outlineContent = isExtractMode ? page.outline : [`标题：${page.title}`, page.outline, page.visualHint ? `视觉建议：${page.visualHint}` : ""].filter(Boolean).join("\n\n");
-        const staleIds = pageTakes(page)
-            .flatMap((take) => [take.anchorNodeId, take.configNodeId])
-            .filter((id) => nodeById.has(id));
         const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
         if (isExtractMode) configMetadata.composerContent = "";
+
+        // 新节点摆在最新一条线路的下方一行，避免叠在既有节点上；取不到位置就交给 add_node 的默认摆位。
+        const latestTake = pageTakes(page).at(-1);
+        const latestOutlineNode = latestTake ? nodeById.get(latestTake.anchorNodeId) : undefined;
+        const latestConfigNode = latestTake ? nodeById.get(latestTake.configNodeId) : undefined;
+        const outlinePosition = latestOutlineNode ? { x: latestOutlineNode.position.x, y: latestOutlineNode.position.y + latestOutlineNode.height + ROW_GAP } : undefined;
+        const configPosition = latestConfigNode ? { x: latestConfigNode.position.x, y: latestConfigNode.position.y + latestConfigNode.height + ROW_GAP } : undefined;
+
         const ops: CanvasAgentOp[] = [
-            ...(staleIds.length ? [{ type: "delete_node", ids: staleIds } as CanvasAgentOp] : []),
-            { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, metadata: { content: outlineContent, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
-            { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, metadata: configMetadata },
+            { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, position: outlinePosition, metadata: { content: outlineContent, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
+            { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, position: configPosition, metadata: configMetadata },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...styleNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
@@ -135,11 +145,10 @@ export function CanvasPptPanel() {
         updateProject(projectId, {
             ppt: {
                 ...ppt,
-                anchorConfirmed: page.index === 1 ? false : ppt.anchorConfirmed,
-                pages: pages.map((item) => (item.index === page.index ? { ...item, takes: [{ anchorNodeId: outlineId, configNodeId: configId }], anchorNodeId: undefined, configNodeId: undefined, confirmedNodeId: undefined } : item)),
+                pages: pages.map((item) => (item.index === page.index ? { ...item, takes: [...pageTakes(item), { anchorNodeId: outlineId, configNodeId: configId }], anchorNodeId: undefined, configNodeId: undefined } : item)),
             },
         });
-        message.success(`第 ${page.index} 页结构已重建`);
+        message.success(`第 ${page.index} 页已新增线路`);
     };
 
     const handleExport = async () => {
@@ -208,11 +217,11 @@ export function CanvasPptPanel() {
                         key={page.index}
                         page={page}
                         theme={theme}
-                        configNode={nodeById.get(pageTakes(page)[0]?.configNodeId ?? "")}
+                        configNode={nodeById.get(pageTakes(page).at(-1)?.configNodeId ?? "")}
                         imageNode={resolvePageImageNode(currentProject, page)}
                         onGenerate={() => runGeneration(page)}
                         onConfirm={(nodeId) => setPageConfirmed(page, nodeId)}
-                        onRebuild={() => rebuildPage(page)}
+                        onAddTake={() => addPageTake(page)}
                     />
                 ))}
             </div>
@@ -233,7 +242,7 @@ function PptPageRow({
     imageNode,
     onGenerate,
     onConfirm,
-    onRebuild,
+    onAddTake,
 }: {
     page: CanvasProjectPptPage;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
@@ -241,7 +250,7 @@ function PptPageRow({
     imageNode: CanvasNodeData | null;
     onGenerate: () => void;
     onConfirm: (nodeId?: string) => void;
-    onRebuild: () => void;
+    onAddTake: () => void;
 }) {
     const generating = configNode?.metadata?.status === "loading";
     const confirmed = Boolean(page.confirmedNodeId && imageNode?.id === page.confirmedNodeId);
@@ -267,25 +276,25 @@ function PptPageRow({
                     <span className="truncate text-sm font-medium">{page.title}</span>
                     {confirmed ? <CheckCircle2 className="size-3.5 shrink-0" style={{ color: "#16a34a" }} /> : null}
                 </div>
-                {!configNode ? (
-                    <div className="mt-1.5 flex items-center gap-2">
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {!configNode ? (
                         <span className="text-xs" style={{ color: "#dc2626" }}>
                             结构缺失
                         </span>
-                        <Button size="small" icon={<ChevronRight className="size-3" />} onClick={onRebuild}>
-                            重建此页
-                        </Button>
-                    </div>
-                ) : (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        <Button size="small" disabled={generating} icon={generating ? <LoaderCircle className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} onClick={onGenerate}>
-                            {generating ? "生成中" : imageNode ? "重新生成" : "生成"}
-                        </Button>
-                        <Button size="small" disabled={!imageNode || generating} onClick={() => onConfirm(confirmed ? undefined : imageNode?.id)}>
-                            {confirmed ? "取消确认" : "确认此页"}
-                        </Button>
-                    </div>
-                )}
+                    ) : (
+                        <>
+                            <Button size="small" disabled={generating} icon={generating ? <LoaderCircle className="size-3 animate-spin" /> : <RotateCcw className="size-3" />} onClick={onGenerate}>
+                                {generating ? "生成中" : imageNode ? "重新生成" : "生成"}
+                            </Button>
+                            <Button size="small" disabled={!imageNode || generating} onClick={() => onConfirm(confirmed ? undefined : imageNode?.id)}>
+                                {confirmed ? "取消确认" : "确认此页"}
+                            </Button>
+                        </>
+                    )}
+                    <Button size="small" icon={<ChevronRight className="size-3" />} onClick={onAddTake}>
+                        新增线路
+                    </Button>
+                </div>
             </div>
         </div>
     );
