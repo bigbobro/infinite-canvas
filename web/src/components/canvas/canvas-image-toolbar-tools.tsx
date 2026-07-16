@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
-import { Brush, Camera, Copy, FileText, Grid2x2, Lock, LockOpen, Maximize2, Scissors, Sparkles, Upload, ZoomIn } from "lucide-react";
+import { Brush, Camera, Copy, FileText, Grid2x2, Lock, LockOpen, MapPin, Maximize2, Scissors, Sparkles, Upload, ZoomIn } from "lucide-react";
 
+import { useAnnotateStore } from "@/stores/use-annotate-store"; // [二开] annotate
 import type { CanvasNodeData } from "@/types/canvas";
 
-export type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "maskEdit" | "crop" | "split" | "upscale" | "superResolve" | "angle" | "view";
+export type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "maskEdit" | "annotate" | "crop" | "split" | "upscale" | "superResolve" | "angle" | "view";
 export type ImageQuickToolId = "info" | "delete" | "saveAsset" | "download" | "edit" | ImageNodeActionToolId;
 
 export type ImageToolHandlers = {
@@ -86,6 +87,16 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
         title: "添加蒙版遮罩后局部修改",
         icon: () => <Brush className="size-4" />,
         run: (node, handlers) => handlers.onMaskEdit(node),
+    },
+    // [二开] annotate: 直接调二开 store，不走 ImageToolHandlers
+    {
+        id: "annotate",
+        defaultVisible: true,
+        panelLabel: "标注改图",
+        label: "标注改图",
+        title: "在图上点位标注，一次提交多点修改",
+        icon: () => <MapPin className="size-4" />,
+        run: (node) => useAnnotateStore.getState().open(node.id),
     },
     {
         id: "crop",
