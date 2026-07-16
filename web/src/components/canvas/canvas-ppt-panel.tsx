@@ -81,13 +81,19 @@ export function CanvasPptPanel() {
 
     // 面板负责挑、画布负责看（design §7）：面板宽 380px、候选缩略图约 48px，挑信息图的版式
     // 细节根本看不清。点候选跳画布视角并选中，把节点中心映射到当前视口中心。
+    // 画布可视区域比 window.innerWidth/innerHeight 小：顶部有 AppTopNav（固定 56px），右侧
+    // Agent 面板展开时是真实 flex 兄弟（非浮层）会挤压宽度。用画布所在 <main> 的实际渲染尺寸
+    // 算中心，避免 Agent 面板展开时把目标节点算偏（该 <main> 在画布工程页内唯一）。
     const focusNode = (node: CanvasNodeData) => {
         if (!canvasContext) return;
         const k = canvasContext.snapshot.viewport?.k || 1;
         const centerX = node.position.x + node.width / 2;
         const centerY = node.position.y + node.height / 2;
+        const containerRect = document.querySelector("main")?.getBoundingClientRect();
+        const width = containerRect?.width || window.innerWidth;
+        const height = containerRect?.height || window.innerHeight;
         canvasContext.applyOps([
-            { type: "set_viewport", viewport: { x: window.innerWidth / 2 - k * centerX, y: window.innerHeight / 2 - k * centerY, k } },
+            { type: "set_viewport", viewport: { x: width / 2 - k * centerX, y: height / 2 - k * centerY, k } },
             { type: "select_nodes", ids: [node.id] },
         ]);
     };
