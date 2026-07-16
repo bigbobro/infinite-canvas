@@ -9,7 +9,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { pageTakes, useCanvasStore, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
-import { exportPptDeckImages, resolvePageImageNode } from "@/lib/ppt/deck-export";
+import { collectPageCandidateGroups, exportPptDeckImages, resolvePageImageNode } from "@/lib/ppt/deck-export";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
@@ -79,6 +79,19 @@ export function CanvasPptPanel() {
         updateProject(projectId, { ppt: { ...ppt, pages: pages.map((item) => (item.index === page.index ? { ...item, confirmedNodeId } : item)) } });
     };
 
+    // 面板负责挑、画布负责看（design §7）：面板宽 380px、候选缩略图约 48px，挑信息图的版式
+    // 细节根本看不清。点候选跳画布视角并选中，把节点中心映射到当前视口中心。
+    const focusNode = (node: CanvasNodeData) => {
+        if (!canvasContext) return;
+        const k = canvasContext.snapshot.viewport?.k || 1;
+        const centerX = node.position.x + node.width / 2;
+        const centerY = node.position.y + node.height / 2;
+        canvasContext.applyOps([
+            { type: "set_viewport", viewport: { x: window.innerWidth / 2 - k * centerX, y: window.innerHeight / 2 - k * centerY, k } },
+            { type: "select_nodes", ids: [node.id] },
+        ]);
+    };
+
     const firstPage = pages.find((page) => page.index === 1) || pages[0];
     const firstPageImageNode = firstPage ? resolvePageImageNode(currentProject, firstPage) : null;
     const firstConfirmed = Boolean(firstPage?.confirmedNodeId && firstPageImageNode?.id === firstPage.confirmedNodeId);
@@ -128,12 +141,17 @@ export function CanvasPptPanel() {
         const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
         if (isExtractMode) configMetadata.composerContent = "";
 
-        // 新节点摆在最新一条线路的下方一行，避免叠在既有节点上；取不到位置就交给 add_node 的默认摆位。
+        // 新节点摆到整个 PPT 网格的全局底部：deck 建图的行距恰好也是 ROW_GAP，
+        // 「本行下方一行」必与下一页的行重合（新增线路的节点会盖住下一页的节点），
+        // 只有取全局最低点才保证与任何行都不撞。x 沿用最新线路的列。
         const latestTake = pageTakes(page).at(-1);
         const latestOutlineNode = latestTake ? nodeById.get(latestTake.anchorNodeId) : undefined;
         const latestConfigNode = latestTake ? nodeById.get(latestTake.configNodeId) : undefined;
-        const outlinePosition = latestOutlineNode ? { x: latestOutlineNode.position.x, y: latestOutlineNode.position.y + latestOutlineNode.height + ROW_GAP } : undefined;
-        const configPosition = latestConfigNode ? { x: latestConfigNode.position.x, y: latestConfigNode.position.y + latestConfigNode.height + ROW_GAP } : undefined;
+        const gridNodes = currentProject.nodes.filter((node) => node.metadata?.pptPageIndex != null);
+        const gridBottom = gridNodes.length ? Math.max(...gridNodes.map((node) => node.position.y + node.height)) : undefined;
+        const newRowY = gridBottom != null ? gridBottom + ROW_GAP : undefined;
+        const outlinePosition = latestOutlineNode && newRowY != null ? { x: latestOutlineNode.position.x, y: newRowY } : undefined;
+        const configPosition = latestConfigNode && newRowY != null ? { x: latestConfigNode.position.x, y: newRowY } : undefined;
 
         const ops: CanvasAgentOp[] = [
             { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, position: outlinePosition, metadata: { content: outlineContent, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
@@ -141,7 +159,10 @@ export function CanvasPptPanel() {
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...styleNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
-        canvasContext.applyOps(ops);
+        const next = canvasContext.applyOps(ops);
+        // 新节点落在全局底部，离本页的行较远——创建后直接把画布视角带过去。
+        const newOutlineNode = next.nodes.find((node) => node.id === outlineId);
+        if (newOutlineNode) focusNode(newOutlineNode);
         updateProject(projectId, {
             ppt: {
                 ...ppt,
@@ -219,9 +240,11 @@ export function CanvasPptPanel() {
                         theme={theme}
                         configNode={nodeById.get(pageTakes(page).at(-1)?.configNodeId ?? "")}
                         imageNode={resolvePageImageNode(currentProject, page)}
+                        candidateGroups={collectPageCandidateGroups(currentProject, page)}
                         onGenerate={() => runGeneration(page)}
                         onConfirm={(nodeId) => setPageConfirmed(page, nodeId)}
                         onAddTake={() => addPageTake(page)}
+                        onFocus={focusNode}
                     />
                 ))}
             </div>
@@ -240,20 +263,25 @@ function PptPageRow({
     theme,
     configNode,
     imageNode,
+    candidateGroups,
     onGenerate,
     onConfirm,
     onAddTake,
+    onFocus,
 }: {
     page: CanvasProjectPptPage;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     configNode?: CanvasNodeData;
     imageNode: CanvasNodeData | null;
+    candidateGroups: CanvasNodeData[][];
     onGenerate: () => void;
     onConfirm: (nodeId?: string) => void;
     onAddTake: () => void;
+    onFocus: (node: CanvasNodeData) => void;
 }) {
     const generating = configNode?.metadata?.status === "loading";
     const confirmed = Boolean(page.confirmedNodeId && imageNode?.id === page.confirmedNodeId);
+    const candidateCount = candidateGroups.reduce((total, group) => total + group.length, 0);
 
     return (
         <div className="flex gap-2.5 rounded-lg border p-2" style={{ borderColor: theme.node.stroke }}>
@@ -295,6 +323,37 @@ function PptPageRow({
                         新增线路
                     </Button>
                 </div>
+                {candidateCount >= 2 ? (
+                    <div className="thin-scrollbar mt-1.5 flex items-stretch gap-1 overflow-x-auto pb-0.5">
+                        {candidateGroups.flatMap((group, groupIndex) => [
+                            groupIndex > 0 ? <div key={`divider-${groupIndex}`} className="w-px shrink-0 self-stretch" style={{ background: theme.node.stroke }} /> : null,
+                            ...group.map((node) => {
+                                const isConfirmed = node.id === page.confirmedNodeId;
+                                return (
+                                    <div
+                                        key={node.id}
+                                        className="group relative h-12 w-12 shrink-0 cursor-pointer overflow-hidden rounded-md border"
+                                        style={{ borderColor: isConfirmed ? "#16a34a" : theme.node.stroke, background: theme.node.fill }}
+                                        onClick={() => onFocus(node)}
+                                    >
+                                        {node.metadata?.content ? <img src={node.metadata.content} alt="" className="size-full object-cover" /> : null}
+                                        {isConfirmed ? <CheckCircle2 className="absolute right-0.5 top-0.5 size-3 rounded-full bg-white/80" style={{ color: "#16a34a" }} /> : null}
+                                        <button
+                                            type="button"
+                                            className="absolute inset-x-0 bottom-0 bg-black/60 py-0.5 text-[9px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                onConfirm(isConfirmed ? undefined : node.id);
+                                            }}
+                                        >
+                                            {isConfirmed ? "取消确认" : "用这版"}
+                                        </button>
+                                    </div>
+                                );
+                            }),
+                        ])}
+                    </div>
+                ) : null}
             </div>
         </div>
     );
