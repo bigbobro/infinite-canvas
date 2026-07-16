@@ -122,7 +122,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     <div className="space-y-0.5">
                         <SettingTitle color={theme.node.muted}>透明背景</SettingTitle>
                         <div className="text-xs" style={{ color: theme.node.muted, opacity: 0.75 }}>
-                            开启后生成无背景的透明图像
+                            开启后生成无背景的透明图像(仅部分模型可用)
                         </div>
                     </div>
                     <span onMouseDown={(event) => event.stopPropagation()}>
