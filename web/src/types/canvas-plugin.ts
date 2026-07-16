@@ -109,6 +109,7 @@ export type CanvasNodeDefinition = {
     showInCreateMenu?: boolean; // 默认 true
     hasSourceHandle?: boolean; // 右侧输出连接点,默认 true
     hidePanel?: boolean; // 为 true 时:点击/新建不弹出下方面板(含内置生图面板),纯展示型节点用
+    transparentBackground?: boolean; // 为 true 时:节点卡片背景与边框透明,内容直接融入画布(如 SVG/矢量图)
     autoOpenPanel?: boolean; // 为 true 时:单击节点自动打开自定义 Panel(默认仅内置节点单击自动打开)
     useBuiltinPanel?: CanvasBuiltinPanelConfig; // 复用宿主内置生成面板(与自定义 Panel 二选一)
     // 为 true 时:宿主自动提供「交互 ⇄ 移动」工具条开关,并按 metadata.interactive 控制内容层指针事件

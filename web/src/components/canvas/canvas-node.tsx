@@ -135,6 +135,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     const forceInteractive = supportsInteractionToggle ? Boolean(definition?.forceInteractive?.(data)) : false;
     const contentInteractive = !supportsInteractionToggle || forceInteractive || !data.metadata?.content ? true : Boolean(data.metadata?.interactive);
     const isBatchChild = data.type === CanvasNodeType.Image && Boolean(data.metadata?.batchRootId);
+    // 透明背景节点(如 SVG):卡片背景/边框透明,直接融入画布;选中/关联态仍显示描边以便定位
+    const transparentBg = Boolean(definition?.transparentBackground);
     const isActive = isConnectionTarget || isSelected || isFocusRelated;
     const imageBorderColor = isActive ? selectionBlue : isRelated && !isBatchChild ? theme.node.muted : "transparent";
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -348,8 +350,8 @@ export const CanvasNode = React.memo(function CanvasNode({
             <div
                 className="relative h-full w-full overflow-visible rounded-3xl border-2"
                 style={{
-                    background: isGroup ? `${theme.toolbar.panel}66` : hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
-                    borderColor: isGroup ? (isGroupDropTarget || isActive ? selectionBlue : theme.node.stroke) : hasImageContent ? imageBorderColor : isActive ? selectionBlue : isRelated ? theme.node.muted : theme.node.stroke,
+                    background: isGroup ? `${theme.toolbar.panel}66` : hasImageContent || hasVideoContent || transparentBg ? "transparent" : theme.node.fill,
+                    borderColor: isGroup ? (isGroupDropTarget || isActive ? selectionBlue : theme.node.stroke) : hasImageContent ? imageBorderColor : isActive ? selectionBlue : isRelated ? theme.node.muted : transparentBg ? "transparent" : theme.node.stroke,
                     borderStyle: isGroup ? "dashed" : "solid",
                     boxShadow: isGroupDropTarget ? `0 0 0 2px ${selectionBlue}66, inset 0 0 0 999px ${selectionBlue}10` : isActive ? `0 0 0 1px ${selectionBlue}55` : isRelated && !isBatchChild ? `0 0 0 1px ${theme.node.muted}55, 0 18px 48px rgba(0,0,0,.14)` : undefined,
                 }}
@@ -378,7 +380,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${isBatchRoot ? "overflow-visible" : "overflow-hidden"}`}
                     style={
                         {
-                            background: isGroup ? "transparent" : hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
+                            background: isGroup ? "transparent" : hasImageContent || hasVideoContent || transparentBg ? "transparent" : theme.node.fill,
                             pointerEvents: contentInteractive ? undefined : "none",
                             "--batch-from-x": `${batchMotion?.x || 0}px`,
                             "--batch-from-y": `${batchMotion?.y || 0}px`,
