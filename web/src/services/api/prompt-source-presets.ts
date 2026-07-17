@@ -83,6 +83,7 @@ data.forEach((item, index) => {
 return items;`;
 
 export const DEFAULT_PROMPT_SOURCES: PromptSource[] = [
+    { id: "davidwu-gpt-image2-prompts", name: "davidwu-gpt-image2-prompts", githubUrl: "https://github.com/davidwuw0811-boop/awesome-gpt-image2-prompts", enabled: true, script: davidWuGptImage2Script },
     { id: "awesome-gpt-image", name: "awesome-gpt-image", githubUrl: "https://github.com/ZeroLu/awesome-gpt-image", enabled: true, script: awesomeGptImageScript },
     { id: "awesome-gpt4o-image-prompts", name: "awesome-gpt4o-image-prompts", githubUrl: "https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts", enabled: true, script: awesomeGpt4oImageScript },
     {
@@ -99,7 +100,6 @@ export const DEFAULT_PROMPT_SOURCES: PromptSource[] = [
         enabled: true,
         script: youMindScript("https://raw.githubusercontent.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts/main", "youmind-nano-banana-pro", "nano-banana-pro"),
     },
-    { id: "davidwu-gpt-image2-prompts", name: "davidwu-gpt-image2-prompts", githubUrl: "https://github.com/davidwuw0811-boop/awesome-gpt-image2-prompts", enabled: true, script: davidWuGptImage2Script },
 ];
 
 /** Starter script inserted when a user creates a blank source. */
