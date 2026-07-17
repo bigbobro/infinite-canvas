@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { BookOpen, Bot, Group, Home, ImageIcon, Images, List, Menu, Music2, Plus, Redo2, Settings2, Trash2, Undo2, Upload, Video, X } from "lucide-react";
+import { BookOpen, Bot, Group, Home, Images, Menu, Plus, Redo2, Trash2, Undo2, Upload, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 
 import { requestEdit, requestGeneration, requestImageQuestion, type AiTextMessage } from "@/services/api/image";
@@ -64,11 +64,13 @@ import {
     resolveMetadataReferences,
     sourceNodeReferenceImages,
 } from "@/lib/canvas/canvas-generation-helpers";
-import { getNodeDefinition, isBuiltinNodeType as isBuiltinType, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
+import { getNodeDefinition, isBuiltinNodeType as isBuiltinType, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { ensurePluginsLoaded } from "@/lib/canvas/plugin-loader";
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { CanvasPluginManagerModal } from "@/components/canvas/canvas-plugin-manager-modal";
+import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
+import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import type { CanvasNodeToolbarItem, CanvasPluginAi, CanvasPluginHost } from "@/types/canvas-plugin";
 import {
     CanvasNodeType,
@@ -93,11 +95,6 @@ registerBuiltinNodes();
 type CanvasClipboard = {
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
-};
-
-type PendingConnectionCreate = {
-    connection: ConnectionHandle;
-    position: Position;
 };
 
 type ConnectionDropTarget = {
@@ -146,141 +143,6 @@ export default function CanvasPage() {
     if (!mounted) return <CanvasRefreshShell />;
 
     return <InfiniteCanvasPage />;
-}
-
-function CanvasRefreshShell() {
-    return (
-        <main className="relative h-full min-h-0 overflow-hidden bg-background text-foreground">
-            <div
-                className="absolute inset-0 opacity-60"
-                style={{
-                    backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-                    backgroundSize: "28px 28px",
-                }}
-            />
-
-            <div className="absolute bottom-5 left-1/2 z-50 flex h-14 -translate-x-1/2 items-center gap-1 rounded-xl border px-2 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }} aria-hidden="true">
-                {Array.from({ length: 7 }).map((_, index) => (
-                    <div key={index} className="size-8 rounded-md bg-current opacity-10" />
-                ))}
-            </div>
-
-            <div className="absolute bottom-24 left-6 z-50 h-40 w-[240px] rounded-lg border shadow-2xl backdrop-blur-sm" style={{ background: "var(--background)", borderColor: "var(--border)" }} aria-hidden="true">
-                <div className="absolute left-7 top-7 h-5 w-12 rounded-sm bg-current opacity-10" />
-                <div className="absolute left-28 top-16 h-6 w-16 rounded-sm bg-current opacity-10" />
-                <div className="absolute bottom-7 left-16 h-8 w-20 rounded-sm bg-current opacity-10" />
-                <div className="absolute inset-5 rounded border border-current opacity-15" />
-            </div>
-
-            <div className="absolute bottom-5 left-5 z-50 flex h-14 w-[260px] items-center gap-2 rounded-xl border px-2 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }} aria-hidden="true">
-                <div className="size-8 rounded-md bg-current opacity-10" />
-                <div className="size-8 rounded-md bg-current opacity-10" />
-                <div className="h-1 flex-1 rounded-full bg-current opacity-10" />
-                <div className="h-4 w-10 rounded bg-current opacity-10" />
-                <div className="size-8 rounded-md bg-current opacity-10" />
-            </div>
-        </main>
-    );
-}
-
-function ConnectionCreateMenu({
-    pending,
-    onCreate,
-    onClose,
-}: {
-    pending: PendingConnectionCreate;
-    onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio) => void;
-    onClose: () => void;
-}) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    return (
-        <div
-            className="absolute z-[120] w-[300px] rounded-[18px] border p-3 shadow-2xl backdrop-blur"
-            data-connection-create-menu
-            style={{ left: pending.position.x, top: pending.position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-        >
-            <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-sm font-medium" style={{ color: theme.node.muted }}>
-                    引用该节点生成
-                </span>
-                <button type="button" className="grid size-7 place-items-center rounded-lg text-base opacity-55 transition hover:bg-white/10 hover:opacity-100" onClick={onClose} aria-label="关闭">
-                    ×
-                </button>
-            </div>
-            <div className="grid gap-1">
-                <ConnectionCreateOption theme={theme} icon={<List className="size-5" />} title="文本生成" description="脚本、广告词、品牌文案" onClick={() => onCreate(CanvasNodeType.Text)} />
-                <ConnectionCreateOption theme={theme} icon={<ImageIcon className="size-5" />} title="图片生成" onClick={() => onCreate(CanvasNodeType.Image)} />
-                <ConnectionCreateOption theme={theme} icon={<Video className="size-5" />} title="视频生成" onClick={() => onCreate(CanvasNodeType.Video)} />
-                <ConnectionCreateOption theme={theme} icon={<Music2 className="size-5" />} title="音频参考" onClick={() => onCreate(CanvasNodeType.Audio)} />
-                <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-5" />} title="配置节点" description="模型、尺寸、数量和输入顺序" onClick={() => onCreate(CanvasNodeType.Config)} />
-            </div>
-        </div>
-    );
-}
-
-function ConnectionCreateOption({ theme, icon, title, description, onClick }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; icon: React.ReactNode; title: string; description?: string; onClick?: () => void }) {
-    return (
-        <button
-            type="button"
-            className="flex h-16 w-full cursor-pointer items-center gap-3 rounded-2xl px-3 text-left transition"
-            style={{ color: theme.node.text }}
-            onClick={onClick}
-            onMouseEnter={(event) => (event.currentTarget.style.background = theme.node.fill)}
-            onMouseLeave={(event) => (event.currentTarget.style.background = "transparent")}
-        >
-            <span className="grid size-11 shrink-0 place-items-center rounded-xl" style={{ background: theme.node.fill, color: theme.node.muted }}>
-                {icon}
-            </span>
-            <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 text-base font-semibold leading-5">{title}</span>
-                {description ? (
-                    <span className="mt-1 block truncate text-sm" style={{ color: theme.node.muted }}>
-                        {description}
-                    </span>
-                ) : null}
-            </span>
-        </button>
-    );
-}
-
-function NodeCreateMenu({ position, onCreate, onClose }: { position: Position; onCreate: (type: string) => void; onClose: () => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    useNodeRegistryVersion();
-    const menuRef = useRef<HTMLDivElement>(null);
-    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
-    // 点击菜单外的空白处自动关闭
-    useEffect(() => {
-        const handlePointerDown = (event: PointerEvent) => {
-            if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
-        };
-        document.addEventListener("pointerdown", handlePointerDown, true);
-        return () => document.removeEventListener("pointerdown", handlePointerDown, true);
-    }, [onClose]);
-    return (
-        <div
-            ref={menuRef}
-            className="absolute z-[120] max-h-[70vh] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur thin-scrollbar"
-            data-canvas-no-zoom
-            style={{ left: position.x, top: position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
-            onPointerDown={(event) => event.stopPropagation()}
-        >
-            <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-sm font-medium" style={{ color: theme.node.muted }}>
-                    选择节点
-                </span>
-                <button type="button" className="grid size-7 place-items-center rounded-lg opacity-55 transition hover:opacity-100" onClick={onClose} aria-label="关闭">
-                    <X className="size-4" />
-                </button>
-            </div>
-            <div className="grid gap-1">
-                {definitions.map((def) => (
-                    <ConnectionCreateOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
-                ))}
-            </div>
-        </div>
-    );
 }
 
 function InfiniteCanvasPage() {
