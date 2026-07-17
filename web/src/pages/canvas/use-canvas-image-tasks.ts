@@ -31,6 +31,25 @@ type UseCanvasImageTasksParams = {
     imageMetadata: (image: UploadedImage) => CanvasNodeMetadata;
 };
 
+const withImageTask = (nodeId: string, handle: ImageTaskHandle, model: string) => (node: CanvasNodeData) =>
+    node.id === nodeId ? { ...node, metadata: { ...node.metadata, imageTask: { taskId: handle.taskId, model, expiresAt: handle.expiresAt } } } : node;
+
+/**
+ * 把 task 句柄直接写进 store 并立即落盘（绕过 400ms 防抖）。
+ *
+ * 不走 nodes → store 的 effect：effect 要等下一次渲染，而此刻必须落盘完成才能开始轮询 ——
+ * 中间刷新就再也找不回远端任务（已计费）。
+ *
+ * **调用方须自行同步 UI state**（`setNodes` 或 `applyOps`），否则下一次 effect 会用不含
+ * 句柄的 nodes 覆盖 store。
+ */
+export async function persistImageTaskToStore(projectId: string, nodeId: string, handle: ImageTaskHandle, model: string) {
+    const store = useCanvasStore.getState();
+    const project = store.projects.find((item) => item.id === projectId);
+    if (project) store.updateProject(projectId, { nodes: project.nodes.map(withImageTask(nodeId, handle, model)) });
+    await flushCanvasStore();
+}
+
 export function useCanvasImageTasks({
     projectId,
     projectLoaded,
@@ -51,13 +70,8 @@ export function useCanvasImageTasks({
      */
     const persistImageTask = useCallback(
         async (nodeId: string, handle: ImageTaskHandle, model: string) => {
-            const withTask = (node: CanvasNodeData) =>
-                node.id === nodeId ? { ...node, metadata: { ...node.metadata, imageTask: { taskId: handle.taskId, model, expiresAt: handle.expiresAt } } } : node;
-            setNodes((prev) => prev.map(withTask));
-            const store = useCanvasStore.getState();
-            const project = store.projects.find((item) => item.id === projectId);
-            if (project) store.updateProject(projectId, { nodes: project.nodes.map(withTask) });
-            await flushCanvasStore();
+            setNodes((prev) => prev.map(withImageTask(nodeId, handle, model)));
+            await persistImageTaskToStore(projectId, nodeId, handle, model);
         },
         [projectId, setNodes],
     );

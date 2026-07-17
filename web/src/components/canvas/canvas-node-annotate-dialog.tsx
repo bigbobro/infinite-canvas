@@ -11,6 +11,7 @@ import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { buildGenerationConfig, buildImageGenerationMetadata } from "@/pages/canvas/project";
+import { persistImageTaskToStore } from "@/pages/canvas/use-canvas-image-tasks";
 import { CanvasNodeType } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
 
@@ -142,7 +143,14 @@ export function CanvasNodeAnnotateDialog() {
 
             const markedReference: ReferenceImage = { id: `${node.id}-annotate`, name: "annotate.png", type: "image/png", dataUrl: markedDataUrl };
             try {
-                const generated = await requestEdit(generationConfig, prompt, [markedReference], undefined).then((items) => items[0]);
+                const generated = await requestEdit(generationConfig, prompt, [markedReference], undefined, {
+                    // [二开] maolao 异步渠道：任务创建后立刻落盘句柄，否则此刻刷新就再也找不回
+                    // 远端任务（已计费）。applyOps 同步 UI state，persistImageTaskToStore 立即写盘。
+                    onTaskCreated: async (handle) => {
+                        canvasContext.applyOps([{ type: "update_node", id: childId, metadata: { imageTask: { taskId: handle.taskId, model: generationConfig.model, expiresAt: handle.expiresAt } } }]);
+                        await persistImageTaskToStore(canvasContext.snapshot.projectId, childId, handle, generationConfig.model);
+                    },
+                }).then((items) => items[0]);
                 const uploaded = await uploadImage(generated.dataUrl);
                 const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
                 canvasContext.applyOps([
@@ -160,13 +168,15 @@ export function CanvasNodeAnnotateDialog() {
                             mimeType: uploaded.mimeType,
                             prompt,
                             ...generationMetadata,
+                            // 图已落地，任务句柄失去意义；不置空会在下次加载时被误当作待恢复任务。
+                            imageTask: undefined,
                         },
                     },
                 ]);
             } catch (error) {
                 const errorDetails = error instanceof Error ? error.message : "标注改图失败";
                 message.error(errorDetails);
-                canvasContext.applyOps([{ type: "update_node", id: childId, metadata: { status: "error", errorDetails } }]);
+                canvasContext.applyOps([{ type: "update_node", id: childId, metadata: { status: "error", errorDetails, imageTask: undefined } }]);
             }
         } finally {
             setSubmitting(false);
