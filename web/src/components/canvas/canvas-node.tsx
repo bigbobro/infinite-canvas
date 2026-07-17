@@ -311,39 +311,41 @@ export const CanvasNode = React.memo(function CanvasNode({
             onMouseDownCapture={(event) => onSelectCapture?.(event, data.id)}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
-            <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-                {isEditingTitle ? (
-                    <input
-                        ref={titleInputRef}
-                        value={titleDraft}
-                        maxLength={64}
-                        className="h-6 max-w-full border-0 border-b border-dashed bg-transparent px-0 text-left text-xs font-medium outline-none"
-                        style={{ borderColor: theme.node.muted, color: theme.node.text }}
-                        onChange={(event) => setTitleDraft(event.target.value)}
-                        onBlur={finishTitleEditing}
-                        onKeyDown={(event) => {
-                            if (event.key === "Enter") finishTitleEditing();
-                            if (event.key === "Escape") {
-                                setTitleDraft(data.title || "");
-                                setIsEditingTitle(false);
-                            }
-                        }}
-                    />
-                ) : (
-                    <button
-                        type="button"
-                        className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0.5 text-left text-xs font-medium opacity-75 transition hover:border-current hover:opacity-100"
-                        style={{ color: theme.node.text }}
-                        title="双击修改节点名称"
-                        onDoubleClick={(event) => {
-                            event.stopPropagation();
-                            setIsEditingTitle(true);
-                        }}
-                    >
-                        {data.title || "未命名节点"}
-                    </button>
-                )}
-            </div>
+            {(isSelected || hovered || isEditingTitle) && (
+                <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                    {isEditingTitle ? (
+                        <input
+                            ref={titleInputRef}
+                            value={titleDraft}
+                            maxLength={64}
+                            className="h-6 max-w-full border-0 border-b border-dashed bg-transparent px-0 text-left text-xs font-medium outline-none"
+                            style={{ borderColor: theme.node.muted, color: theme.node.text }}
+                            onChange={(event) => setTitleDraft(event.target.value)}
+                            onBlur={finishTitleEditing}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") finishTitleEditing();
+                                if (event.key === "Escape") {
+                                    setTitleDraft(data.title || "");
+                                    setIsEditingTitle(false);
+                                }
+                            }}
+                        />
+                    ) : (
+                        <button
+                            type="button"
+                            className="block max-w-full truncate border-b border-dashed border-transparent px-0 py-0.5 text-left text-xs font-medium opacity-75 transition hover:border-current hover:opacity-100"
+                            style={{ color: theme.node.text }}
+                            title="双击修改节点名称"
+                            onDoubleClick={(event) => {
+                                event.stopPropagation();
+                                setIsEditingTitle(true);
+                            }}
+                        >
+                            {data.title || "未命名节点"}
+                        </button>
+                    )}
+                </div>
+            )}
 
             <div
                 className="relative h-full w-full overflow-visible rounded-3xl border-2"

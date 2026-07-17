@@ -1,12 +1,14 @@
-import { useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { App, Empty, Input, Select, Tag } from "antd";
-import { Check, ChevronRight, Download, FileText, Image as ImageIcon, ListChecks, Music2, Search, Settings2, Square, Type, Video } from "lucide-react";
+import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { App, Empty, Input, Popconfirm, Select, Tag } from "antd";
+import { Check, ChevronRight, Download, FileText, Image as ImageIcon, ListChecks, Music2, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
 import { motion } from "motion/react";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
+import { uploadMediaFile } from "@/services/file-storage";
+import { uploadImage } from "@/services/image-storage";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import {
     CANVAS_SIDE_PANEL_MAX_WIDTH,
@@ -240,8 +242,8 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, theme }: { nodes:
                         type="button"
                         onClick={() => void handleExport()}
                         disabled={!checked.size || exporting}
-                        className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40"
-                        style={{ background: theme.toolbar.activeBg, color: theme.toolbar.activeText }}
+                        className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/10"
+                        style={{ color: theme.node.text }}
                     >
                         <Download className="size-3.5" />
                         导出选中
@@ -277,10 +279,15 @@ function buildInsertPayload(asset: Asset): InsertAssetPayload {
 }
 
 function CanvasAssetsTab({ onInsert, theme }: { onInsert: (payload: InsertAssetPayload) => void; theme: CanvasTheme }) {
+    const { message } = App.useApp();
     const assets = useAssetStore((state) => state.assets);
+    const addAsset = useAssetStore((state) => state.addAsset);
+    const removeAsset = useAssetStore((state) => state.removeAsset);
     const [keyword, setKeyword] = useState("");
     const [tagFilter, setTagFilter] = useState<string>("all");
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+    const [uploading, setUploading] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const allTags = useMemo(() => Array.from(new Set(assets.flatMap((asset) => asset.tags || []))).slice(0, 20), [assets]);
 
@@ -291,10 +298,51 @@ function CanvasAssetsTab({ onInsert, theme }: { onInsert: (payload: InsertAssetP
 
     const groups = useMemo(() => ASSET_GROUPS.map((group) => ({ ...group, items: filtered.filter((asset) => asset.kind === group.kind) })).filter((group) => group.items.length > 0), [filtered]);
 
+    const handleFiles = async (fileList: FileList | null) => {
+        const files = Array.from(fileList || []);
+        if (!files.length) return;
+        setUploading(true);
+        const hide = message.loading("正在添加资产…", 0);
+        let added = 0;
+        try {
+            for (const file of files) {
+                if (file.type.startsWith("image/")) {
+                    const image = await uploadImage(file);
+                    addAsset({ kind: "image", title: file.name || "图片", coverUrl: image.url, tags: [], data: { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType } });
+                    added += 1;
+                } else if (file.type.startsWith("video/")) {
+                    const media = await uploadMediaFile(file, "video");
+                    addAsset({ kind: "video", title: file.name || "视频", coverUrl: "", tags: [], data: { url: media.url, storageKey: media.storageKey, width: media.width || 0, height: media.height || 0, bytes: media.bytes, mimeType: media.mimeType } });
+                    added += 1;
+                }
+            }
+            if (added) message.success(`已添加 ${added} 个资产`);
+            else message.warning("仅支持图片或视频文件");
+        } catch (error) {
+            console.error(error);
+            message.error("添加失败，请重试");
+        } finally {
+            hide();
+            setUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = "";
+        }
+    };
+
     return (
         <div className="flex h-full flex-col">
-            <div className="px-3 pb-2">
+            <div className="flex items-center gap-2 px-3 pb-2 pt-1">
                 <Input size="small" allowClear prefix={<Search className="size-3.5 text-stone-400" />} placeholder="搜索资产" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+                <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10"
+                    style={{ color: theme.node.text }}
+                >
+                    <Plus className="size-3.5" />
+                    添加
+                </button>
+                <input ref={fileInputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={(e) => void handleFiles(e.target.files)} />
             </div>
             {allTags.length ? (
                 <div className="flex flex-wrap gap-1.5 px-3 pb-2">
@@ -324,7 +372,7 @@ function CanvasAssetsTab({ onInsert, theme }: { onInsert: (payload: InsertAssetP
                                     {isCollapsed ? null : (
                                         <div className="grid grid-cols-2 gap-2 px-1 pb-2 pt-1">
                                             {group.items.map((asset) => (
-                                                <AssetCard key={asset.id} asset={asset} theme={theme} onClick={() => onInsert(buildInsertPayload(asset))} />
+                                                <AssetCard key={asset.id} asset={asset} theme={theme} onInsert={() => onInsert(buildInsertPayload(asset))} onRemove={() => (removeAsset(asset.id), message.success("资产已移除"))} />
                                             ))}
                                         </div>
                                     )}
@@ -340,13 +388,38 @@ function CanvasAssetsTab({ onInsert, theme }: { onInsert: (payload: InsertAssetP
     );
 }
 
-function AssetCard({ asset, theme, onClick }: { asset: Asset; theme: CanvasTheme; onClick: () => void }) {
-    const cover = asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "");
+function AssetCard({ asset, theme, onInsert, onRemove }: { asset: Asset; theme: CanvasTheme; onInsert: () => void; onRemove: () => void }) {
     return (
-        <button type="button" onClick={onClick} className="group relative overflow-hidden rounded-lg border text-left transition hover:shadow-md" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-            {cover ? <img src={cover} alt={asset.title} className="aspect-square w-full object-cover" /> : <div className="flex aspect-square items-center justify-center p-2 text-center text-[11px] leading-4 opacity-60">{asset.title}</div>}
-            <div className="truncate px-2 py-1.5 text-[11px] font-medium">{asset.title}</div>
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-stone-950/0 text-xs font-medium text-white opacity-0 transition group-hover:bg-stone-950/55 group-hover:opacity-100">插入</div>
-        </button>
+        <div className="group relative aspect-square overflow-hidden rounded-xl border transition duration-200 hover:-translate-y-0.5 hover:shadow-lg" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
+            <AssetCover asset={asset} />
+            <div className="absolute inset-0 flex items-center justify-center gap-2.5 opacity-0 transition duration-200 group-hover:opacity-100">
+                <button
+                    type="button"
+                    onClick={onInsert}
+                    className="grid size-8 place-items-center rounded-full bg-white/90 text-stone-700 shadow-sm backdrop-blur transition hover:bg-white hover:text-stone-900 dark:bg-black/60 dark:text-stone-100 dark:hover:bg-black/80"
+                    aria-label="插入画布"
+                >
+                    <Plus className="size-4" />
+                </button>
+                <Popconfirm title="移除该资产?" okText="移除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={onRemove}>
+                    <button
+                        type="button"
+                        className="grid size-8 place-items-center rounded-full bg-white/90 text-stone-700 shadow-sm backdrop-blur transition hover:bg-white hover:text-red-500 dark:bg-black/60 dark:text-stone-100 dark:hover:bg-black/80 dark:hover:text-red-400"
+                        aria-label="移除资产"
+                    >
+                        <Trash2 className="size-4" />
+                    </button>
+                </Popconfirm>
+            </div>
+        </div>
     );
+}
+
+function AssetCover({ asset }: { asset: Asset }) {
+    if (asset.kind === "text") return <div className="size-full overflow-hidden whitespace-pre-wrap break-words p-2.5 text-[11px] leading-snug opacity-80">{asset.data.content}</div>;
+    if (asset.kind === "video") {
+        if (asset.coverUrl) return <img src={asset.coverUrl} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
+        return <video src={`${asset.data.url}#t=0.1`} muted playsInline preload="metadata" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
+    }
+    return <img src={asset.coverUrl || asset.data.dataUrl} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
 }
