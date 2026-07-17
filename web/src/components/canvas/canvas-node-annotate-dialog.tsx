@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { App, Button, Input, Modal } from "antd";
+import { App, Button, Input, Modal, theme } from "antd";
 import { RotateCcw, Trash2, WandSparkles, X } from "lucide-react";
 import { nanoid } from "nanoid";
 
@@ -57,6 +57,7 @@ function drawMarkedImage(image: HTMLImageElement, pins: AnnotatePin[]) {
 
 export function CanvasNodeAnnotateDialog() {
     const { message } = App.useApp();
+    const { token } = theme.useToken();
     const annotateNodeId = useAnnotateStore((state) => state.annotateNodeId);
     const close = useAnnotateStore((state) => state.close);
     const canvasContext = useAgentStore((state) => state.canvasContext);
@@ -184,18 +185,21 @@ export function CanvasNodeAnnotateDialog() {
     };
 
     return (
-        <Modal title={null} open={open} onCancel={handleClose} footer={null} width={980} centered destroyOnHidden>
+        <Modal title="标注改图" classNames={{ header: "sr-only" }} open={open} onCancel={handleClose} footer={null} width="min(96vw, 1600px)" centered destroyOnHidden>
             {node && dataUrl ? (
-                <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_320px]">
-                    <div className="flex min-h-[360px] items-center justify-center rounded-xl border border-black/10 bg-transparent p-0 dark:border-white/10">
+                <div className="grid max-h-[82vh] min-h-0 gap-5 overflow-y-auto lg:h-[min(82vh,900px)] lg:grid-cols-[minmax(0,1fr)_360px] lg:overflow-hidden" data-canvas-no-zoom onKeyDown={(event) => event.stopPropagation()}>
+                    <div className="flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border bg-transparent lg:min-h-0" style={{ borderColor: token.colorBorderSecondary }}>
                         <div className="relative inline-block max-w-full cursor-crosshair select-none overflow-hidden rounded-lg bg-transparent" onClick={addPin}>
-                            <img src={dataUrl} alt="" className="block max-h-[68vh] max-w-full bg-transparent" draggable={false} />
+                            <img src={dataUrl} alt="待标注原图" className="block max-w-full bg-transparent object-contain" style={{ maxHeight: "min(78vh, 860px)" }} draggable={false} />
                             {pins.map((pin, index) => (
                                 <div
                                     key={pin.id}
                                     className="absolute grid size-6 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border-2 border-white text-xs font-bold text-white shadow"
                                     style={{ left: `${pin.x * 100}%`, top: `${pin.y * 100}%`, background: "rgb(220, 30, 30)" }}
                                     onClick={(event) => event.stopPropagation()}
+                                    role="img"
+                                    aria-label={`标记 ${index + 1}`}
+                                    title={`标记 ${index + 1}`}
                                 >
                                     {index + 1}
                                 </div>
@@ -203,21 +207,21 @@ export function CanvasNodeAnnotateDialog() {
                         </div>
                     </div>
 
-                    <div className="flex min-h-[360px] flex-col gap-4">
+                    <div className="flex min-h-[320px] min-w-0 flex-col gap-4 lg:min-h-0">
                         <div>
                             <h2 className="text-xl font-semibold">标注改图</h2>
                             <div className="mt-2 text-sm opacity-60">点击左侧图片放置标记，逐点填写修改内容，可放多个一次提交</div>
                         </div>
 
-                        <div className="thin-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto">
+                        <div className="thin-scrollbar min-h-[120px] flex-1 space-y-2 overflow-y-auto pr-1 lg:min-h-0">
                             {pins.length === 0 ? <div className="text-sm opacity-50">在左侧图片上点击以放置标记</div> : null}
                             {pins.map((pin, index) => (
                                 <div key={pin.id} className="flex items-center gap-2">
                                     <span className="grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold text-white" style={{ background: "rgb(220, 30, 30)" }}>
                                         {index + 1}
                                     </span>
-                                    <Input placeholder="改成什么" value={pin.text} disabled={submitting} onChange={(event) => updatePinText(pin.id, event.target.value)} />
-                                    <Button type="text" disabled={submitting} icon={<Trash2 className="size-4" />} onClick={() => removePin(pin.id)} />
+                                    <Input aria-label={`标记 ${index + 1} 的修改内容`} placeholder="改成什么" value={pin.text} disabled={submitting} onChange={(event) => updatePinText(pin.id, event.target.value)} />
+                                    <Button type="text" aria-label={`删除标记 ${index + 1}`} title={`删除标记 ${index + 1}`} disabled={submitting} icon={<Trash2 className="size-4" />} onClick={() => removePin(pin.id)} />
                                 </div>
                             ))}
                         </div>
