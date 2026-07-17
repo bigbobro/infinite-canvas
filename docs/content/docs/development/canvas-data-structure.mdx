@@ -99,6 +99,7 @@ type CanvasNodeMetadata = {
   storageKey?: string;
   mimeType?: string;
   bytes?: number;
+  imageTask?: { taskId: string; model: string; expiresAt?: number };
 };
 ```
 
@@ -109,6 +110,7 @@ type CanvasNodeMetadata = {
 - 文本节点：`content` 保存文本内容；`fontSize` 保存字体大小；`prompt/status/errorDetails` 保存生成状态。
 - 生成配置节点：`generationMode/model/size/count/inputOrder` 保存生成配置；`generationMode` 可选择文本、图片或视频；上游输入通过 `connections` 计算。
 - 图片组节点：根节点用 `isBatchRoot/batchChildIds/primaryImageId/imageBatchExpanded` 记录批量生成结果；子图节点用 `batchRootId` 指回根节点。
+- 异步生图任务：`imageTask` 只在「猫佬（异步任务）」渠道生成期间存在，保存远端任务句柄，使页面刷新后能接着轮询而不是丢弃任务。生成成功、失败、取消或重新发起时都会被清除，因此正常保存的画布里不会留下该字段。`model` 存的是编码后的「渠道::模型」值，用于定位任务所属渠道。
 
 ## 连线结构
 

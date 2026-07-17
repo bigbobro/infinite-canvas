@@ -11,3 +11,6 @@ data/
 web/dist
 # Trellis 本地工作区：任务实录 / 调研材料 / journal 可能含客户信息，不进公开仓
 .trellis/
+
+# 供应商问题反馈材料：含账号 Request ID / task_id 等本地凭证关联信息，不进公开仓
+_vendor-issues/
