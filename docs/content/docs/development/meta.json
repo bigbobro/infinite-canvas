@@ -5,6 +5,7 @@
   "pages": [
     "local-development",
     "canvas-data-structure",
-    "ppt-workbench-design"
+    "ppt-workbench-design",
+    "local-codex-canvas"
   ]
 }

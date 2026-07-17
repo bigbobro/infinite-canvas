@@ -9,6 +9,12 @@ data/
 .DS_Store
 .idea
 web/dist
+
+**/dist
+web/public/plugins
+plugins/canvas/*/dist
+plugins/canvas/*/node_modules
+
 # Trellis 本地工作区：任务实录 / 调研材料 / journal 可能含客户信息，不进公开仓
 .trellis/
 

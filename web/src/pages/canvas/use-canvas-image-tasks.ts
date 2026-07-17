@@ -123,8 +123,3 @@ export function useCanvasImageTasks({
 
     return { persistImageTask };
 }
-
-/** 猫佬任务结果保留约 1 小时，过期后 content 返回 410，续轮询已无意义。 */
-export function isImageTaskExpired(task: { expiresAt?: number }) {
-    return typeof task.expiresAt === "number" && task.expiresAt * 1000 <= Date.now();
-}

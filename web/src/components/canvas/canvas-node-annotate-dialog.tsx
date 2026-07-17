@@ -10,7 +10,8 @@ import { buildAnnotatePrompt, type AnnotatePin } from "@/lib/canvas/annotate-pro
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { buildGenerationConfig, buildImageGenerationMetadata } from "@/pages/canvas/project";
+import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
+import { buildImageGenerationMetadata } from "@/lib/canvas/canvas-node-factory";
 import { persistImageTaskToStore } from "@/pages/canvas/use-canvas-image-tasks";
 import { CanvasNodeType } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";

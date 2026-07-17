@@ -116,7 +116,9 @@ export function CanvasPptPanel() {
         const node = nodeId ? nodeById.get(nodeId) : undefined;
         if (!canvasContext || !node) return;
         const scale = canvasContext.snapshot.viewport?.k || 1;
-        const containerRect = document.querySelector("main")?.getBoundingClientRect();
+        // [二开] 上游 v0.9 引入可调宽/收起的左侧面板，main 已不等于画布可视区；
+        // 改读 project.tsx 画布 section 上标记的 data-canvas-viewport。
+        const containerRect = document.querySelector("[data-canvas-viewport]")?.getBoundingClientRect();
         const panelWidth = 392;
         const width = Math.max((containerRect?.width || window.innerWidth) - panelWidth, 320);
         const height = containerRect?.height || window.innerHeight;
