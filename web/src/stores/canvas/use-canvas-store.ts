@@ -76,6 +76,27 @@ const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let pendingWrite: { name: string; value: StorageValue<CanvasStore> } | null = null;
+
+function writePendingNow() {
+    const write = pendingWrite;
+    pendingWrite = null;
+    if (!write) return Promise.resolve();
+    return localForageStorage.setItem(write.name, JSON.stringify(write.value));
+}
+
+/**
+ * 立即落盘待写入的画布状态，绕过 400ms 防抖。
+ * 防抖是「每次写入都重置计时器」，连续写入会把落盘一路推迟；异步生图的 task 句柄
+ * 一旦丢失就再也找不回远端任务，故提交任务后须显式 flush。
+ */
+export async function flushCanvasStore() {
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+    await writePendingNow();
+}
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
@@ -89,10 +110,11 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
         queuedPersistState = nextState;
+        pendingWrite = { name, value };
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
+            void writePendingNow();
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),

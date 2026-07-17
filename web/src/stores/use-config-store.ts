@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
-export type ApiCallFormat = "openai" | "gemini";
+export type ApiCallFormat = "openai" | "gemini" | "maolao";
 
 export type ModelChannel = {
     id: string;
@@ -59,6 +59,9 @@ export type ModelCapability = "image" | "video" | "text" | "audio";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+/** 仅作为选择「猫佬」格式时的预填值，用户可自行改写（猫佬未来可能变更域名）。 */
+const MAOLAO_BASE_URL = "https://api.maolaoapi.cc";
+const API_CALL_FORMATS: readonly ApiCallFormat[] = ["openai", "gemini", "maolao"];
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -354,11 +357,13 @@ function normalizeChannels(config: AiConfig) {
 }
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
-    return apiFormat === "gemini" ? GEMINI_BASE_URL : OPENAI_BASE_URL;
+    if (apiFormat === "gemini") return GEMINI_BASE_URL;
+    if (apiFormat === "maolao") return MAOLAO_BASE_URL;
+    return OPENAI_BASE_URL;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
-    return apiFormat === "gemini" ? "gemini" : "openai";
+    return API_CALL_FORMATS.includes(apiFormat as ApiCallFormat) ? (apiFormat as ApiCallFormat) : "openai";
 }
 
 function uniqueRawModels(models: string[]) {

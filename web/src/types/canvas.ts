@@ -60,6 +60,8 @@ export type CanvasNodeMetadata = {
     groupId?: string;
     pptPageIndex?: number;
     pptRole?: "outline" | "style" | "page" | "source";
+    /** 异步生图任务句柄（猫佬渠道）。持久化后，页面重载可凭此恢复轮询而非丢弃任务。 */
+    imageTask?: { taskId: string; model: string; expiresAt?: number };
 };
 
 export type CanvasNodeData = {
