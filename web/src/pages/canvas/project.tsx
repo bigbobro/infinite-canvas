@@ -43,6 +43,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, isHiddenBatchChild, isHiddenBatchConnectionEndpoint, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
@@ -246,6 +247,7 @@ function InfiniteCanvasPage() {
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const viewportRef = useRef(viewport);
+    const focusAnimRef = useRef<number | null>(null);
     const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
@@ -901,13 +903,29 @@ function InfiniteCanvasPage() {
             const worldX = node.position.x + node.width / 2;
             const worldY = node.position.y + node.height / 2;
             const k = Math.min(Math.max(Math.min((size.width * 0.6) / node.width, (size.height * 0.6) / node.height), 0.05), 1.5);
-            setViewport({ x: size.width / 2 - worldX * k, y: size.height / 2 - worldY * k, k });
+            const target = { x: size.width / 2 - worldX * k, y: size.height / 2 - worldY * k, k };
             setSelectedNodeIds(new Set([nodeId]));
             setSelectedConnectionId(null);
             setContextMenu(null);
+
+            if (focusAnimRef.current) cancelAnimationFrame(focusAnimRef.current);
+            const start = { ...viewportRef.current };
+            const duration = 450;
+            const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+            let startTime: number | null = null;
+            const step = (now: number) => {
+                if (startTime === null) startTime = now;
+                const progress = Math.min((now - startTime) / duration, 1);
+                const t = easeOutCubic(progress);
+                setViewport({ x: start.x + (target.x - start.x) * t, y: start.y + (target.y - start.y) * t, k: start.k + (target.k - start.k) * t });
+                focusAnimRef.current = progress < 1 ? requestAnimationFrame(step) : null;
+            };
+            focusAnimRef.current = requestAnimationFrame(step);
         },
         [size.height, size.width],
     );
+
+    useEffect(() => () => void (focusAnimRef.current && cancelAnimationFrame(focusAnimRef.current)), []);
 
     const setZoomScale = useCallback(
         (scale: number) => {
@@ -970,6 +988,21 @@ function InfiniteCanvasPage() {
         cleanupAssetImages();
         navigate("/canvas");
     }, [cleanupAssetImages, deleteProjects, navigate, projectId]);
+
+    const exportCurrentProject = useCallback(async () => {
+        const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
+        if (!project) return message.error("未找到当前画布");
+        const hide = message.loading("正在导出当前画布…", 0);
+        try {
+            await exportCanvasProjects([project], project.title || "无限画布");
+            message.success("已导出当前画布");
+        } catch (error) {
+            console.error(error);
+            message.error("导出失败，请重试");
+        } finally {
+            hide();
+        }
+    }, [message, projectId]);
 
     const handleCanvasMouseDown = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2689,6 +2722,7 @@ function InfiniteCanvasPage() {
                     onProjects={() => navigate("/canvas")}
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
+                    onExportProject={exportCurrentProject}
                     onImportImage={() => handleUploadRequest()}
                     onOpenPlugins={() => setPluginManagerOpen(true)}
                     onUndo={undoCanvas}

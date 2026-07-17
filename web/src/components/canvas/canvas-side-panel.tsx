@@ -1,15 +1,26 @@
-import { useMemo, useState } from "react";
-import { Empty, Input, Select, Tag } from "antd";
-import { ChevronRight, FileText, Image as ImageIcon, Music2, Search, Settings2, Square, Type, Video } from "lucide-react";
+import { useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { App, Empty, Input, Select, Tag } from "antd";
+import { Check, ChevronRight, Download, FileText, Image as ImageIcon, ListChecks, Music2, Search, Settings2, Square, Type, Video } from "lucide-react";
+import { motion } from "motion/react";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
+import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
+import {
+    CANVAS_SIDE_PANEL_MAX_WIDTH,
+    CANVAS_SIDE_PANEL_MIN_WIDTH,
+    CANVAS_SIDE_PANEL_MOTION_MS,
+    useCanvasSidePanelStore,
+} from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 import type { InsertAssetPayload } from "./asset-picker-modal";
+
+const PANEL_MOTION_SECONDS = CANVAS_SIDE_PANEL_MOTION_MS / 1000;
+const PANEL_EASE = [0.22, 1, 0.36, 1] as const;
 
 type PanelTab = "canvas" | "assets";
 
@@ -39,22 +50,67 @@ const STATUS_COLOR: Record<string, string> = {
 export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onInsertAsset }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [tab, setTab] = useState<PanelTab>("canvas");
+    const width = useCanvasSidePanelStore((state) => state.width);
+    const panelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
+    const panelMounted = useCanvasSidePanelStore((state) => state.panelMounted);
+    const panelClosing = useCanvasSidePanelStore((state) => state.panelClosing);
+    const setWidth = useCanvasSidePanelStore((state) => state.setWidth);
+    const [resizing, setResizing] = useState(false);
+
+    const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        const startX = event.clientX;
+        const startWidth = width;
+        let nextWidth = startWidth;
+        const onMove = (moveEvent: PointerEvent) => {
+            nextWidth = Math.min(CANVAS_SIDE_PANEL_MAX_WIDTH, Math.max(CANVAS_SIDE_PANEL_MIN_WIDTH, startWidth + moveEvent.clientX - startX));
+            setWidth(nextWidth);
+        };
+        const onUp = () => {
+            localStorage.setItem("canvas-side-panel-width", String(nextWidth));
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            setResizing(false);
+        };
+        setResizing(true);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+    };
+
+    if (!panelMounted) return null;
 
     return (
-        <aside className="flex h-full w-[280px] shrink-0 flex-col overflow-hidden border-r" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} data-canvas-no-zoom>
-            <div className="flex items-center gap-1 px-3 pt-3">
-                <TabButton label="画布" active={tab === "canvas"} theme={theme} onClick={() => setTab("canvas")} />
-                <TabButton label="资产" active={tab === "assets"} theme={theme} onClick={() => setTab("assets")} />
-            </div>
-            <div className="mt-2 min-h-0 flex-1 overflow-hidden">{tab === "canvas" ? <CanvasNodesTab nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} theme={theme} /> : <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />}</div>
-        </aside>
+        <motion.div
+            className="relative z-[60] flex h-full shrink-0"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: panelOpen ? width + 1 : 0, opacity: panelOpen ? 1 : 0 }}
+            transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: PANEL_EASE }}
+            style={{ overflow: "clip", pointerEvents: panelClosing ? "none" : undefined }}
+        >
+            <motion.aside
+                className="relative flex h-full shrink-0 flex-col overflow-hidden border-r"
+                initial={{ x: -48 }}
+                animate={{ x: panelClosing ? -28 : 0 }}
+                transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: PANEL_EASE }}
+                style={{ width, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+                data-canvas-no-zoom
+            >
+                <div className="flex items-center gap-5 px-4 pt-3.5">
+                    <TabButton label="画布" active={tab === "canvas"} theme={theme} onClick={() => setTab("canvas")} />
+                    <TabButton label="资产" active={tab === "assets"} theme={theme} onClick={() => setTab("assets")} />
+                </div>
+                <div className="mt-2 min-h-0 flex-1 overflow-hidden">{tab === "canvas" ? <CanvasNodesTab nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} theme={theme} /> : <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />}</div>
+                <button type="button" className="absolute inset-y-0 right-0 z-40 w-4 translate-x-1/2 cursor-col-resize" onPointerDown={startResize} aria-label="调整左侧面板宽度" />
+            </motion.aside>
+        </motion.div>
     );
 }
 
 function TabButton({ label, active, theme, onClick }: { label: string; active: boolean; theme: CanvasTheme; onClick: () => void }) {
     return (
-        <button type="button" onClick={onClick} className={cn("rounded-lg px-3 py-1.5 text-sm font-semibold transition", active ? "" : "opacity-55 hover:opacity-90")} style={active ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.text }}>
+        <button type="button" onClick={onClick} className="relative pb-1.5 text-sm font-semibold transition-opacity" style={{ color: theme.node.text, opacity: active ? 1 : 0.45 }}>
             {label}
+            {active ? <motion.span layoutId="sidePanelTabIndicator" className="absolute inset-x-0 -bottom-px h-0.5 rounded-full" style={{ background: theme.toolbar.activeText }} transition={{ type: "spring", stiffness: 500, damping: 34 }} /> : null}
         </button>
     );
 }
@@ -79,20 +135,64 @@ function nodePreviewText(node: CanvasNodeData) {
 }
 
 function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, theme }: { nodes: CanvasNodeData[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; theme: CanvasTheme }) {
+    const { message } = App.useApp();
     const [keyword, setKeyword] = useState("");
     const [typeFilter, setTypeFilter] = useState<string>("all");
+    const [selectMode, setSelectMode] = useState(false);
+    const [checked, setChecked] = useState<Set<string>>(new Set());
+    const [exporting, setExporting] = useState(false);
 
     const filtered = useMemo(() => {
         const query = keyword.trim().toLowerCase();
         return nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query)));
     }, [nodes, keyword, typeFilter]);
 
+    const exitSelect = () => {
+        setSelectMode(false);
+        setChecked(new Set());
+    };
+    const toggleChecked = (id: string) =>
+        setChecked((prev) => {
+            const next = new Set(prev);
+            next.has(id) ? next.delete(id) : next.add(id);
+            return next;
+        });
+    const allChecked = filtered.length > 0 && filtered.every((node) => checked.has(node.id));
+    const toggleAll = () => setChecked(allChecked ? new Set() : new Set(filtered.map((node) => node.id)));
+
+    const handleExport = async () => {
+        const targets = nodes.filter((node) => checked.has(node.id));
+        if (!targets.length) return;
+        setExporting(true);
+        const hide = message.loading("正在导出选中元素…", 0);
+        try {
+            await exportCanvasNodes(targets, `画布元素-${targets.length}个`);
+            message.success(`已导出 ${targets.length} 个元素`);
+            exitSelect();
+        } catch (error) {
+            console.error(error);
+            message.error("导出失败，请重试");
+        } finally {
+            hide();
+            setExporting(false);
+        }
+    };
+
     return (
         <div className="flex h-full flex-col">
             <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
                 <span className="text-xs font-medium opacity-60">画布元素</span>
                 {filtered.length ? <span className="text-xs opacity-35">{filtered.length}</span> : null}
-                <Select size="small" variant="borderless" className="ml-auto w-20" value={typeFilter} onChange={setTypeFilter} options={NODE_FILTER_OPTIONS} />
+                <button
+                    type="button"
+                    onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+                    className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium opacity-70 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10"
+                    style={selectMode ? { color: theme.toolbar.activeText, opacity: 1 } : undefined}
+                >
+                    <ListChecks className="size-3.5" />
+                    {selectMode ? "取消" : "选择"}
+                </button>
+                {selectMode ? null : <Select size="small" variant="borderless" className="w-20" value={typeFilter} onChange={setTypeFilter} options={NODE_FILTER_OPTIONS} />}
             </div>
             <div className="px-3 pb-2.5">
                 <Input size="small" allowClear prefix={<Search className="size-3.5 text-stone-400" />} placeholder="搜索节点" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
@@ -103,17 +203,19 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, theme }: { nodes:
                         {filtered.map((node) => {
                             const Icon = NODE_TYPE_ICON[node.type] || FileText;
                             const isImage = node.type === CanvasNodeType.Image && node.metadata?.content;
-                            const active = selectedNodeIds.has(node.id);
+                            const isChecked = checked.has(node.id);
+                            const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
                             return (
                                 <button
                                     key={node.id}
                                     type="button"
-                                    onClick={() => onFocusNode(node.id)}
+                                    onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))}
                                     className={cn("flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition", active ? "" : "hover:bg-black/5 dark:hover:bg-white/5")}
                                     style={active ? { background: theme.toolbar.activeBg } : undefined}
                                 >
-                                    <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md" style={{ background: theme.node.fill }}>
-                                        {isImage ? <img src={node.metadata!.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-4.5 opacity-70" />}
+                                    {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
+                                    <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
+                                        {isImage ? <img src={node.metadata!.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
                                     </span>
                                     <span className="min-w-0 flex-1 space-y-0.5">
                                         <span className="block truncate text-sm font-medium leading-snug">{node.title || getNodeDefinition(node.type)?.title || "未命名节点"}</span>
@@ -128,7 +230,33 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, theme }: { nodes:
                     <div className="pt-16 text-center text-sm opacity-40">画布暂无节点</div>
                 )}
             </div>
+            {selectMode ? (
+                <div className="flex items-center gap-2 border-t px-3 py-2.5" style={{ borderColor: theme.toolbar.border }}>
+                    <button type="button" onClick={toggleAll} className="rounded-md px-2 py-1 text-xs font-medium opacity-70 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10">
+                        {allChecked ? "取消全选" : "全选"}
+                    </button>
+                    <span className="text-xs opacity-45">已选 {checked.size}</span>
+                    <button
+                        type="button"
+                        onClick={() => void handleExport()}
+                        disabled={!checked.size || exporting}
+                        className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40"
+                        style={{ background: theme.toolbar.activeBg, color: theme.toolbar.activeText }}
+                    >
+                        <Download className="size-3.5" />
+                        导出选中
+                    </button>
+                </div>
+            ) : null}
         </div>
+    );
+}
+
+function CheckMark({ checked, theme }: { checked: boolean; theme: CanvasTheme }) {
+    return (
+        <span className="grid size-4 shrink-0 place-items-center rounded border transition" style={{ borderColor: checked ? theme.toolbar.activeText : theme.node.stroke, background: checked ? theme.toolbar.activeText : "transparent" }}>
+            {checked ? <Check className="size-3 text-white" /> : null}
+        </span>
     );
 }
 

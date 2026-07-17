@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Home, Images, Menu, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
-import { Button, Dropdown, Modal } from "antd";
+import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { Button, Dropdown, Modal, Tooltip } from "antd";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DOCS_URL } from "@/constant/env";
 
@@ -21,6 +22,7 @@ export function CanvasTopBar({
     onProjects,
     onCreateProject,
     onDeleteProject,
+    onExportProject,
     onImportImage,
     onOpenPlugins,
     onUndo,
@@ -42,6 +44,7 @@ export function CanvasTopBar({
     onProjects: () => void;
     onCreateProject: () => void;
     onDeleteProject: () => void;
+    onExportProject: () => void;
     onImportImage: () => void;
     onOpenPlugins: () => void;
     onUndo: () => void;
@@ -54,6 +57,8 @@ export function CanvasTopBar({
     const theme = canvasThemes[colorTheme];
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
+    const sidePanelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
+    const toggleSidePanel = useCanvasSidePanelStore((state) => state.togglePanel);
 
     useEffect(() => {
         if (!isTitleEditing) return;
@@ -66,8 +71,19 @@ export function CanvasTopBar({
 
     return (
         <>
-            <div className="pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between px-4">
-                <div className="pointer-events-auto flex min-w-0 items-center gap-3">
+            <div className="pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between pl-1 pr-4">
+                <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+                    <Tooltip title={sidePanelOpen ? "收起面板" : "展开面板"}>
+                        <button
+                            type="button"
+                            onClick={toggleSidePanel}
+                            aria-label={sidePanelOpen ? "收起面板" : "展开面板"}
+                            className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"
+                            style={{ color: theme.node.text }}
+                        >
+                            {sidePanelOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
+                        </button>
+                    </Tooltip>
                     <Dropdown
                         trigger={["click"]}
                         menu={{
@@ -80,14 +96,15 @@ export function CanvasTopBar({
                                 { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: "删除当前画布", onClick: onDeleteProject },
                                 { type: "divider" },
                                 { key: "import", icon: <Upload className="size-4" />, label: "导入资产", onClick: onImportImage },
+                                { key: "export", icon: <Download className="size-4" />, label: "导出当前画布", onClick: onExportProject },
                                 { type: "divider" },
                                 { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text="撤销" shortcut="⌘ Z" />, onClick: onUndo },
                                 { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text="重做" shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
                             ],
                         }}
                     >
-                        <button type="button" className="grid size-9 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label="打开画布菜单">
-                            <Menu className="size-5" />
+                        <button type="button" className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label="打开画布菜单">
+                            <Menu className="size-4" />
                         </button>
                     </Dropdown>
 
