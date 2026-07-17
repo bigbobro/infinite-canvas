@@ -7,7 +7,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 - 画布节点插件系统:内置节点(图片/文本/视频/音频/配置/组)改为统一注册表管理,创建菜单由注册表动态生成;需验证六种内置节点的创建、渲染、缩放、连线、小地图颜色、作为生成输入等行为与之前一致。内置节点仅这六种,其余均为插件。
 - 画布节点插件系统:左上菜单新增「节点插件」,可通过 URL 安装远程插件、启用/禁用、更新、卸载;安装时有安全警告说明插件代码在页面内执行、可访问本地数据。可用 `/plugins/sticky-note.js` 安装便利贴节点验证:换色、编辑、「衍生文本节点」(演示 applyOps 增节点+连线)。
-- 画布节点插件系统:示例插件 Markdown(编辑/渲染)、HTML(沙箱 iframe 渲染,支持 {{input}} 注入上游文本)、SVG(渲染/编辑,可取上游文本 SVG 源码)、3D 全景(three.js CDN 动态加载,可从上游图片节点取全景图并拖拽查看);均为远程插件,需分别安装 `/plugins/markdown.js`、`/plugins/html.js`、`/plugins/svg.js`、`/plugins/panorama.js` 后验证创建、渲染、编辑及与上游节点的交互。
+- 画布节点插件系统:示例插件 Markdown(编辑/渲染)、HTML(沙箱 iframe 渲染,支持 `{{input}}` 注入上游文本)、SVG(渲染/编辑,可取上游文本 SVG 源码)、3D 全景(three.js CDN 动态加载,可从上游图片节点取全景图并拖拽查看);均为远程插件,需分别安装 `/plugins/markdown.js`、`/plugins/html.js`、`/plugins/svg.js`、`/plugins/panorama.js` 后验证创建、渲染、编辑及与上游节点的交互。
 - 画布节点插件系统:卸载或禁用插件后,画布上遗留的该类型节点显示「缺少插件」占位且数据保留,重新安装/启用后恢复渲染;需验证刷新后已启用插件自动加载。
 - 画布节点插件系统:每个插件为 `plugins/canvas/<name>/` 独立目录(各自 package.json + esbuild + src + README,互不耦合),`npm run build` 产物落到 `dist/<name>.js` 并同步到 `web/public/plugins/`;需验证各插件可独立构建与安装。
 - 画布节点插件本地开发:每个插件支持 `npm run dev`(watch 自动构建并同步到 `web/public/plugins/`),配合 `web/.env.local` 的 `VITE_DEV_PLUGINS`(逗号分隔 URL)每次刷新重新拉取、无需反复安装;需验证改源码刷新页面即生效。
