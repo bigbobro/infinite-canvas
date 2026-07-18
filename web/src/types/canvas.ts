@@ -29,6 +29,8 @@ export type CanvasNodeMetadata = {
     content?: string;
     composerContent?: string;
     prompt?: string;
+    /** PPT 配置节点的用户可编辑排版要求。回写机制会污染 prompt 字段,可编辑指令必须存这里。 */
+    pptLayoutPrompt?: string;
     status?: CanvasNodeStatus;
     errorDetails?: string;
     fontSize?: number;

@@ -1,4 +1,5 @@
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
+import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { pageTakes, type CanvasProject, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
@@ -74,7 +75,9 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             candidates,
             generating,
             issues,
-            layoutPrompt: configNode?.metadata?.prompt || "",
+            // 排版要求读专用字段:metadata.prompt 每轮生成会被拼装全文回写(污染),不可作展示/编辑来源。
+            // 旧工程无此字段时回退到与生成路径一致的默认(outline=常量,extract=空)。
+            layoutPrompt: (configNode?.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.mode === "extract" ? "" : PPT_PAGE_PROMPT),
             composerContent,
             upstreamInputs,
         };

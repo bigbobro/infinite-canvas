@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { App, Button, Modal, Radio, Tooltip, Typography, theme as antdTheme } from "antd";
 import { CheckCircle2, ChevronRight, CircleAlert, ImageOff, Layers, LoaderCircle, Presentation, RotateCcw, Sparkles, X } from "lucide-react";
@@ -11,6 +11,7 @@ import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { resolvePageImageNode } from "@/lib/ppt/deck-export";
 import { buildPptPageWorkspace, type PptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { pageTakes, useCanvasStore, type CanvasProject, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
+import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 
@@ -34,6 +35,7 @@ export function CanvasPptPanel() {
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
     const updateProject = useCanvasStore((state) => state.updateProject);
     const canvasContext = useAgentStore((state) => state.canvasContext);
+    const setPptOverlayOpen = useCanvasUiStore((state) => state.setPptOverlayOpen);
     const [panelOpen, setPanelOpen] = useState(true);
     const [surface, setSurface] = useState<"workbench" | "structure">("workbench");
     const [focusPageIndex, setFocusPageIndex] = useState<number | null>(null);
@@ -49,6 +51,15 @@ export function CanvasPptPanel() {
         setStartModalOpen(false);
         setRestModalOpen(false);
     }, [projectId]);
+
+    // #34：精修台/最终检视打开期间，画布节点悬浮工具条不得渲染（数据安全，避免误点删除底层节点）。
+    // 用 useLayoutEffect 而非 useEffect：跨组件写 store 必须在浏览器绘制前完成，否则 surface 切到
+    // workbench 的这一帧，project.tsx 读到的 pptOverlayOpen 仍是旧值，悬浮工具条会先画出来再被收回。
+    useLayoutEffect(() => {
+        const overlayOpen = Boolean(currentProject?.ppt) && (surface === "workbench" || finalReviewOpen);
+        setPptOverlayOpen(overlayOpen);
+        return () => setPptOverlayOpen(false);
+    }, [currentProject?.ppt, surface, finalReviewOpen, setPptOverlayOpen]);
 
     const nodeById = useMemo(() => new Map((currentProject?.nodes || []).map((node) => [node.id, node])), [currentProject?.nodes]);
     const pageWorkspaces = useMemo(() => {
@@ -69,8 +80,13 @@ export function CanvasPptPanel() {
     const firstPageIndex = pageWorkspaces[0]?.page.index ?? pages[0]?.index ?? 1;
     const activePageIndex = focusPageIndex != null && pageWorkspaces.some((item) => item.page.index === focusPageIndex) ? focusPageIndex : firstPageIndex;
 
-    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp =>
-        ppt.mode === "extract" ? { type: "run_generation", nodeId: configNodeId, mode: "image" } : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT };
+    // 生成指令读专用字段 pptLayoutPrompt(metadata.prompt 会被回写污染,禁止读);
+    // 旧工程无此字段或清空时回退默认:outline 恒传常量(防 bridge 落到污染的节点 prompt),extract 不传(保 composerContent 挡板)。
+    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => {
+        const meta = nodeById.get(configNodeId)?.metadata;
+        const layoutPrompt = (meta?.pptLayoutPrompt ?? "").trim() || (ppt.mode === "extract" ? "" : PPT_PAGE_PROMPT);
+        return layoutPrompt ? { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: layoutPrompt } : { type: "run_generation", nodeId: configNodeId, mode: "image" };
+    };
 
     const runGeneration = (page: CanvasProjectPptPage) => {
         if (!canvasContext) {

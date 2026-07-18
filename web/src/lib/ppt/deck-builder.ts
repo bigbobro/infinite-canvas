@@ -106,6 +106,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
         const configMetadata: CanvasNodeData["metadata"] = {
             ...configSpec.metadata,
             prompt: mode === "extract" ? "" : PPT_PAGE_PROMPT,
+            pptLayoutPrompt: mode === "extract" ? "" : PPT_PAGE_PROMPT,
             size: "16:9",
             count: 1,
             pptPageIndex: index,

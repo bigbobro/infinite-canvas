@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Dropdown, Input, Modal, theme as antdTheme } from "antd";
-import { ArrowRight, Check, CheckCircle2, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Video, WandSparkles } from "lucide-react";
+import { ArrowRight, Check, CheckCircle2, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Trash2, Video, WandSparkles } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
@@ -119,7 +119,13 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const hasPendingPromptEdit = promptDirty || forkDirty;
     const centerGenerateCtaShown = Boolean(!activeNode && !activeTake?.generating && activeTake?.configNode && !editingLockedPrompt);
 
-    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => (isExtractMode ? { type: "run_generation", nodeId: configNodeId, mode: "image" } : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT });
+    // 生成指令读专用字段 pptLayoutPrompt(metadata.prompt 会被回写污染,禁止读);
+    // 旧工程无此字段或清空时回退默认:outline 恒传常量(防 bridge 落到污染的节点 prompt),extract 不传(保 composerContent 挡板)。
+    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => {
+        const meta = project.nodes.find((node) => node.id === configNodeId)?.metadata;
+        const layoutPrompt = (meta?.pptLayoutPrompt ?? "").trim() || (isExtractMode ? "" : PPT_PAGE_PROMPT);
+        return layoutPrompt ? { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: layoutPrompt } : { type: "run_generation", nodeId: configNodeId, mode: "image" };
+    };
 
     const runGeneration = () => {
         if (!canvasContext) {
@@ -156,6 +162,33 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         message.success(`方案分支 ${activeTake.index + 1} 的提示词已保存`);
     };
 
+    // #30：风格基调节点为全部页面共用，保存直接写回该节点，影响全部方案分支。
+    const saveStyleNode = (nodeId: string, content: string) => {
+        if (!canvasContext) {
+            message.warning("画布尚未就绪，请稍后再试");
+            return;
+        }
+        if (!content.trim()) {
+            message.warning("风格基调不能为空");
+            return;
+        }
+        const next = canvasContext.applyOps([{ type: "update_node", id: nodeId, metadata: { content, status: "success" } }]);
+        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        message.success("风格基调已更新，将影响全部页面");
+    };
+
+    // #31：排版要求只作用于当前方案分支。存专用字段 pptLayoutPrompt——
+    // metadata.prompt 每轮生成会被拼装全文回写(污染),不可作可编辑指令的存储位。
+    const saveLayoutPrompt = (content: string) => {
+        if (!canvasContext || !activeTake?.configNode) {
+            message.warning("画布尚未就绪，请稍后再试");
+            return;
+        }
+        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.configNode.id, metadata: { pptLayoutPrompt: content } }]);
+        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        message.success(`方案分支 ${activeTake.index + 1} 的排版要求已保存`);
+    };
+
     const setConfirmed = (confirmedNodeId?: string) => {
         updateProject(projectId, { ppt: setPptPageConfirmedNode(ppt, page.index, confirmedNodeId) });
     };
@@ -181,7 +214,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
 
         const outlineId = nanoid();
         const configId = nanoid();
-        const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
+        // 派生分支继承源分支的排版要求(effective 值);空白分支用默认种子。
+        const seedLayoutPrompt = sourceTake?.layoutPrompt?.trim() || (isExtractMode ? "" : PPT_PAGE_PROMPT);
+        const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, pptLayoutPrompt: seedLayoutPrompt, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
         if (isExtractMode) configMetadata.composerContent = "";
 
         const gridNodes = project.nodes.filter((node) => node.metadata?.pptPageIndex != null);
@@ -198,7 +233,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...inheritedInputNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
-        if (autoGenerate) ops.push(buildRunGenerationOp(configId));
+        // 新节点尚未入 project.nodes,不能走 buildRunGenerationOp 查表,直接用种子值构造。
+        if (autoGenerate) ops.push(seedLayoutPrompt ? { type: "run_generation", nodeId: configId, mode: "image", prompt: seedLayoutPrompt } : { type: "run_generation", nodeId: configId, mode: "image" });
         const next = canvasContext.applyOps(ops);
         const nextTakes = [...pageTakes(page), { anchorNodeId: outlineId, configNodeId: configId }];
         updateProject(projectId, {
@@ -222,6 +258,47 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             return;
         }
         createTakeFromPrompt(newTakeDraft.prompt, workspace.takes.find((take) => take.key === newTakeDraft.sourceTakeKey) ?? activeTake, false);
+    };
+
+    // #32：删除方案分支——只删「仅属于该 take」的候选（take.candidates 已按 buildPptPageWorkspace 的
+    // 可达性+去重规则同源计算，不另写一套遍历）；若含已确认最终版，先经共享实现取消确认再删节点。
+    const deleteTake = (take: PptPageWorkspaceTake) => {
+        if (!canvasContext) {
+            message.warning("画布尚未就绪，请稍后再试");
+            return;
+        }
+        const idsToDelete = [take.anchorNode?.id, take.configNode?.id, ...take.candidates.map((node) => node.id)].filter((id): id is string => Boolean(id));
+        const willUnconfirm = take.candidates.some((node) => node.id === page.confirmedNodeId);
+        const pptAfterUnconfirm = willUnconfirm ? setPptPageConfirmedNode(ppt, page.index, undefined) : ppt;
+        const nextTakes = pageTakes(page).filter((item) => item.configNodeId !== take.key);
+        const next = canvasContext.applyOps([{ type: "delete_node", ids: idsToDelete }]);
+        updateProject(projectId, {
+            nodes: next.nodes,
+            connections: next.connections,
+            ppt: { ...pptAfterUnconfirm, pages: pptAfterUnconfirm.pages.map((item) => (item.index === page.index ? { ...item, takes: nextTakes, anchorNodeId: undefined, configNodeId: undefined } : item)) },
+        });
+        if (activeTakeIndex === take.index) {
+            setActiveTakeIndex(0);
+            setActiveNodeId(undefined);
+        }
+        if (newTakeDraft?.sourceTakeKey === take.key) setNewTakeDraft(null);
+        if (editingLockedPrompt && activeTakeIndex === take.index) setEditingLockedPrompt(false);
+        message.success(`方案分支 ${take.index + 1} 已删除`);
+    };
+
+    const confirmDeleteTake = (take: PptPageWorkspaceTake) => {
+        const willUnconfirm = take.candidates.some((node) => node.id === page.confirmedNodeId);
+        let content = "该方案的提示词与配置将移除";
+        if (take.candidates.length) content += `，其 ${take.candidates.length} 张候选稿将一并从画布删除`;
+        content += willUnconfirm ? "；本页已确认的最终版属于该方案，删除后将回到未确认状态。" : "。";
+        modal.confirm({
+            title: `删除方案分支 ${take.index + 1}？`,
+            content,
+            okText: "删除",
+            cancelText: "取消",
+            okButtonProps: { danger: true },
+            onOk: () => deleteTake(take),
+        });
     };
 
     const discardPendingPrompt = (next: () => void) => {
@@ -313,16 +390,16 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
-                <header className="flex shrink-0 flex-wrap items-start justify-between gap-4 px-5 py-4">
-                    <div className="flex min-w-0 items-start gap-3">
-                        <div className="grid size-10 shrink-0 place-items-center rounded-lg border" style={{ background: canvasTheme.node.fill, borderColor: canvasTheme.node.stroke }}>
-                            <Layers3 className="size-5" aria-hidden="true" />
+                <header className="flex shrink-0 flex-wrap items-start justify-between gap-3 px-5 py-2.5">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                        <div className="grid size-8 shrink-0 place-items-center rounded-lg border" style={{ background: canvasTheme.node.fill, borderColor: canvasTheme.node.stroke }}>
+                            <Layers3 className="size-4" aria-hidden="true" />
                         </div>
                         <div className="min-w-0">
-                            <h2 className="truncate text-lg font-semibold">
+                            <h2 className="truncate text-base font-semibold">
                                 第 {page.index} 页 · {page.title}
                             </h2>
-                            <p className="mt-1 text-sm" style={{ color: canvasTheme.node.muted }}>
+                            <p className="mt-0.5 text-xs" style={{ color: canvasTheme.node.muted }}>
                                 {workspace.takes.length} 个方案分支 · {candidateCount} 个候选稿
                             </p>
                         </div>
@@ -343,34 +420,35 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                 </header>
 
                 <main className="thin-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto border-y p-4 xl:grid-cols-[156px_minmax(380px,0.95fr)_minmax(440px,1.05fr)] xl:overflow-hidden" style={{ borderColor: canvasTheme.node.stroke }}>
-                    <nav className="flex min-h-0 flex-col gap-1.5 xl:overflow-y-auto" aria-label="PPT 页面导航">
+                    <nav className="flex min-h-0 flex-col gap-1 xl:overflow-y-auto" aria-label="PPT 页面导航">
                         {workspaces.map((item) => {
                             const selected = item.page.index === page.index;
                             const confirmed = item.confirmationIssues.length === 0;
+                            const generating = item.takes.some((take) => take.generating);
+                            // #33：状态用徽记表达（✓ 已确认 / spinner 生成中 / ○ 待确认），去掉「待确认/正在精修」文字行，行高收紧。
+                            const statusLabel = generating ? "生成中" : confirmed ? "已确认" : "待确认";
                             return (
                                 <button
                                     key={item.page.index}
                                     type="button"
-                                    className="rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
+                                    className="flex items-center gap-2 rounded-lg border px-3 py-1.5 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
                                     style={{
                                         background: selected ? canvasTheme.toolbar.activeBg : "transparent",
                                         borderColor: selected ? canvasTheme.node.activeStroke : canvasTheme.node.stroke,
                                         outlineColor: canvasTheme.node.activeStroke,
                                     }}
                                     aria-current={selected ? "page" : undefined}
+                                    aria-label={`第 ${item.page.index} 页，${statusLabel}`}
                                     onClick={() => changePage(item.page.index)}
                                 >
-                                    <span className="flex items-center gap-2 text-xs font-semibold">
-                                        {confirmed ? (
-                                            <CheckCircle2 className="size-3.5 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" />
-                                        ) : (
-                                            <span className="size-3.5 shrink-0 rounded-full border" style={{ borderColor: canvasTheme.node.faint }} aria-hidden="true" />
-                                        )}
-                                        第 {item.page.index} 页
-                                    </span>
-                                    <span className="mt-1 block truncate text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                        {selected ? "正在精修" : confirmed ? "已确认" : "待确认"}
-                                    </span>
+                                    {generating ? (
+                                        <LoaderCircle className="size-3.5 shrink-0 animate-spin" style={{ color: canvasTheme.node.muted }} aria-hidden="true" />
+                                    ) : confirmed ? (
+                                        <CheckCircle2 className="size-3.5 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" />
+                                    ) : (
+                                        <span className="size-3.5 shrink-0 rounded-full border" style={{ borderColor: canvasTheme.node.faint }} aria-hidden="true" />
+                                    )}
+                                    <span className="truncate text-xs font-semibold">第 {item.page.index} 页</span>
                                 </button>
                             );
                         })}
@@ -392,7 +470,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                     <Input.TextArea
                                         className="mt-3"
                                         value={newTakeDraft.prompt}
-                                        autoSize={{ minRows: 5, maxRows: 9 }}
+                                        autoSize={{ minRows: 8, maxRows: 24 }}
                                         variant="filled"
                                         placeholder="填写这一方案分支的完整提示词"
                                         onChange={(event) => setNewTakeDraft((current) => (current ? { ...current, prompt: event.target.value } : current))}
@@ -425,15 +503,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                             {activeTake.canEditPrompt || editingLockedPrompt ? "可编辑" : "只读"}
                                         </span>
                                     </div>
-                                    <Input.TextArea
-                                        className="mt-3"
-                                        value={promptDraft}
-                                        autoSize={{ minRows: 4, maxRows: 8 }}
-                                        variant="filled"
-                                        readOnly={!activeTake.canEditPrompt && !editingLockedPrompt}
-                                        placeholder="填写这一方案分支的完整提示词"
-                                        onChange={(event) => setPromptDraft(event.target.value)}
-                                    />
+                                    {/* #29：方案提示词是本卡视觉主体——只读态自适应内容高度（超长内滚），编辑态给足展开空间。 */}
+                                    {activeTake.canEditPrompt || editingLockedPrompt ? (
+                                        <Input.TextArea className="mt-3" value={promptDraft} autoSize={{ minRows: 8, maxRows: 24 }} variant="filled" placeholder="填写这一方案分支的完整提示词" onChange={(event) => setPromptDraft(event.target.value)} />
+                                    ) : (
+                                        <div className="thin-scrollbar mt-3 max-h-[46vh] overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-sm" style={{ background: canvasTheme.node.fill }}>
+                                            {promptDraft || <span style={{ color: canvasTheme.node.muted }}>暂无提示词</span>}
+                                        </div>
+                                    )}
                                     <div className="mt-3 flex items-center justify-between gap-3">
                                         <span className="text-[11px]" style={{ color: canvasTheme.node.muted }}>
                                             {activeTake.canEditPrompt
@@ -474,7 +551,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                             </Button>
                                         )}
                                     </div>
-                                    <UpstreamInputsPanel take={activeTake} canvasTheme={canvasTheme} muted={canvasTheme.node.muted} />
+                                    <UpstreamInputsPanel take={activeTake} canvasTheme={canvasTheme} muted={canvasTheme.node.muted} canEdit={Boolean(canvasContext)} onSaveStyle={saveStyleNode} onSaveLayout={saveLayoutPrompt} />
                                 </>
                             ) : (
                                 <div className="py-4 text-center">
@@ -493,26 +570,42 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                       return (
                                           <section
                                               key={take.key}
-                                              className="rounded-xl border p-3"
+                                              className="group rounded-xl border p-3"
                                               style={{ background: selectedTake ? canvasTheme.toolbar.activeBg : canvasTheme.node.fill, borderColor: selectedTake ? canvasTheme.node.activeStroke : canvasTheme.node.stroke }}
                                               aria-labelledby={`ppt-take-${page.index}-${take.index}`}
                                           >
-                                              <button type="button" className="flex w-full items-center justify-between gap-3 text-left" onClick={() => selectTake(take.index)}>
-                                                  <span>
-                                                      <span id={`ppt-take-${page.index}-${take.index}`} className="block text-sm font-semibold">
-                                                          方案分支 {take.index + 1}
+                                              <div className="flex items-center gap-2">
+                                                  <button type="button" className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left" onClick={() => selectTake(take.index)}>
+                                                      <span>
+                                                          <span id={`ppt-take-${page.index}-${take.index}`} className="block text-sm font-semibold">
+                                                              方案分支 {take.index + 1}
+                                                          </span>
+                                                          <span className="mt-0.5 block text-[11px]" style={{ color: canvasTheme.node.muted }}>
+                                                              {take.generating ? "生成中" : take.candidates.length ? `${take.candidates.length} 个候选稿` : "尚未生成"}
+                                                          </span>
                                                       </span>
-                                                      <span className="mt-0.5 block text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                                          {take.generating ? "生成中" : take.candidates.length ? `${take.candidates.length} 个候选稿` : "尚未生成"}
-                                                      </span>
-                                                  </span>
-                                                  {selectedTake ? (
-                                                      <span className="flex items-center gap-1 text-xs font-medium">
-                                                          <Check className="size-3.5" aria-hidden="true" />
-                                                          当前分支
-                                                      </span>
-                                                  ) : null}
-                                              </button>
+                                                      {selectedTake ? (
+                                                          <span className="flex items-center gap-1 text-xs font-medium">
+                                                              <Check className="size-3.5" aria-hidden="true" />
+                                                              当前分支
+                                                          </span>
+                                                      ) : null}
+                                                  </button>
+                                                  {/* #32：分支删除入口，hover 才显现，避免误触 */}
+                                                  <button
+                                                      type="button"
+                                                      className="shrink-0 rounded-md p-1 opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100"
+                                                      style={{ color: token.colorError }}
+                                                      aria-label={`删除方案分支 ${take.index + 1}`}
+                                                      title="删除该方案分支"
+                                                      onClick={(event) => {
+                                                          event.stopPropagation();
+                                                          confirmDeleteTake(take);
+                                                      }}
+                                                  >
+                                                      <Trash2 className="size-3.5" aria-hidden="true" />
+                                                  </button>
+                                              </div>
 
                                               {take.issues.length ? (
                                                   <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder, color: token.colorErrorText }} role="alert">
@@ -710,8 +803,38 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     );
 }
 
-/** #16：所见即所生成——除锚点提示词外，实际会拼进生成 prompt 的其余输入，展示逻辑与生成路径同源。 */
-function UpstreamInputsPanel({ take, canvasTheme, muted }: { take: PptPageWorkspaceTake; canvasTheme: (typeof canvasThemes)[keyof typeof canvasThemes]; muted: string }) {
+/**
+ * #16：所见即所生成——除锚点提示词外，实际会拼进生成 prompt 的其余输入，展示逻辑与生成路径同源。
+ * #29：整体默认收起为一行摘要，把视觉重心让给上方的方案提示词。
+ * #30/#31：风格基调（写回风格节点，全局共用）与排版要求（写回本分支配置节点）均支持行内编辑。
+ */
+function UpstreamInputsPanel({
+    take,
+    canvasTheme,
+    muted,
+    canEdit,
+    onSaveStyle,
+    onSaveLayout,
+}: {
+    take: PptPageWorkspaceTake;
+    canvasTheme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    muted: string;
+    canEdit: boolean;
+    onSaveStyle: (nodeId: string, content: string) => void;
+    onSaveLayout: (content: string) => void;
+}) {
+    const [collapsed, setCollapsed] = useState(true);
+    const [editingStyleNodeId, setEditingStyleNodeId] = useState<string | null>(null);
+    const [styleDraft, setStyleDraft] = useState("");
+    const [editingLayout, setEditingLayout] = useState(false);
+    const [layoutDraft, setLayoutDraft] = useState(take.layoutPrompt);
+
+    useEffect(() => {
+        setEditingStyleNodeId(null);
+        setEditingLayout(false);
+        setLayoutDraft(take.layoutPrompt);
+    }, [take.key, take.layoutPrompt]);
+
     if (take.composerContent) {
         return (
             <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: canvasTheme.node.stroke, background: canvasTheme.node.fill }}>
@@ -725,54 +848,163 @@ function UpstreamInputsPanel({ take, canvasTheme, muted }: { take: PptPageWorksp
         );
     }
 
+    if (collapsed) {
+        return (
+            <button type="button" className="mt-3 flex w-full items-center justify-between rounded-lg border px-3 py-2 text-xs transition" style={{ borderColor: canvasTheme.node.stroke, color: muted }} onClick={() => setCollapsed(false)}>
+                <span>其他生成输入：风格基调 + 排版要求</span>
+                <span className="shrink-0 underline underline-offset-2">展开</span>
+            </button>
+        );
+    }
+
     return (
-        <div className="mt-3 space-y-2">
-            <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: muted }}>
-                其他生成输入
+        <div className="mt-3 space-y-2 rounded-lg border p-2.5" style={{ borderColor: canvasTheme.node.stroke }}>
+            <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium uppercase tracking-wide" style={{ color: muted }}>
+                    其他生成输入
+                </span>
+                <button type="button" className="text-[11px] underline underline-offset-2" style={{ color: muted }} onClick={() => setCollapsed(true)}>
+                    收起
+                </button>
             </div>
+
             {take.upstreamInputs.length ? (
                 <ul className="space-y-1.5">
-                    {take.upstreamInputs.map((input) => (
-                        <li key={input.nodeId} className="flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
-                            {input.type === "image" ? (
-                                input.image?.dataUrl ? (
-                                    <img src={input.image.dataUrl} alt="" className="size-8 shrink-0 rounded object-cover" />
+                    {take.upstreamInputs.map((input) => {
+                        const isStyle = input.pptRole === "style" && input.type === "text";
+                        const isEditingThis = editingStyleNodeId === input.nodeId;
+                        return (
+                            <li key={input.nodeId} className="flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
+                                {input.type === "image" ? (
+                                    input.image?.dataUrl ? (
+                                        <img src={input.image.dataUrl} alt="" className="size-8 shrink-0 rounded object-cover" />
+                                    ) : (
+                                        <ImageOff className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                                    )
+                                ) : input.type === "video" ? (
+                                    <Video className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                                ) : input.type === "audio" ? (
+                                    <Music2 className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
                                 ) : (
-                                    <ImageOff className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
-                                )
-                            ) : input.type === "video" ? (
-                                <Video className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
-                            ) : input.type === "audio" ? (
-                                <Music2 className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
-                            ) : (
-                                <FileText className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
-                            )}
-                            <div className="min-w-0 flex-1">
-                                <div className="font-medium" style={{ color: canvasTheme.node.text }}>
-                                    {input.pptRole === "style" ? "风格基调" : input.title}
-                                </div>
-                                {input.text ? (
-                                    <div className="mt-0.5 line-clamp-2 whitespace-pre-wrap" style={{ color: muted }}>
-                                        {input.text}
+                                    <FileText className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="font-medium" style={{ color: canvasTheme.node.text }}>
+                                            {input.pptRole === "style" ? "风格基调" : input.title}
+                                        </span>
+                                        {isStyle && canEdit && !take.generating && !isEditingThis ? (
+                                            <button
+                                                type="button"
+                                                className="shrink-0 text-[11px] underline underline-offset-2"
+                                                style={{ color: muted }}
+                                                onClick={() => {
+                                                    setEditingStyleNodeId(input.nodeId);
+                                                    setStyleDraft(input.text ?? "");
+                                                }}
+                                            >
+                                                编辑
+                                            </button>
+                                        ) : null}
                                     </div>
-                                ) : null}
-                            </div>
-                        </li>
-                    ))}
+                                    {isEditingThis && !take.generating ? (
+                                        <>
+                                            <Input.TextArea className="mt-1.5" value={styleDraft} autoSize={{ minRows: 3, maxRows: 12 }} variant="filled" onChange={(event) => setStyleDraft(event.target.value)} />
+                                            <div className="mt-1 text-[11px]" style={{ color: muted }}>
+                                                全部页面共用，修改将影响所有页面
+                                            </div>
+                                            <div className="mt-1.5 flex justify-end gap-2">
+                                                <Button size="small" onClick={() => setEditingStyleNodeId(null)}>
+                                                    取消
+                                                </Button>
+                                                <Button
+                                                    size="small"
+                                                    type="primary"
+                                                    icon={<Save className="size-3" />}
+                                                    disabled={!styleDraft.trim()}
+                                                    onClick={() => {
+                                                        onSaveStyle(input.nodeId, styleDraft);
+                                                        setEditingStyleNodeId(null);
+                                                    }}
+                                                >
+                                                    保存
+                                                </Button>
+                                            </div>
+                                        </>
+                                    ) : input.text ? (
+                                        <div className="mt-0.5 whitespace-pre-wrap" style={{ color: muted }}>
+                                            {input.text}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </li>
+                        );
+                    })}
                 </ul>
             ) : (
                 <div className="text-xs" style={{ color: muted }}>
-                    版式指令 + 风格基调将随生成自动拼入
+                    无其他上游输入
                 </div>
             )}
-            {take.layoutPrompt ? (
-                <details className="text-xs" style={{ color: muted }}>
-                    <summary className="cursor-pointer select-none font-medium" style={{ color: canvasTheme.node.text }}>
-                        版式指令（点击展开）
-                    </summary>
-                    <div className="mt-1 whitespace-pre-wrap">{take.layoutPrompt}</div>
-                </details>
-            ) : null}
+
+            <div className="rounded-lg border px-2.5 py-1.5 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
+                <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium" style={{ color: canvasTheme.node.text }}>
+                        排版要求
+                    </span>
+                    {canEdit && !take.generating && !editingLayout ? (
+                        <button
+                            type="button"
+                            className="shrink-0 text-[11px] underline underline-offset-2"
+                            style={{ color: muted }}
+                            onClick={() => {
+                                setEditingLayout(true);
+                                setLayoutDraft(take.layoutPrompt);
+                            }}
+                        >
+                            编辑
+                        </button>
+                    ) : null}
+                </div>
+                {editingLayout && !take.generating ? (
+                    <>
+                        <Input.TextArea className="mt-1.5" value={layoutDraft} autoSize={{ minRows: 3, maxRows: 12 }} variant="filled" onChange={(event) => setLayoutDraft(event.target.value)} />
+                        <div className="mt-1 text-[11px]" style={{ color: muted }}>
+                            仅作用于本方案分支
+                        </div>
+                        <div className="mt-1.5 flex justify-end gap-2">
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    setEditingLayout(false);
+                                    setLayoutDraft(take.layoutPrompt);
+                                }}
+                            >
+                                取消
+                            </Button>
+                            <Button
+                                size="small"
+                                type="primary"
+                                icon={<Save className="size-3" />}
+                                onClick={() => {
+                                    onSaveLayout(layoutDraft);
+                                    setEditingLayout(false);
+                                }}
+                            >
+                                保存
+                            </Button>
+                        </div>
+                    </>
+                ) : take.layoutPrompt ? (
+                    <div className="mt-0.5 whitespace-pre-wrap" style={{ color: muted }}>
+                        {take.layoutPrompt}
+                    </div>
+                ) : (
+                    <div className="mt-0.5" style={{ color: muted }}>
+                        未设置
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
