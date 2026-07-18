@@ -22,9 +22,9 @@ export type PptPageWorkspaceTake = {
     deleteNodeIds: string[];
     generating: boolean;
     issues: string[];
-    /** 版式指令：配置节点自身 metadata.prompt（不含上游拼接内容），供折叠展示。 */
+    /** 排版要求：专用 metadata.pptLayoutPrompt；旧工程按 PPT 模式回退。 */
     layoutPrompt: string;
-    /** 组装提示词内容（非空时生成以此为准，见 canvas-guidelines「Config 节点的 prompt 回写」）。 */
+    /** 配置合成器开关与后备模板；PPT 显式传 layoutPrompt 时以显式值作为合成模板。 */
     composerContent?: string;
     /** 除锚点提示词外，实际会被拼进生成 prompt 的其余上游输入（同源 buildNodeGenerationInputs，禁止另写遍历）。 */
     upstreamInputs: PptPageUpstreamInput[];
@@ -101,7 +101,7 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             deleteNodeIds,
             generating,
             issues,
-            // 排版要求读专用字段:metadata.prompt 每轮生成会被拼装全文回写(污染),不可作展示/编辑来源。
+            // 排版要求读专用字段；metadata.prompt 每轮生成会被拼装全文回写(污染),不可作展示/编辑来源。
             // 旧工程无此字段时回退到与生成路径一致的默认(outline=常量,extract=空)。
             layoutPrompt: (configNode?.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.mode === "extract" ? "" : PPT_PAGE_PROMPT),
             composerContent,
