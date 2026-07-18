@@ -1,4 +1,4 @@
-import { defaultConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, modelMatchesCapability, type AiConfig } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
@@ -77,8 +77,11 @@ export async function hydrateAssistantImages(sessions: CanvasAssistantSession[])
     );
 }
 
-export function getGenerationCount(count: string) {
-    return Math.max(1, Math.min(15, Math.floor(Math.abs(Number(count)) || 1)));
+export const GENERATION_COUNT_MIN = 1;
+export const GENERATION_COUNT_MAX = 15;
+
+export function getGenerationCount(count: string | number) {
+    return Math.max(GENERATION_COUNT_MIN, Math.min(GENERATION_COUNT_MAX, Math.floor(Math.abs(Number(count)) || GENERATION_COUNT_MIN)));
 }
 
 export function getInputSummary(inputs: NodeGenerationInput[]) {
@@ -90,11 +93,18 @@ export function getInputSummary(inputs: NodeGenerationInput[]) {
     };
 }
 
-export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
+/**
+ * Capability-aware effective config shared by the real request path, PPT, and config-node panel.
+ * canvas-node-prompt-panel keeps its legacy local resolver outside this task's agreed boundary.
+ */
+export function resolveGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
     const defaultModel = mode === "image" ? config.imageModel : mode === "video" ? config.videoModel : mode === "audio" ? config.audioModel : config.textModel;
+    const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
+    const currentModel = node?.metadata?.model;
+    const model = currentModel && modelMatchesCapability(config, currentModel, mode) ? currentModel : defaultModel && modelMatchesCapability(config, defaultModel, mode) ? defaultModel : fallbackModel;
     return {
         ...config,
-        model: node?.metadata?.model || defaultModel || (mode === "audio" ? defaultConfig.audioModel : config.model || defaultConfig.model),
+        model,
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
         size: node?.metadata?.size || config.size || defaultConfig.size,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
@@ -108,6 +118,10 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         audioInstructions: node?.metadata?.audioInstructions || config.audioInstructions || defaultConfig.audioInstructions,
         count: String(node?.metadata?.count || (mode === "image" ? config.canvasImageCount || config.count : config.count) || defaultConfig.count),
     };
+}
+
+export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
+    return resolveGenerationConfig(config, node, mode);
 }
 
 /** [二开] 猫佬任务结果保留约 1 小时，过期后 content 返回 410，续轮询已无意义。 */

@@ -1,22 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Dropdown, Input, Modal, Tooltip, theme as antdTheme } from "antd";
+import { App, Button, Dropdown, Input, InputNumber, Modal, Popover, Select, Tooltip, theme as antdTheme } from "antd";
 import { ArrowRight, CheckCircle2, ChevronDown, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Trash2, Video, WandSparkles } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
+import { CanvasPptPromptEditor } from "@/components/canvas/canvas-ppt-prompt-editor";
+import { imageAspectOptions, imageSizeLabel } from "@/components/image-settings-panel";
+import { ModelPicker } from "@/components/model-picker";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
+import { GENERATION_COUNT_MAX, GENERATION_COUNT_MIN, getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
+import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { cn } from "@/lib/utils";
 import { pageTakes, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
+import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeMetadata } from "@/types/canvas";
 
 const ROW_GAP = 48;
+
+type GenerationConfigDraft = { model: string; size: string; count: number };
 
 type Props = {
     open: boolean;
@@ -63,11 +71,17 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const updateProject = useCanvasStore((state) => state.updateProject);
     const canvasContext = useAgentStore((state) => state.canvasContext);
     const openAnnotate = useAnnotateStore((state) => state.open);
+    const effectiveConfig = useEffectiveConfig();
+    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const [activeTakeKey, setActiveTakeKey] = useState<string>();
     const [activeNodeId, setActiveNodeId] = useState<string>();
     const [promptDraft, setPromptDraft] = useState("");
     const [newTakeDraft, setNewTakeDraft] = useState<{ sourceTakeKey?: string; prompt: string } | null>(null);
-    const [editingLockedPrompt, setEditingLockedPrompt] = useState(false);
+    const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+    const [configPopoverOpen, setConfigPopoverOpen] = useState(false);
+    const [configDraft, setConfigDraft] = useState<GenerationConfigDraft>();
+    const [configBaseline, setConfigBaseline] = useState<GenerationConfigDraft>();
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
     const selectionPageIndexRef = useRef<number | undefined>(undefined);
 
@@ -80,6 +94,12 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const isExtractMode = project?.ppt?.mode === "extract";
     const fallbackPrompt = workspace ? (isExtractMode ? workspace.page.outline : [`标题：${workspace.page.title}`, workspace.page.outline, workspace.page.visualHint ? `视觉建议：${workspace.page.visualHint}` : ""].filter(Boolean).join("\n\n")) : "";
     const generatingElapsed = useElapsedSeconds(Boolean(activeTake?.generating));
+    const activeGenerationConfig = useMemo(() => (activeTake?.configNode ? resolveGenerationConfig(effectiveConfig, activeTake.configNode, "image") : undefined), [activeTake?.configNode, effectiveConfig]);
+    const singleGenerationPlan = useMemo(() => {
+        if (!project || !activeTake) return undefined;
+        return createGenerationPlan({ kind: "generateSingle", takeKey: activeTake.key }, { project, effectiveConfig });
+    }, [activeTake, effectiveConfig, project]);
+    const textModelReady = Boolean(effectiveConfig.textModel.trim() && isAiConfigReady(effectiveConfig, effectiveConfig.textModel));
 
     useEffect(() => {
         if (!open) return;
@@ -101,8 +121,26 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     }, [activeTake?.key, activeTake?.prompt, fallbackPrompt, newTakeDraft, pageIndex]);
 
     useEffect(() => {
-        setEditingLockedPrompt(false);
-    }, [activeTake?.key]);
+        setPromptEditorOpen(false);
+        setConfigPopoverOpen(false);
+        setConfigDraft(undefined);
+        setConfigBaseline(undefined);
+    }, [activeTake?.key, pageIndex]);
+
+    useEffect(() => {
+        if (open) return;
+        setPromptEditorOpen(false);
+        setConfigPopoverOpen(false);
+        setConfigDraft(undefined);
+        setConfigBaseline(undefined);
+    }, [open]);
+
+    useEffect(() => {
+        if (!activeTake?.generating) return;
+        setConfigPopoverOpen(false);
+        setConfigDraft(undefined);
+        setConfigBaseline(undefined);
+    }, [activeTake?.generating]);
 
     useEffect(() => {
         setLightboxSrc(null);
@@ -117,27 +155,33 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     // 预览井下缘信息条用：当前查看候选稿在其方案分支内的序号（第 N 稿）。
     const activeVersionIndex = activeTake?.candidates.findIndex((node) => node.id === activeNode?.id) ?? -1;
     const candidateCount = workspace.takes.reduce((total, take) => total + take.candidates.length, 0);
-    const promptDirty = Boolean(activeTake?.canEditPrompt && promptDraft !== activeTake.prompt);
-    const forkDirty = Boolean(activeTake && !activeTake.canEditPrompt && editingLockedPrompt && promptDraft.trim() !== activeTake.prompt.trim());
-    const hasPendingPromptEdit = promptDirty || forkDirty;
-    const centerGenerateCtaShown = Boolean(!activeNode && !activeTake?.generating && activeTake?.configNode && !editingLockedPrompt);
+    const centerGenerateCtaShown = Boolean(!activeNode && !activeTake?.generating && activeTake?.configNode);
     const takeOverflow = workspace.takes.length >= 5;
     const visibleTakes = takeOverflow ? (activeTake ? [activeTake] : []) : workspace.takes;
     const overflowTakes = takeOverflow ? workspace.takes.filter((take) => take.key !== activeTake?.key) : [];
+    const generationCount = singleGenerationPlan?.callCount || (activeGenerationConfig ? getGenerationCount(activeGenerationConfig.count) : 1);
+    const configCount = activeGenerationConfig ? getGenerationCount(activeGenerationConfig.count) : 1;
+    const configSummary = activeGenerationConfig ? `${modelOptionLabel(effectiveConfig, activeGenerationConfig.model)} · ${imageSizeLabel(activeGenerationConfig.size)} · ${configCount} 张` : "生成配置缺失";
+    const configDraftDirty = Boolean(configDraft && configBaseline && (configDraft.model !== configBaseline.model || configDraft.size !== configBaseline.size || configDraft.count !== configBaseline.count));
+    const generationLabel = (label: string) => (generationCount > 1 ? `${label}（${generationCount} 张）` : label);
 
-    // 生成指令读专用字段 pptLayoutPrompt(metadata.prompt 会被回写污染,禁止读);
-    // 旧工程无此字段或清空时回退默认:outline 恒传常量(防 bridge 落到污染的节点 prompt),extract 不传(保 composerContent 挡板)。
-    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => {
-        const meta = project.nodes.find((node) => node.id === configNodeId)?.metadata;
-        const layoutPrompt = (meta?.pptLayoutPrompt ?? "").trim() || (isExtractMode ? "" : PPT_PAGE_PROMPT);
-        return layoutPrompt ? { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: layoutPrompt } : { type: "run_generation", nodeId: configNodeId, mode: "image" };
+    const executeGenerationPlan = (plan: GenerationPlan) => {
+        if (!canvasContext) {
+            message.warning("画布尚未就绪，请稍后再试");
+            return false;
+        }
+        if (!plan.items.length) {
+            message.warning(plan.excludedPages[0]?.reason || "没有可生成的方案");
+            return false;
+        }
+        const next = canvasContext.applyOps(plan.ops);
+        const latestPpt = useCanvasStore.getState().projects.find((item) => item.id === projectId)?.ppt;
+        if (!latestPpt) return false;
+        updateProject(projectId, { nodes: next.nodes, connections: next.connections, ppt: plan.pptPatch(latestPpt) });
+        return true;
     };
 
     const runGeneration = () => {
-        if (!canvasContext) {
-            message.warning("画布尚未就绪，请稍后再试");
-            return;
-        }
         if (!activeTake?.configNode) {
             message.warning(activeTake ? `第 ${page.index} 页方案 ${activeTake.index + 1} 的配置缺失` : `第 ${page.index} 页尚未创建方案`);
             return;
@@ -146,26 +190,50 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             message.warning(`第 ${page.index} 页方案 ${activeTake.index + 1} 的提示词缺失`);
             return;
         }
-        if (activeTake.canEditPrompt && !promptDraft.trim()) {
+        if (activeTake.canEditPrompt && !activeTake.prompt.trim()) {
             message.warning("请先填写方案提示词");
             return;
         }
-        const ops: CanvasAgentOp[] = [];
-        if (promptDirty) ops.push({ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: promptDraft, status: "success" } });
-        ops.push(buildRunGenerationOp(activeTake.configNode.id));
-        const next = canvasContext.applyOps(ops);
-        if (promptDirty) updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        if (singleGenerationPlan) executeGenerationPlan(singleGenerationPlan);
     };
 
-    const savePrompt = () => {
+    const updateConfigPopover = (nextOpen: boolean) => {
+        if (nextOpen && activeGenerationConfig) {
+            const baseline = { model: activeGenerationConfig.model, size: activeGenerationConfig.size, count: getGenerationCount(activeGenerationConfig.count) };
+            setConfigDraft(baseline);
+            setConfigBaseline(baseline);
+        } else if (!nextOpen) {
+            setConfigDraft(undefined);
+            setConfigBaseline(undefined);
+        }
+        setConfigPopoverOpen(nextOpen);
+    };
+
+    const saveGenerationConfig = () => {
+        if (!canvasContext || !activeTake?.configNode || !configDraft || !configBaseline) return;
+        const metadata: CanvasNodeMetadata = {};
+        if (configDraft.model !== configBaseline.model) metadata.model = configDraft.model;
+        if (configDraft.size !== configBaseline.size) metadata.size = configDraft.size;
+        if (configDraft.count !== configBaseline.count) metadata.count = configDraft.count;
+        setConfigPopoverOpen(false);
+        setConfigDraft(undefined);
+        setConfigBaseline(undefined);
+        if (!Object.keys(metadata).length) return;
+        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.configNode.id, metadata }]);
+        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        message.success("生成配置已更新");
+    };
+
+    const savePrompt = (value: string) => {
         if (!canvasContext || !activeTake?.anchorNode || !activeTake.canEditPrompt) return;
-        if (!promptDraft.trim()) {
+        if (!value.trim()) {
             message.warning("方案提示词不能为空");
             return;
         }
-        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: promptDraft, status: "success" } }]);
+        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: value, status: "success" } }]);
         updateProject(projectId, { nodes: next.nodes, connections: next.connections });
-        message.success(`方案分支 ${activeTake.index + 1} 的提示词已保存`);
+        setPromptEditorOpen(false);
+        message.success(`方案 ${activeTake.index + 1} 的提示词已保存`);
     };
 
     // #30：风格基调节点为全部页面共用，保存直接写回该节点，影响全部方案分支。
@@ -220,9 +288,18 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
 
         const outlineId = nanoid();
         const configId = nanoid();
-        // 派生分支继承源分支的排版要求(effective 值);空白分支用默认种子。
+        // 派生/复制继承源方案的 effective 配置；空白方案使用当前全局 effective 配置。
         const seedLayoutPrompt = sourceTake?.layoutPrompt?.trim() || (isExtractMode ? "" : PPT_PAGE_PROMPT);
-        const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, pptLayoutPrompt: seedLayoutPrompt, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
+        const inheritedConfig = resolveGenerationConfig(effectiveConfig, sourceTake?.configNode, "image");
+        const configMetadata: CanvasNodeMetadata = {
+            prompt: isExtractMode ? "" : PPT_PAGE_PROMPT,
+            pptLayoutPrompt: seedLayoutPrompt,
+            model: inheritedConfig.model,
+            size: inheritedConfig.size,
+            count: getGenerationCount(inheritedConfig.count),
+            pptPageIndex: page.index,
+            pptRole: "page",
+        };
         if (isExtractMode) configMetadata.composerContent = "";
 
         const gridNodes = project.nodes.filter((node) => node.metadata?.pptPageIndex != null);
@@ -233,14 +310,35 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         const inheritedInputNodeIds = sourceTake?.configNode
             ? [...new Set(project.connections.filter((connection) => connection.toNodeId === sourceTake.configNode?.id && connection.fromNodeId !== sourceTake.anchorNode?.id).map((connection) => connection.fromNodeId))]
             : project.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
+        const nextTakeIndex = pageTakes(page).length + 1;
+        if (autoGenerate) {
+            const plan = createGenerationPlan(
+                {
+                    kind: "deriveAndGenerate",
+                    pageIndex: page.index,
+                    reservedAnchorNodeId: outlineId,
+                    reservedConfigNodeId: configId,
+                    configMetadata,
+                    anchorContent: prompt,
+                    inheritedInputNodeIds,
+                    positions: { anchor: outlinePosition, config: configPosition },
+                },
+                { project, effectiveConfig },
+            );
+            if (!executeGenerationPlan(plan)) return;
+            setActiveTakeKey(configId);
+            setActiveNodeId(undefined);
+            setNewTakeDraft(null);
+            setPromptEditorOpen(false);
+            message.success(`已基于新提示词创建方案 ${nextTakeIndex} 并开始生成`);
+            return;
+        }
         const ops: CanvasAgentOp[] = [
             { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, position: outlinePosition, metadata: { content: prompt, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
             { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, position: configPosition, metadata: configMetadata },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...inheritedInputNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
-        // 新节点尚未入 project.nodes,不能走 buildRunGenerationOp 查表,直接用种子值构造。
-        if (autoGenerate) ops.push(seedLayoutPrompt ? { type: "run_generation", nodeId: configId, mode: "image", prompt: seedLayoutPrompt } : { type: "run_generation", nodeId: configId, mode: "image" });
         const next = canvasContext.applyOps(ops);
         const nextTakes = [...pageTakes(page), { anchorNodeId: outlineId, configNodeId: configId }];
         updateProject(projectId, {
@@ -254,8 +352,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         setActiveTakeKey(configId);
         setActiveNodeId(undefined);
         setNewTakeDraft(null);
-        setEditingLockedPrompt(false);
-        message.success(autoGenerate ? `已基于新提示词创建方案分支 ${nextTakes.length} 并开始生成` : `已创建方案分支 ${nextTakes.length}，确认提示词后再生成`);
+        setPromptEditorOpen(false);
+        message.success(`已创建方案 ${nextTakes.length}，确认提示词后再生成`);
     };
 
     const addPageTake = () => {
@@ -263,7 +361,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             message.warning("方案提示词不能为空");
             return;
         }
-        createTakeFromPrompt(newTakeDraft.prompt, workspace.takes.find((take) => take.key === newTakeDraft.sourceTakeKey) ?? activeTake, false);
+        createTakeFromPrompt(newTakeDraft.prompt, newTakeDraft.sourceTakeKey ? workspace.takes.find((take) => take.key === newTakeDraft.sourceTakeKey) : undefined, false);
     };
 
     // 删除集完全由 read model 派生；共享命令负责 abort、画布 UI 清态与图片存储清理。
@@ -288,7 +386,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             setActiveNodeId(nextActiveTake?.candidates.find((node) => node.id === workspace.resolvedConfirmedNodeId)?.id ?? nextActiveTake?.candidates.at(-1)?.id);
         }
         if (newTakeDraft?.sourceTakeKey === take.key) setNewTakeDraft(null);
-        if (editingLockedPrompt && deletingActive) setEditingLockedPrompt(false);
+        if (deletingActive) setPromptEditorOpen(false);
         message.success(`方案分支 ${take.index + 1} 已删除`);
     };
 
@@ -310,7 +408,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     };
 
     const discardPendingPrompt = (next: () => void) => {
-        if (!newTakeDraft && !hasPendingPromptEdit) {
+        if (!newTakeDraft) {
             next();
             return;
         }
@@ -321,14 +419,13 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             cancelText: "继续编辑",
             onOk: () => {
                 setNewTakeDraft(null);
-                setEditingLockedPrompt(false);
                 setPromptDraft(activeTake?.prompt ?? fallbackPrompt);
                 next();
             },
         });
     };
 
-    const beginPageTake = (sourceTake = activeTake) => {
+    const beginPageTake = (sourceTake?: PptPageWorkspaceTake | null) => {
         discardPendingPrompt(() => setNewTakeDraft({ sourceTakeKey: sourceTake?.key, prompt: sourceTake ? sourceTake.prompt : fallbackPrompt }));
     };
 
@@ -350,6 +447,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     // #21：键盘导航——↑/↓ 切页，←/→ 切候选；输入框/文本域/可编辑区聚焦时放行，不劫持按键。
     const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         event.stopPropagation();
+        if (promptEditorOpen) return;
         const target = event.target as HTMLElement;
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
         if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -414,7 +512,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-1">
                         {!controls.batchHidden ? (
-                            <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled || Boolean(newTakeDraft) || hasPendingPromptEdit} onClick={controls.onBatchAction}>
+                            <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled || Boolean(newTakeDraft)} onClick={controls.onBatchAction}>
                                 {controls.batchLabel}
                             </Button>
                         ) : null}
@@ -531,7 +629,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         { key: "blank", label: "空白方案" },
                                         { key: "copy", label: "复制当前方案", disabled: !activeTake },
                                     ],
-                                    onClick: ({ key }) => beginPageTake(key === "copy" ? activeTake : undefined),
+                                    onClick: ({ key }) => beginPageTake(key === "copy" ? activeTake : null),
                                 }}
                             >
                                 <button
@@ -559,9 +657,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         <GitBranchPlus className="size-4 shrink-0" aria-hidden="true" />
                                     </div>
                                     <Input.TextArea
-                                        className="mt-3"
+                                        className="mt-3 !h-48 !resize-none overflow-y-auto"
                                         value={newTakeDraft.prompt}
-                                        autoSize={{ minRows: 8, maxRows: 24 }}
                                         variant="filled"
                                         placeholder="填写这一方案的完整提示词"
                                         onChange={(event) => setNewTakeDraft((current) => (current ? { ...current, prompt: event.target.value } : current))}
@@ -577,60 +674,22 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 </>
                             ) : activeTake ? (
                                 <>
-                                    {/* #29：方案提示词是本卡视觉主体——只读态自适应内容高度（超长内滚），编辑态给足展开空间。 */}
-                                    {activeTake.canEditPrompt || editingLockedPrompt ? (
-                                        <Input.TextArea
-                                            value={promptDraft}
-                                            autoSize={{ minRows: 8, maxRows: 24 }}
-                                            variant="filled"
-                                            placeholder="填写这一方案的完整提示词"
-                                            aria-label={`方案分支 ${activeTake.index + 1} 提示词`}
-                                            onChange={(event) => setPromptDraft(event.target.value)}
-                                        />
-                                    ) : (
-                                        <div className="thin-scrollbar max-h-[46vh] overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-sm" style={{ background: canvasTheme.node.fill }} aria-label={`方案分支 ${activeTake.index + 1} 提示词`}>
-                                            {promptDraft || <span style={{ color: canvasTheme.node.muted }}>暂无提示词</span>}
-                                        </div>
-                                    )}
+                                    <div
+                                        className="thin-scrollbar max-h-[46vh] cursor-text overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-sm"
+                                        style={{ background: canvasTheme.node.fill }}
+                                        aria-label={`方案 ${activeTake.index + 1} 提示词，双击调整`}
+                                        title="双击打开大编辑器"
+                                        onDoubleClick={() => !activeTake.generating && setPromptEditorOpen(true)}
+                                    >
+                                        {promptDraft || <span style={{ color: canvasTheme.node.muted }}>暂无提示词</span>}
+                                    </div>
                                     <div className="mt-3 flex items-center justify-between gap-3">
                                         <span className="text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                            {activeTake.canEditPrompt
-                                                ? promptDirty
-                                                    ? "有未保存修改；直接生成时也会先使用这份提示词"
-                                                    : "创建和生成是两个独立步骤"
-                                                : editingLockedPrompt
-                                                  ? forkDirty
-                                                      ? "内容已修改，可生成或另存为新方案"
-                                                      : "内容未变化，修改后才能另存为新方案"
-                                                  : `${activeTake.candidates.length} 个候选稿共用这份提示词`}
+                                            {activeTake.canEditPrompt ? "保存只更新当前方案；生成是独立操作" : `${activeTake.candidates.length} 个候选稿共用；调整后会另存为新方案`}
                                         </span>
-                                        {activeTake.canEditPrompt ? (
-                                            <Button size="small" icon={<Save className="size-3.5" />} disabled={!promptDirty || !promptDraft.trim() || !canvasContext} onClick={savePrompt}>
-                                                保存提示词
-                                            </Button>
-                                        ) : editingLockedPrompt ? (
-                                            <div className="flex items-center gap-2">
-                                                <Button
-                                                    size="small"
-                                                    onClick={() => {
-                                                        setEditingLockedPrompt(false);
-                                                        setPromptDraft(activeTake.prompt);
-                                                    }}
-                                                >
-                                                    取消调整
-                                                </Button>
-                                                <Button size="small" disabled={!forkDirty || !canvasContext} onClick={() => createTakeFromPrompt(promptDraft, activeTake, false)}>
-                                                    仅保存为新方案
-                                                </Button>
-                                                <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={!forkDirty || !canvasContext} onClick={() => createTakeFromPrompt(promptDraft, activeTake, true)}>
-                                                    以新提示词生成（新方案）
-                                                </Button>
-                                            </div>
-                                        ) : (
-                                            <Button size="small" icon={<Pencil className="size-3.5" />} disabled={activeTake.generating} onClick={() => setEditingLockedPrompt(true)}>
-                                                调整
-                                            </Button>
-                                        )}
+                                        <Button size="small" icon={<Pencil className="size-3.5" />} disabled={activeTake.generating} onClick={() => setPromptEditorOpen(true)}>
+                                            调整
+                                        </Button>
                                     </div>
                                     <UpstreamInputsPanel take={activeTake} canvasTheme={canvasTheme} muted={canvasTheme.node.muted} canEdit={Boolean(canvasContext)} onSaveStyle={saveStyleNode} onSaveLayout={saveLayoutPrompt} />
                                 </>
@@ -649,12 +708,51 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         <h3 className="text-sm font-semibold">
                                             候选稿 · <span className="font-mono tabular-nums">{activeTake.candidates.length}</span>
                                         </h3>
-                                        {activeTake.generating ? (
-                                            <span className="flex items-center gap-1.5 text-[11px]" style={{ color: canvasTheme.node.muted }} role="status">
-                                                <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                                                生成中
-                                            </span>
-                                        ) : null}
+                                        <div className="flex min-w-0 items-center gap-2">
+                                            {activeTake.generating ? (
+                                                <span className="flex shrink-0 items-center gap-1.5 text-[11px]" style={{ color: canvasTheme.node.muted }} role="status">
+                                                    <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+                                                    生成中
+                                                </span>
+                                            ) : null}
+                                            <Popover
+                                                key={activeTake.key}
+                                                open={configPopoverOpen}
+                                                onOpenChange={updateConfigPopover}
+                                                trigger="click"
+                                                placement="bottomRight"
+                                                destroyOnHidden
+                                                content={
+                                                    activeGenerationConfig && configDraft ? (
+                                                        <GenerationConfigEditor
+                                                            config={activeGenerationConfig}
+                                                            draft={configDraft}
+                                                            canvasTheme={canvasTheme}
+                                                            dirty={configDraftDirty}
+                                                            onChange={setConfigDraft}
+                                                            onMissingConfig={() => {
+                                                                setConfigPopoverOpen(false);
+                                                                setConfigDraft(undefined);
+                                                                setConfigBaseline(undefined);
+                                                                openConfigDialog(true);
+                                                            }}
+                                                            onCancel={() => updateConfigPopover(false)}
+                                                            onSave={saveGenerationConfig}
+                                                        />
+                                                    ) : null
+                                                }
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className="max-w-[280px] truncate rounded-md px-2 py-1 font-mono text-[11px] tabular-nums hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10"
+                                                    style={{ color: canvasTheme.node.muted, outlineColor: canvasTheme.node.activeStroke }}
+                                                    disabled={!activeTake.configNode || activeTake.generating}
+                                                    aria-label={`编辑生成配置：${configSummary}`}
+                                                >
+                                                    {configSummary}
+                                                </button>
+                                            </Popover>
+                                        </div>
                                     </div>
 
                                     {activeTake.issues.length ? (
@@ -772,8 +870,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 <div className="flex flex-col items-center gap-3 text-center">
                                     <ScanSearch className="size-10 text-white/60" aria-hidden="true" />
                                     <div className="text-sm font-semibold text-white/90">这一方案还没有候选稿</div>
-                                    <Button type="primary" icon={<Sparkles className="size-4" />} disabled={!canvasContext || Boolean(newTakeDraft) || (activeTake.canEditPrompt && !promptDraft.trim())} onClick={runGeneration}>
-                                        {promptDirty ? "保存并生成首稿" : "生成首稿"}
+                                    <Button type="primary" icon={<Sparkles className="size-4" />} disabled={!canvasContext || Boolean(newTakeDraft) || (activeTake.canEditPrompt && !activeTake.prompt.trim())} onClick={runGeneration}>
+                                        {generationLabel("生成首稿")}
                                     </Button>
                                 </div>
                             ) : (
@@ -807,7 +905,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 <div className="flex flex-wrap items-center gap-2">
                                     <Button
                                         icon={activeTake?.generating ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
-                                        disabled={!activeTake?.configNode || activeTake.generating || !canvasContext || Boolean(newTakeDraft) || editingLockedPrompt}
+                                        disabled={!activeTake?.configNode || activeTake.generating || !canvasContext || Boolean(newTakeDraft)}
                                         onClick={runGeneration}
                                     >
                                         {activeTake?.generating ? (
@@ -816,11 +914,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                                 <span className="font-mono text-[11px]">{formatElapsed(generatingElapsed)}</span>
                                             </span>
                                         ) : activeTake?.candidates.length ? (
-                                            "继续生成"
-                                        ) : promptDirty ? (
-                                            "保存并生成首稿"
+                                            generationLabel("继续生成")
                                         ) : (
-                                            "生成首稿"
+                                            generationLabel("生成首稿")
                                         )}
                                     </Button>
                                     <Button icon={<WandSparkles className="size-4" />} disabled={!activeNode?.metadata?.content} onClick={() => activeNode && openAnnotate(activeNode.id)}>
@@ -846,8 +942,75 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                     </section>
                 </main>
             </div>
+            {promptEditorOpen && activeTake ? (
+                <CanvasPptPromptEditor
+                    key={activeTake.key}
+                    open
+                    initialValue={activeTake.prompt}
+                    lockedTake={!activeTake.canEditPrompt}
+                    textModelReady={textModelReady}
+                    onSave={(value) => {
+                        if (activeTake.canEditPrompt) savePrompt(value);
+                        else createTakeFromPrompt(value, activeTake, false);
+                    }}
+                    onSaveAndGenerate={(value) => createTakeFromPrompt(value, activeTake, true)}
+                    onCancel={() => setPromptEditorOpen(false)}
+                />
+            ) : null}
             <CanvasImageLightbox src={lightboxSrc} alt={`第 ${page.index} 页候选稿`} onClose={() => setLightboxSrc(null)} />
         </Modal>
+    );
+}
+
+function GenerationConfigEditor({
+    config,
+    draft,
+    canvasTheme,
+    dirty,
+    onChange,
+    onMissingConfig,
+    onCancel,
+    onSave,
+}: {
+    config: AiConfig;
+    draft: GenerationConfigDraft;
+    canvasTheme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    dirty: boolean;
+    onChange: (draft: GenerationConfigDraft) => void;
+    onMissingConfig: () => void;
+    onCancel: () => void;
+    onSave: () => void;
+}) {
+    const sizeOptions = imageAspectOptions.some((option) => option.value === draft.size) ? imageAspectOptions : [{ value: draft.size, label: imageSizeLabel(draft.size) }, ...imageAspectOptions];
+    const pickerConfig = { ...config, model: draft.model, size: draft.size, count: String(draft.count) };
+
+    return (
+        <div className="w-[340px] space-y-4 p-1" style={{ color: canvasTheme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+            <div>
+                <div className="mb-1.5 text-xs font-medium" style={{ color: canvasTheme.node.muted }}>
+                    生图模型
+                </div>
+                <ModelPicker config={pickerConfig} value={draft.model} capability="image" fullWidth onChange={(model) => onChange({ ...draft, model })} onMissingConfig={onMissingConfig} className="!h-9 !rounded-lg" />
+            </div>
+            <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-3">
+                <label className="min-w-0 text-xs font-medium" style={{ color: canvasTheme.node.muted }}>
+                    <span className="mb-1.5 block">尺寸</span>
+                    <Select className="w-full" value={draft.size} options={sizeOptions} onChange={(size) => onChange({ ...draft, size })} />
+                </label>
+                <label className="text-xs font-medium" style={{ color: canvasTheme.node.muted }}>
+                    <span className="mb-1.5 block">张数</span>
+                    <InputNumber className="w-full" min={GENERATION_COUNT_MIN} max={GENERATION_COUNT_MAX} value={draft.count} onChange={(count) => onChange({ ...draft, count: getGenerationCount(count ?? GENERATION_COUNT_MIN) })} />
+                </label>
+            </div>
+            <div className="flex justify-end gap-2 border-t pt-3" style={{ borderColor: canvasTheme.node.stroke }}>
+                <Button size="small" onClick={onCancel}>
+                    取消
+                </Button>
+                <Button size="small" type="primary" disabled={!dirty} onClick={onSave}>
+                    保存配置
+                </Button>
+            </div>
+        </div>
     );
 }
 

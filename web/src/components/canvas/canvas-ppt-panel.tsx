@@ -6,13 +6,13 @@ import { CheckCircle2, ChevronRight, CircleAlert, ImageOff, Layers, LoaderCircle
 import { CanvasPptFinalReview } from "@/components/canvas/canvas-ppt-final-review";
 import { CanvasPptPageWorkspace } from "@/components/canvas/canvas-ppt-page-workspace";
 import { canvasThemes } from "@/lib/canvas-theme";
-import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
-import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { resolvePageImageNode } from "@/lib/ppt/deck-export";
+import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { buildPptPageWorkspace, type PptPageWorkspace } from "@/lib/ppt/page-workspace";
-import { pageTakes, useCanvasStore, type CanvasProject, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
+import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentStore } from "@/stores/use-agent-store";
+import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 
 // #11：面板实际宽度（w-[360px]）与外层安全间距同源，消除 :169 与 showStructure 计算的双源魔法数字。
@@ -35,6 +35,7 @@ export function CanvasPptPanel() {
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
     const updateProject = useCanvasStore((state) => state.updateProject);
     const canvasContext = useAgentStore((state) => state.canvasContext);
+    const effectiveConfig = useEffectiveConfig();
     const setPptOverlayOpen = useCanvasUiStore((state) => state.setPptOverlayOpen);
     const [panelOpen, setPanelOpen] = useState(true);
     const [surface, setSurface] = useState<"workbench" | "structure">("workbench");
@@ -42,6 +43,7 @@ export function CanvasPptPanel() {
     const [finalReviewOpen, setFinalReviewOpen] = useState(false);
     const [startModalOpen, setStartModalOpen] = useState(false);
     const [restModalOpen, setRestModalOpen] = useState(false);
+    const [anchorFirst, setAnchorFirst] = useState(false);
 
     useEffect(() => {
         setPanelOpen(true);
@@ -50,6 +52,7 @@ export function CanvasPptPanel() {
         setFinalReviewOpen(false);
         setStartModalOpen(false);
         setRestModalOpen(false);
+        setAnchorFirst(false);
     }, [projectId]);
 
     // #34：精修台/最终检视打开期间，画布节点悬浮工具条不得渲染（数据安全，避免误点删除底层节点）。
@@ -66,6 +69,8 @@ export function CanvasPptPanel() {
         if (!currentProject?.ppt) return [];
         return [...currentProject.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(currentProject, page));
     }, [currentProject]);
+    const startPlan = useMemo(() => (currentProject ? createGenerationPlan({ kind: "startBatch", anchorFirst }, { project: currentProject, effectiveConfig }) : undefined), [anchorFirst, currentProject, effectiveConfig]);
+    const restPlan = useMemo(() => (currentProject ? createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : undefined), [currentProject, effectiveConfig]);
 
     const ppt = currentProject?.ppt;
     if (!ppt || !currentProject) return null;
@@ -80,41 +85,23 @@ export function CanvasPptPanel() {
     const firstPageIndex = pageWorkspaces[0]?.page.index ?? pages[0]?.index ?? 1;
     const activePageIndex = focusPageIndex != null && pageWorkspaces.some((item) => item.page.index === focusPageIndex) ? focusPageIndex : firstPageIndex;
 
-    // 生成指令读专用字段 pptLayoutPrompt(metadata.prompt 会被回写污染,禁止读);
-    // 旧工程无此字段或清空时回退默认:outline 恒传常量(防 bridge 落到污染的节点 prompt),extract 不传(保 composerContent 挡板)。
-    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => {
-        const meta = nodeById.get(configNodeId)?.metadata;
-        const layoutPrompt = (meta?.pptLayoutPrompt ?? "").trim() || (ppt.mode === "extract" ? "" : PPT_PAGE_PROMPT);
-        return layoutPrompt ? { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: layoutPrompt } : { type: "run_generation", nodeId: configNodeId, mode: "image" };
-    };
-
-    const runGeneration = (page: CanvasProjectPptPage) => {
+    const executePlan = (plan: GenerationPlan) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
-            return;
+            return false;
         }
-        const configNodeId = pageTakes(page).at(-1)?.configNodeId;
-        if (!configNodeId || !nodeById.has(configNodeId)) {
-            message.warning(`第 ${page.index} 页结构缺失，请先新建方案分支`);
-            return;
-        }
-        canvasContext.applyOps([buildRunGenerationOp(configNodeId)]);
-    };
-
-    const generateAll = (targetPages: CanvasProjectPptPage[]) => {
-        if (!canvasContext) {
-            message.warning("画布尚未就绪，请稍后再试");
-            return;
-        }
-        const ops = targetPages
-            .map((page) => pageTakes(page).at(-1)?.configNodeId)
-            .filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId))
-            .map((configNodeId) => buildRunGenerationOp(configNodeId));
-        if (!ops.length) {
+        if (!plan.pageCount) {
             message.warning("没有可生成的页面");
-            return;
+            return false;
         }
-        canvasContext.applyOps(ops);
+        const next = canvasContext.applyOps(plan.ops);
+        const latestPpt = useCanvasStore.getState().projects.find((project) => project.id === projectId)?.ppt;
+        updateProject(projectId, {
+            nodes: next.nodes,
+            connections: next.connections,
+            ...(latestPpt ? { ppt: plan.pptPatch(latestPpt) } : {}),
+        });
+        return true;
     };
 
     const firstPage = pages.find((page) => page.index === 1) || pages[0];
@@ -124,14 +111,12 @@ export function CanvasPptPanel() {
     // 首页单独排除只在「锚定流程」下有意义（首页已确认，天然不在未生成集合里）；skipAnchor=true 时不应
     // 无条件排除首页——否则用户若先手动生成过某一其他页，首页会被永久挡在批量「生成其余」之外。
     const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.index !== firstPage?.index) && isPageUntouched(item));
-    const anchorHandoffPending = !skipAnchor && !ppt.anchorConfirmed && Boolean(firstWorkspace?.resolvedConfirmedNodeId);
-
     // #3+#26：批量按钮四态状态机，替换旧的「anchorPending 二态」实现，杜绝首页候选未确认时仍可重复触发生成。
     let batchState: BatchState = { kind: "hidden" };
     if (pages.length > 1) {
         if (nothingGenerated) batchState = { kind: "start" };
         else if (!skipAnchor && !ppt.anchorConfirmed && !firstConfirmed) batchState = { kind: "waitingFirst" };
-        else if (restUntouchedWorkspaces.length) batchState = { kind: "confirmRest", count: restUntouchedWorkspaces.length };
+        else if (restUntouchedWorkspaces.length) batchState = { kind: "confirmRest", count: restPlan?.pageCount ?? 0 };
     }
 
     const batchLabel = batchState.kind === "start" ? "开始生成" : batchState.kind === "waitingFirst" ? "等待确认首页" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
@@ -142,33 +127,20 @@ export function CanvasPptPanel() {
     const workspaceBatchHidden = batchHidden || batchState.kind === "confirmRest";
 
     const openBatchModal = () => {
-        if (batchState.kind === "start") setStartModalOpen(true);
-        else if (batchState.kind === "confirmRest") setRestModalOpen(true);
+        if (batchState.kind === "start") {
+            setAnchorFirst(hasStyleNode);
+            setStartModalOpen(true);
+        } else if (batchState.kind === "confirmRest") setRestModalOpen(true);
     };
 
-    const confirmStart = (anchorFirst: boolean) => {
+    const confirmStart = () => {
+        if (!startPlan || !executePlan(startPlan)) return;
         setStartModalOpen(false);
-        updateProject(projectId, { ppt: { ...ppt, skipAnchor: !anchorFirst } });
-        if (anchorFirst) {
-            if (firstPage) runGeneration(firstPage);
-        } else {
-            generateAll(pageWorkspaces.filter(isPageUntouched).map((item) => item.page));
-        }
     };
 
     const confirmRest = () => {
+        if (!restPlan || !executePlan(restPlan)) return;
         setRestModalOpen(false);
-        if (!canvasContext) {
-            message.warning("画布尚未就绪，请稍后再试");
-            return;
-        }
-        const restConfigNodeIds = restUntouchedWorkspaces.map((item) => pageTakes(item.page).at(-1)?.configNodeId).filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId));
-        if (!restConfigNodeIds.length) return;
-        const ops: CanvasAgentOp[] = [];
-        if (anchorHandoffPending) ops.push(...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: firstWorkspace!.resolvedConfirmedNodeId!, toNodeId: configNodeId })));
-        ops.push(...restConfigNodeIds.map((configNodeId) => buildRunGenerationOp(configNodeId)));
-        canvasContext.applyOps(ops);
-        if (anchorHandoffPending) updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: true } });
     };
 
     const reanchor = () => {
@@ -346,38 +318,61 @@ export function CanvasPptPanel() {
                 }}
             />
 
-            <BatchConfirmModal open={startModalOpen} pageCount={pages.length} defaultAnchorFirst={hasStyleNode} onCancel={() => setStartModalOpen(false)} onConfirm={confirmStart} />
-            <Modal open={restModalOpen} onCancel={() => setRestModalOpen(false)} onOk={confirmRest} title={`生成其余 ${batchState.kind === "confirmRest" ? batchState.count : 0} 页？`} okText="生成" cancelText="取消" destroyOnHidden>
-                <Typography.Text type="secondary">将发起 {batchState.kind === "confirmRest" ? batchState.count : 0} 次生图调用。</Typography.Text>
+            <BatchConfirmModal open={startModalOpen} anchorFirst={anchorFirst} plan={startPlan} onAnchorFirstChange={setAnchorFirst} onCancel={() => setStartModalOpen(false)} onConfirm={confirmStart} />
+            <Modal open={restModalOpen} onCancel={() => setRestModalOpen(false)} onOk={confirmRest} title={`生成其余 ${restPlan?.pageCount ?? 0} 页？`} okText="生成" okButtonProps={{ disabled: !restPlan?.pageCount }} cancelText="取消" destroyOnHidden>
+                {restPlan ? <PlanCostSummary plan={restPlan} /> : null}
             </Modal>
         </>
     );
 }
 
-function BatchConfirmModal({ open, pageCount, defaultAnchorFirst, onCancel, onConfirm }: { open: boolean; pageCount: number; defaultAnchorFirst: boolean; onCancel: () => void; onConfirm: (anchorFirst: boolean) => void }) {
-    const [anchorFirst, setAnchorFirst] = useState(defaultAnchorFirst);
-
-    useEffect(() => {
-        if (open) setAnchorFirst(defaultAnchorFirst);
-    }, [open, defaultAnchorFirst]);
-
+function BatchConfirmModal({ open, anchorFirst, plan, onAnchorFirstChange, onCancel, onConfirm }: { open: boolean; anchorFirst: boolean; plan?: GenerationPlan; onAnchorFirstChange: (value: boolean) => void; onCancel: () => void; onConfirm: () => void }) {
     return (
-        <Modal open={open} onCancel={onCancel} onOk={() => onConfirm(anchorFirst)} title={`开始生成 ${pageCount} 页？`} okText={anchorFirst ? "生成第 1 页" : `生成全部 ${pageCount} 页`} cancelText="取消" destroyOnHidden>
-            <Radio.Group className="flex flex-col gap-3" value={anchorFirst} onChange={(event) => setAnchorFirst(event.target.value)}>
+        <Modal
+            open={open}
+            onCancel={onCancel}
+            onOk={onConfirm}
+            title={`开始生成 ${plan?.pageCount ?? 0} 页？`}
+            okText={anchorFirst ? "生成第 1 页" : `生成全部 ${plan?.pageCount ?? 0} 页`}
+            okButtonProps={{ disabled: !plan?.pageCount }}
+            cancelText="取消"
+            destroyOnHidden
+        >
+            <Radio.Group className="flex flex-col gap-3" value={anchorFirst} onChange={(event) => onAnchorFirstChange(event.target.value)}>
                 <Radio value={true}>
                     <div className="text-sm font-medium">先生成第 1 页，确认风格后再批量</div>
                     <Typography.Text type="secondary" className="text-xs">
-                        推荐，先花 1 次调用；确认第 1 页效果后再生成其余 {pageCount - 1} 页
+                        推荐，确认首页效果后再生成其余页面
                     </Typography.Text>
                 </Radio>
                 <Radio value={false}>
-                    <div className="text-sm font-medium">直接生成全部 {pageCount} 页</div>
+                    <div className="text-sm font-medium">直接生成全部可执行页面</div>
                     <Typography.Text type="secondary" className="text-xs">
-                        将发起 {pageCount} 次生图调用
+                        各页按当前方案的模型、比例与张数执行
                     </Typography.Text>
                 </Radio>
             </Radio.Group>
+            {plan ? <PlanCostSummary plan={plan} /> : null}
         </Modal>
+    );
+}
+
+function PlanCostSummary({ plan }: { plan: GenerationPlan }) {
+    const missingConfigCount = plan.excludedPages.filter((page) => page.reason === "缺少生成配置").length;
+    return (
+        <div className="mt-4 space-y-1.5">
+            <Typography.Text type="secondary" className="block">
+                实际生成 {plan.pageCount} 页，共 {plan.callCount} 次图片生成 API 调用。
+            </Typography.Text>
+            <Typography.Text type="secondary" className="block text-xs">
+                文生图 {plan.callBreakdown.textToImage} 次 · 图生图 {plan.callBreakdown.imageToImage} 次
+            </Typography.Text>
+            {missingConfigCount ? (
+                <Typography.Text type="warning" className="block text-xs">
+                    {missingConfigCount} 页缺少生成配置，已跳过。
+                </Typography.Text>
+            ) : null}
+        </div>
     );
 }
 
