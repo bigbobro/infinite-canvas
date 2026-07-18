@@ -135,6 +135,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
                     </div>
                     <Input.TextArea
                         className="thin-scrollbar !h-[min(60vh,720px)] !resize-none overflow-y-auto font-mono text-sm leading-6"
+                        style={{ maxHeight: "max(240px, calc(100dvh - 300px))" }}
                         value={editorDraft}
                         placeholder="填写这一方案的完整提示词"
                         aria-label="完整方案提示词"

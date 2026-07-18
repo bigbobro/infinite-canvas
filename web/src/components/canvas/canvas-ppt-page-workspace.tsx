@@ -161,6 +161,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const overflowTakes = takeOverflow ? workspace.takes.filter((take) => take.key !== activeTake?.key) : [];
     const generationCount = singleGenerationPlan?.callCount || (activeGenerationConfig ? getGenerationCount(activeGenerationConfig.count) : 1);
     const configCount = activeGenerationConfig ? getGenerationCount(activeGenerationConfig.count) : 1;
+    const defaultConfigDraft = activeGenerationConfig ? { model: activeGenerationConfig.model, size: activeGenerationConfig.size, count: configCount } : undefined;
     const configSummary = activeGenerationConfig ? `${modelOptionLabel(effectiveConfig, activeGenerationConfig.model)} · ${imageSizeLabel(activeGenerationConfig.size)} · ${configCount} 张` : "生成配置缺失";
     const configDraftDirty = Boolean(configDraft && configBaseline && (configDraft.model !== configBaseline.model || configDraft.size !== configBaseline.size || configDraft.count !== configBaseline.count));
     const generationLabel = (label: string) => (generationCount > 1 ? `${label}（${generationCount} 张）` : label);
@@ -198,10 +199,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     };
 
     const updateConfigPopover = (nextOpen: boolean) => {
-        if (nextOpen && activeGenerationConfig) {
-            const baseline = { model: activeGenerationConfig.model, size: activeGenerationConfig.size, count: getGenerationCount(activeGenerationConfig.count) };
-            setConfigDraft(baseline);
-            setConfigBaseline(baseline);
+        if (nextOpen && defaultConfigDraft) {
+            setConfigDraft(defaultConfigDraft);
+            setConfigBaseline(defaultConfigDraft);
         } else if (!nextOpen) {
             setConfigDraft(undefined);
             setConfigBaseline(undefined);
@@ -723,10 +723,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                                 placement="bottomRight"
                                                 destroyOnHidden
                                                 content={
-                                                    activeGenerationConfig && configDraft ? (
+                                                    activeGenerationConfig && defaultConfigDraft ? (
                                                         <GenerationConfigEditor
                                                             config={activeGenerationConfig}
-                                                            draft={configDraft}
+                                                            draft={configDraft ?? defaultConfigDraft}
                                                             canvasTheme={canvasTheme}
                                                             dirty={configDraftDirty}
                                                             onChange={setConfigDraft}

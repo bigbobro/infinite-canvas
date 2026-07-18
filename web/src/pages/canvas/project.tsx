@@ -787,9 +787,23 @@ function InfiniteCanvasPage() {
         [chatSessions, cleanupCanvasFiles, projectId],
     );
 
-    // [二开] PPT read model 传完整删除集；这里仅组合运行中止与画布私有删除副作用。
+    // [二开] PPT 方案不在画布历史中；同步剪掉节点快照，避免撤销复活孤儿节点并阻塞图片清理。
     function deleteCanvasNodesWithEffects(ids: string[]) {
         const targetIds = new Set(ids);
+        nodesRef.current.forEach((node) => {
+            if (targetIds.has(node.id)) node.metadata?.batchChildIds?.forEach((childId) => targetIds.add(childId));
+        });
+        if (!targetIds.size) return;
+        const pruneHistoryEntry = (entry: CanvasHistoryEntry): CanvasHistoryEntry => ({
+            ...entry,
+            nodes: entry.nodes.filter((node) => !targetIds.has(node.id)),
+            connections: entry.connections.filter((connection) => !targetIds.has(connection.fromNodeId) && !targetIds.has(connection.toNodeId)),
+        });
+        historyRef.current = {
+            past: historyRef.current.past.map(pruneHistoryEntry),
+            future: historyRef.current.future.map(pruneHistoryEntry),
+        };
+        if (lastHistoryRef.current) lastHistoryRef.current = pruneHistoryEntry(lastHistoryRef.current);
         const runningIds = new Set<string>();
         generationRequestsRef.current.forEach((request) => {
             if (targetIds.has(request.targetNodeId) || targetIds.has(request.originNodeId) || targetIds.has(request.runningNodeId)) runningIds.add(request.runningNodeId);
