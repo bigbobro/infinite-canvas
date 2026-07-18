@@ -287,7 +287,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                             <section aria-label="全部候选稿">
                                                 <div className="mb-1.5 flex items-center justify-between gap-2">
                                                     <span className="text-xs font-semibold text-white/70">全部候选稿（跨方案）</span>
-                                                    {activePage.page.confirmedNodeId ? (
+                                                    {activeWorkspace.resolvedConfirmedNodeId ? (
                                                         <button
                                                             type="button"
                                                             className="rounded text-[11px] text-white/70 underline underline-offset-2 hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
@@ -301,7 +301,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                                     <div className="grid grid-cols-3 gap-2">
                                                         {activeWorkspace.takes.flatMap((take) =>
                                                             take.candidates.map((node, versionIndex) => {
-                                                                const confirmed = node.id === activePage.page.confirmedNodeId;
+                                                                const confirmed = node.id === activeWorkspace.resolvedConfirmedNodeId;
                                                                 return (
                                                                     <button
                                                                         key={node.id}

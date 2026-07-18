@@ -124,7 +124,7 @@ export function CanvasPptPanel() {
     // 首页单独排除只在「锚定流程」下有意义（首页已确认，天然不在未生成集合里）；skipAnchor=true 时不应
     // 无条件排除首页——否则用户若先手动生成过某一其他页，首页会被永久挡在批量「生成其余」之外。
     const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.index !== firstPage?.index) && isPageUntouched(item));
-    const anchorHandoffPending = !skipAnchor && !ppt.anchorConfirmed && Boolean(firstPage?.confirmedNodeId);
+    const anchorHandoffPending = !skipAnchor && !ppt.anchorConfirmed && Boolean(firstWorkspace?.resolvedConfirmedNodeId);
 
     // #3+#26：批量按钮四态状态机，替换旧的「anchorPending 二态」实现，杜绝首页候选未确认时仍可重复触发生成。
     let batchState: BatchState = { kind: "hidden" };
@@ -165,7 +165,7 @@ export function CanvasPptPanel() {
         const restConfigNodeIds = restUntouchedWorkspaces.map((item) => pageTakes(item.page).at(-1)?.configNodeId).filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId));
         if (!restConfigNodeIds.length) return;
         const ops: CanvasAgentOp[] = [];
-        if (anchorHandoffPending) ops.push(...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: firstPage!.confirmedNodeId!, toNodeId: configNodeId })));
+        if (anchorHandoffPending) ops.push(...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: firstWorkspace!.resolvedConfirmedNodeId!, toNodeId: configNodeId })));
         ops.push(...restConfigNodeIds.map((configNodeId) => buildRunGenerationOp(configNodeId)));
         canvasContext.applyOps(ops);
         if (anchorHandoffPending) updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: true } });

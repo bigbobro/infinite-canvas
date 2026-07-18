@@ -686,6 +686,7 @@ function InfiniteCanvasPage() {
         selectedNodeIdsRef,
         viewportRef,
         generateNodeRef,
+        deleteCanvasNodesWithEffects,
         setNodes,
         setConnections,
         setSelectedNodeIds,
@@ -785,6 +786,17 @@ function InfiniteCanvasPage() {
         },
         [chatSessions, cleanupCanvasFiles, projectId],
     );
+
+    // [二开] PPT read model 传完整删除集；这里仅组合运行中止与画布私有删除副作用。
+    function deleteCanvasNodesWithEffects(ids: string[]) {
+        const targetIds = new Set(ids);
+        const runningIds = new Set<string>();
+        generationRequestsRef.current.forEach((request) => {
+            if (targetIds.has(request.targetNodeId) || targetIds.has(request.originNodeId) || targetIds.has(request.runningNodeId)) runningIds.add(request.runningNodeId);
+        });
+        runningIds.forEach(stopGenerationByRunningId);
+        deleteNodes(targetIds);
+    }
 
     const deleteConnection = useCallback((connectionId: string) => {
         setConnections((prev) => prev.filter((conn) => conn.id !== connectionId));

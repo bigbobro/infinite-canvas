@@ -9,31 +9,24 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
 import { extractPptPages, generatePptOutline, previewExtractPages, previewOutlinePages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
 import { buildPptDeckProject, type BuildPptDeckParams } from "@/lib/ppt/deck-builder";
-import { resolvePageImageNode } from "@/lib/ppt/deck-export";
+import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
+import type { CanvasNodeData } from "@/types/canvas";
 
 type PptWizardMode = NonNullable<BuildPptDeckParams["mode"]>;
 type PptDeck = CanvasProject & { ppt: NonNullable<CanvasProject["ppt"]> };
 
 const { TextArea } = Input;
 
-/** 已确认首页图（index 最小的已确认页）；找不到则返回 null，卡片改用排版化封面。 */
-function resolveDeckCoverNode(deck: PptDeck) {
-    const firstConfirmed = [...deck.ppt.pages].filter((page) => page.confirmedNodeId).sort((a, b) => a.index - b.index)[0];
-    if (!firstConfirmed) return null;
-    return resolvePageImageNode(deck, firstConfirmed) ?? null;
-}
-
 /** 封面 URL:先同步用节点 content(本会话生成的图直接可用);img 报错(跨会话 blob 已死)时
  *  经 storageKey 异步重试一次,再失败才回排版化封面——绝不把本来能显示的图降级。 */
-function useDeckCover(deck: PptDeck) {
-    const [cover, setCover] = useState<string | null>(() => resolveDeckCoverNode(deck)?.metadata?.content || null);
+function useDeckCover(node: CanvasNodeData | null) {
+    const [cover, setCover] = useState<string | null>(() => node?.metadata?.content || null);
     const retriedRef = useRef(false);
     useEffect(() => {
         retriedRef.current = false;
-        setCover(resolveDeckCoverNode(deck)?.metadata?.content || null);
-    }, [deck]);
+        setCover(node?.metadata?.content || null);
+    }, [node]);
     const onCoverError = () => {
-        const node = resolveDeckCoverNode(deck);
         if (!retriedRef.current && node?.metadata?.storageKey) {
             retriedRef.current = true;
             void resolveImageUrl(node.metadata.storageKey, "").then((url) => setCover(url || null));
@@ -145,8 +138,10 @@ export default function PptPage() {
 
 function DeckCard({ deck, onOpen, onRename, onDelete }: { deck: PptDeck; onOpen: () => void; onRename: () => void; onDelete: () => void }) {
     const total = deck.ppt.pages.length;
-    const confirmed = deck.ppt.pages.filter((page) => page.confirmedNodeId).length;
-    const { cover, onCoverError } = useDeckCover(deck);
+    const workspaces = useMemo(() => [...deck.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(deck, page)), [deck]);
+    const confirmedWorkspaces = workspaces.filter((workspace) => workspace.confirmationIssues.length === 0);
+    const confirmed = confirmedWorkspaces.length;
+    const { cover, onCoverError } = useDeckCover(confirmedWorkspaces[0]?.confirmedNode ?? null);
     const headline = [...deck.ppt.pages].sort((a, b) => a.index - b.index)[0]?.title || deck.title;
     const iconButtonClass =
         "flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors duration-150 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white/70 motion-reduce:transition-none";

@@ -14,6 +14,12 @@ export type PptPageWorkspaceTake = {
     prompt: string;
     canEditPrompt: boolean;
     candidates: CanvasNodeData[];
+    /** 当前 take 首次认领的全部图片输出（含批量 root、成功、失败与 loading）。 */
+    ownedOutputNodeIds: string[];
+    /** 全部历史失败图片；纯分组 batch root 不计数。 */
+    failedOutputNodeIds: string[];
+    /** 传给共享删除命令的完整集合：owned outputs + 本 take 的 anchor/config。 */
+    deleteNodeIds: string[];
     generating: boolean;
     issues: string[];
     /** 版式指令：配置节点自身 metadata.prompt（不含上游拼接内容），供折叠展示。 */
@@ -28,26 +34,42 @@ export type PptPageWorkspace = {
     page: CanvasProjectPptPage;
     takes: PptPageWorkspaceTake[];
     confirmedNode?: CanvasNodeData;
+    /** 历史 batch root 确认只读解析到 primary child；不回写存储。 */
+    resolvedConfirmedNodeId?: string;
     confirmationIssues: string[];
 };
 
 export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjectPptPage): PptPageWorkspace {
     const nodeById = new Map(project.nodes.map((node) => [node.id, node]));
     const downstreamById = new Map<string, string[]>();
-    project.connections.forEach((connection) => {
-        const downstream = downstreamById.get(connection.fromNodeId);
-        if (downstream) downstream.push(connection.toNodeId);
-        else downstreamById.set(connection.fromNodeId, [connection.toNodeId]);
+    const addDownstream = (fromNodeId: string, toNodeId: string) => {
+        const downstream = downstreamById.get(fromNodeId);
+        if (downstream) {
+            if (!downstream.includes(toNodeId)) downstream.push(toNodeId);
+        } else downstreamById.set(fromNodeId, [toNodeId]);
+    };
+    project.connections.forEach((connection) => addDownstream(connection.fromNodeId, connection.toNodeId));
+    project.nodes.forEach((node) => {
+        node.metadata?.batchChildIds?.forEach((childId) => addDownstream(node.id, childId));
+        if (node.metadata?.batchRootId) addDownstream(node.metadata.batchRootId, node.id);
     });
 
-    const seenCandidates = new Set<string>();
-    const takes = pageTakes(page).map<PptPageWorkspaceTake>((take, takeIndex) => {
+    const pageTakeList = pageTakes(page);
+    const takeBoundaryIds = new Set((project.ppt?.pages || [page]).flatMap((projectPage) => pageTakes(projectPage).flatMap((take) => [take.anchorNodeId, take.configNodeId])));
+    const seenOutputNodeIds = new Set<string>();
+    const takes = pageTakeList.map<PptPageWorkspaceTake>((take, takeIndex) => {
         const anchorNode = nodeById.get(take.anchorNodeId);
         const configNode = nodeById.get(take.configNodeId);
-        const reachableIds = collectReachableIds(take.configNodeId, page.index, nodeById, downstreamById);
-        const candidates = project.nodes.filter((node) => reachableIds.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.status === "success" && !node.metadata?.batchRootId && !seenCandidates.has(node.id));
-        candidates.forEach((node) => seenCandidates.add(node.id));
-        const generating = configNode?.metadata?.status === "loading" || project.nodes.some((node) => reachableIds.has(node.id) && node.metadata?.status === "loading");
+        const blockedIds = new Set(takeBoundaryIds);
+        blockedIds.delete(take.configNodeId);
+        const reachableIds = collectReachableIds(take.configNodeId, page.index, nodeById, downstreamById, blockedIds);
+        const ownedOutputs = project.nodes.filter((node) => reachableIds.has(node.id) && node.type === CanvasNodeType.Image && !seenOutputNodeIds.has(node.id));
+        ownedOutputs.forEach((node) => seenOutputNodeIds.add(node.id));
+        const candidates = ownedOutputs.filter((node) => node.metadata?.status === "success" && !isBatchGroup(node));
+        const ownedOutputNodeIds = ownedOutputs.map((node) => node.id);
+        const failedOutputNodeIds = ownedOutputs.filter((node) => node.metadata?.status === "error" && !isBatchGroup(node)).map((node) => node.id);
+        const deleteNodeIds = [...new Set([...ownedOutputNodeIds, take.anchorNodeId, take.configNodeId])];
+        const generating = configNode?.metadata?.status === "loading" || ownedOutputs.some((node) => node.metadata?.status === "loading");
         const prompt = anchorNode?.type === CanvasNodeType.Text && typeof anchorNode.metadata?.content === "string" ? anchorNode.metadata.content : "";
         const composerContent = configNode?.metadata?.composerContent?.trim() ? configNode.metadata.composerContent : undefined;
         const upstreamInputs: PptPageUpstreamInput[] = configNode
@@ -58,10 +80,11 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
 
         // #7：技术分支归并为面向用户的两类，不出现「节点」字样，同一问题不重复表述。
         const issues: string[] = [];
-        if (!anchorNode || anchorNode.type !== CanvasNodeType.Text) issues.push("方案分支提示词丢失或异常，请重新创建分支");
-        if (!configNode || configNode.type !== CanvasNodeType.Config) issues.push("方案分支配置丢失或异常，请重新创建分支");
+        if (!anchorNode || anchorNode.type !== CanvasNodeType.Text) issues.push("方案提示词丢失或异常，请重新创建");
+        if (!configNode || configNode.type !== CanvasNodeType.Config) issues.push("方案配置丢失或异常，请重新创建");
+        if (failedOutputNodeIds.length) issues.push(`存在失败产物（${failedOutputNodeIds.length}）`);
         if (configNode?.metadata?.status === "error") {
-            const errorDetails = configNode.metadata.errorDetails || "方案分支生成失败";
+            const errorDetails = configNode.metadata.errorDetails || "方案生成失败";
             issues.push(candidates.length ? `最近一次生成失败：${errorDetails}` : errorDetails);
         }
 
@@ -73,6 +96,9 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             prompt,
             canEditPrompt: Boolean(anchorNode?.type === CanvasNodeType.Text && candidates.length === 0 && !generating),
             candidates,
+            ownedOutputNodeIds,
+            failedOutputNodeIds,
+            deleteNodeIds,
             generating,
             issues,
             // 排版要求读专用字段:metadata.prompt 每轮生成会被拼装全文回写(污染),不可作展示/编辑来源。
@@ -83,7 +109,13 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
         };
     });
 
-    const confirmedNode = page.confirmedNodeId ? nodeById.get(page.confirmedNodeId) : undefined;
+    const storedConfirmedNode = page.confirmedNodeId ? nodeById.get(page.confirmedNodeId) : undefined;
+    const resolvedConfirmedNodeId = storedConfirmedNode?.metadata?.batchChildIds?.length
+        ? storedConfirmedNode.metadata.primaryImageId && storedConfirmedNode.metadata.batchChildIds.includes(storedConfirmedNode.metadata.primaryImageId) && nodeById.has(storedConfirmedNode.metadata.primaryImageId)
+            ? storedConfirmedNode.metadata.primaryImageId
+            : undefined
+        : storedConfirmedNode?.id;
+    const confirmedNode = resolvedConfirmedNodeId ? nodeById.get(resolvedConfirmedNodeId) : undefined;
     const candidateIds = new Set(takes.flatMap((take) => take.candidates.map((node) => node.id)));
     // #7：确认状态只归并为两类用户语言问题，避免「节点不存在/类型异常/不属于本页」等技术分支重复表述。
     const confirmationIssues: string[] = [];
@@ -92,15 +124,19 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
         confirmationIssues.push("已确认的版本已失效，请重新确认");
     }
 
-    return { page, takes, confirmedNode, confirmationIssues };
+    return { page, takes, confirmedNode, resolvedConfirmedNodeId, confirmationIssues };
 }
 
-function collectReachableIds(pageConfigNodeId: string, pageIndex: number, nodeById: Map<string, CanvasNodeData>, downstreamById: Map<string, string[]>) {
+function isBatchGroup(node: CanvasNodeData) {
+    return Boolean(node.metadata?.batchChildIds?.length);
+}
+
+function collectReachableIds(pageConfigNodeId: string, pageIndex: number, nodeById: Map<string, CanvasNodeData>, downstreamById: Map<string, string[]>, blockedIds: Set<string>) {
     const reachableIds = new Set<string>();
     const queue = [pageConfigNodeId];
     for (let cursor = 0; cursor < queue.length; cursor += 1) {
         for (const targetId of downstreamById.get(queue[cursor]) || []) {
-            if (reachableIds.has(targetId)) continue;
+            if (reachableIds.has(targetId) || blockedIds.has(targetId)) continue;
             const target = nodeById.get(targetId);
             if (target?.metadata?.pptPageIndex != null && target.metadata.pptPageIndex !== pageIndex) continue;
             reachableIds.add(targetId);

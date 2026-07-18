@@ -21,12 +21,9 @@ export type PptDeckInspection = {
 type ResolvedInspectionPage = PptDeckInspectionPage & { blob?: Blob };
 
 export function resolvePageImageNode(project: CanvasProject, page: CanvasProjectPptPage): CanvasNodeData | null {
-    const nodeById = new Map(project.nodes.map((node) => [node.id, node]));
-    if (page.confirmedNodeId) {
-        const confirmed = nodeById.get(page.confirmedNodeId);
-        if (confirmed) return confirmed;
-    }
-    const candidates = collectPageCandidates(project, page);
+    const workspace = buildPptPageWorkspace(project, page);
+    if (workspace.confirmedNode) return workspace.confirmedNode;
+    const candidates = workspace.takes.flatMap((take) => take.candidates);
     return candidates.length ? candidates[candidates.length - 1] : null;
 }
 

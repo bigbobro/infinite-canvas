@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { useAgentStore } from "@/stores/use-agent-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
@@ -19,6 +19,7 @@ type AgentBridgeParams = {
     selectedNodeIdsRef: MutableRefObject<Set<string>>;
     viewportRef: MutableRefObject<ViewportTransform>;
     generateNodeRef: GenerateNodeRef;
+    deleteCanvasNodesWithEffects: (ids: string[]) => void;
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     setConnections: Dispatch<SetStateAction<CanvasConnection[]>>;
     setSelectedNodeIds: Dispatch<SetStateAction<Set<string>>>;
@@ -29,14 +30,35 @@ type AgentBridgeParams = {
 
 /**
  * 画布与本地 Agent 的桥接：把当前画布快照与 apply/undo 能力发布到 agent store，
- * 供本地 Codex 面板读取。除 applyAgentOps（配置节点插件宿主会用到）外均为内部实现。
+ * 供本地 Codex 面板与 PPT 工作台读取。除 applyAgentOps（配置节点插件宿主会用到）外均为内部实现。
  */
 export function useAgentBridge(params: AgentBridgeParams) {
-    const { projectId, title, nodes, connections, selectedNodeIds, viewport, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, generateNodeRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
-        params;
+    const {
+        projectId,
+        title,
+        nodes,
+        connections,
+        selectedNodeIds,
+        viewport,
+        nodesRef,
+        connectionsRef,
+        selectedNodeIdsRef,
+        viewportRef,
+        generateNodeRef,
+        deleteCanvasNodesWithEffects,
+        setNodes,
+        setConnections,
+        setSelectedNodeIds,
+        setSelectedConnectionId,
+        setViewport,
+        setContextMenu,
+    } = params;
     const setAgentCanvasContext = useAgentStore((state) => state.setCanvasContext);
     const [agentUndoSnapshot, setAgentUndoSnapshot] = useState<CanvasAgentSnapshot | null>(null);
     const projectTitle = title || "未命名画布";
+    const deleteCanvasNodesWithEffectsRef = useRef(deleteCanvasNodesWithEffects);
+    deleteCanvasNodesWithEffectsRef.current = deleteCanvasNodesWithEffects;
+    const deleteCanvasNodes = useCallback((ids: string[]) => deleteCanvasNodesWithEffectsRef.current(ids), []);
 
     const agentSnapshot = useMemo<CanvasAgentSnapshot>(() => ({ projectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport }), [connections, projectTitle, nodes, projectId, selectedNodeIds, viewport]);
     const applyAgentOps = useCallback(
@@ -89,9 +111,9 @@ export function useAgentBridge(params: AgentBridgeParams) {
     }, [agentUndoSnapshot, projectTitle, projectId]);
 
     useEffect(() => {
-        setAgentCanvasContext({ snapshot: agentSnapshot, applyOps: applyAgentOps, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
+        setAgentCanvasContext({ snapshot: agentSnapshot, applyOps: applyAgentOps, deleteCanvasNodesWithEffects: deleteCanvasNodes, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
         return () => setAgentCanvasContext(null);
-    }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps]);
+    }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, deleteCanvasNodes, setAgentCanvasContext, undoAgentOps]);
 
     return { applyAgentOps };
 }
