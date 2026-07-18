@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { App, Button, Modal, theme as antdTheme } from "antd";
-import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Download, ImageOff, LoaderCircle, Pencil, Presentation, RefreshCw } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Download, ImageOff, LoaderCircle, Pencil, Presentation } from "lucide-react";
 
+import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { exportPptDeckImages, inspectPptDeckExport } from "@/lib/ppt/deck-export";
+import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
+import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 
@@ -14,13 +17,15 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
     const { token } = antdTheme.useToken();
     const canvasTheme = canvasThemes[useThemeStore((state) => state.theme)];
     const project = useCanvasStore((state) => state.projects.find((item) => item.id === projectId));
+    const updateProject = useCanvasStore((state) => state.updateProject);
     const [inspection, setInspection] = useState<Inspection | null>(null);
     const [activePageIndex, setActivePageIndex] = useState<number | null>(null);
     const [loading, setLoading] = useState(false);
     const [exporting, setExporting] = useState(false);
     const [loadError, setLoadError] = useState("");
-    const [refreshKey, setRefreshKey] = useState(0);
+    const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
+    // #17+#27：不再依赖手动「重新检查」，effect 依赖 project 引用——store 更新（选定/取消确认）后引用变化即自动重算。
     useEffect(() => {
         if (!open) return;
         if (!project) {
@@ -31,7 +36,6 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
         }
 
         let cancelled = false;
-        setInspection(null);
         setLoadError("");
         setLoading(true);
         void inspectPptDeckExport(project)
@@ -53,19 +57,46 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
         return () => {
             cancelled = true;
         };
-    }, [open, project, refreshKey]);
+    }, [open, project]);
+
+    useEffect(() => {
+        if (!open) setLightboxSrc(null);
+    }, [open]);
 
     const pages = useMemo(() => [...(inspection?.pages ?? [])].sort((left, right) => left.page.index - right.page.index), [inspection]);
+    const pageWorkspaces = useMemo(() => {
+        if (!project?.ppt) return [];
+        return [...project.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(project, page));
+    }, [project]);
     const activePosition = Math.max(
         0,
         pages.findIndex((item) => item.page.index === activePageIndex),
     );
     const activePage = pages[activePosition];
+    const activeWorkspace = activePage ? pageWorkspaces.find((item) => item.page.index === activePage.page.index) : undefined;
     const problemCount = pages.filter((item) => item.issues.length > 0).length;
 
     const changePage = (position: number) => {
         const target = pages[position];
         if (target) setActivePageIndex(target.page.index);
+    };
+
+    const advanceToNextUnconfirmed = (currentPageIndex: number) => {
+        const currentPos = pages.findIndex((item) => item.page.index === currentPageIndex);
+        const rotated = [...pages.slice(currentPos + 1), ...pages.slice(0, currentPos + 1)];
+        const next = rotated.find((item) => item.page.index !== currentPageIndex && item.issues.length > 0);
+        if (next) setActivePageIndex(next.page.index);
+    };
+
+    const selectCandidate = (pageIndex: number, nodeId: string) => {
+        if (!project?.ppt) return;
+        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageIndex, nodeId) });
+        advanceToNextUnconfirmed(pageIndex);
+    };
+
+    const cancelConfirm = (pageIndex: number) => {
+        if (!project?.ppt) return;
+        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageIndex, undefined) });
     };
 
     const handleExport = async () => {
@@ -81,9 +112,26 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
         }
     };
 
+    // #21：终审 ←/→ 翻页；lightbox 打开时交给 lightbox 自身处理 Esc，这里只在未打开 lightbox 时响应方向键。
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        // 恢复原有的阻止冒泡（此前为无条件 stopPropagation），避免终审打开时方向键之外的按键
+        // （如 Delete/Ctrl+Z）冒泡到底层画布的全局快捷键监听（project.tsx window keydown）。
+        event.stopPropagation();
+        if (lightboxSrc) return;
+        const target = event.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
+        if (event.key === "ArrowLeft" && activePosition > 0) {
+            event.preventDefault();
+            changePage(activePosition - 1);
+        } else if (event.key === "ArrowRight" && activePosition < pages.length - 1) {
+            event.preventDefault();
+            changePage(activePosition + 1);
+        }
+    };
+
     return (
-        <Modal title="PPT 最终检视" classNames={{ header: "sr-only" }} open={open} onCancel={onClose} footer={null} width="min(96vw, 1600px)" centered destroyOnHidden styles={{ body: { padding: 0 } }}>
-            <div className="flex h-[min(88vh,920px)] min-h-0 flex-col overflow-hidden" style={{ background: canvasTheme.node.panel, color: canvasTheme.node.text }} data-canvas-no-zoom onKeyDown={(event) => event.stopPropagation()}>
+        <Modal title="PPT 最终检视" classNames={{ header: "sr-only" }} open={open} onCancel={onClose} maskClosable footer={null} width="min(96vw, 1600px)" centered destroyOnHidden styles={{ body: { padding: 0 } }}>
+            <div className="flex h-[min(88vh,920px)] min-h-0 flex-col overflow-hidden" style={{ background: canvasTheme.node.panel, color: canvasTheme.node.text }} data-canvas-no-zoom onKeyDown={handleKeyDown}>
                 <header className="flex shrink-0 items-start justify-between gap-4 px-5 pb-4 pr-14 pt-5">
                     <div className="flex min-w-0 items-start gap-3">
                         <div className="grid size-10 shrink-0 place-items-center rounded-lg border" style={{ background: canvasTheme.node.fill, borderColor: canvasTheme.node.stroke }}>
@@ -96,9 +144,6 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                             </p>
                         </div>
                     </div>
-                    <Button icon={<RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />} disabled={loading || exporting} onClick={() => setRefreshKey((value) => value + 1)}>
-                        重新检查
-                    </Button>
                 </header>
 
                 <nav className="thin-scrollbar flex shrink-0 gap-2 overflow-x-auto border-y px-5 py-3" style={{ borderColor: canvasTheme.node.stroke }} aria-label="PPT 页面终检导航">
@@ -137,29 +182,39 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                     })}
                 </nav>
 
-                <main className="thin-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:overflow-hidden">
-                    <section className="flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border p-3 lg:min-h-0" style={{ background: canvasTheme.canvas.background, borderColor: canvasTheme.node.stroke }} aria-label="已确认页面大图预览">
+                <main className="thin-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden">
+                    <section
+                        className="flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border p-3 lg:min-h-0"
+                        style={{ background: canvasTheme.canvas.background, borderColor: canvasTheme.node.stroke }}
+                        aria-label="已确认页面大图预览"
+                    >
                         {loading ? (
                             <div className="flex flex-col items-center gap-3" role="status" style={{ color: canvasTheme.node.muted }}>
                                 <LoaderCircle className="size-7 animate-spin" aria-hidden="true" />
                                 <span className="text-sm">正在读取已确认图片</span>
                             </div>
                         ) : activePage?.previewUrl ? (
-                            <div className="flex aspect-video max-h-full w-full max-w-full items-center justify-center overflow-hidden rounded-lg lg:h-full lg:w-auto" style={{ background: canvasTheme.node.fill }}>
+                            <div
+                                className="flex aspect-video max-h-full w-full max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg lg:h-full lg:w-auto"
+                                style={{ background: canvasTheme.node.fill }}
+                                onClick={() => setLightboxSrc(activePage.previewUrl || null)}
+                            >
                                 <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认版本）`} className="size-full object-contain" />
                             </div>
                         ) : (
                             <div className="flex flex-col items-center gap-3 text-center" style={{ color: canvasTheme.node.muted }}>
                                 <ImageOff className="size-10" aria-hidden="true" />
                                 <div>
-                                    <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>暂无可预览的确认页</div>
-                                    <div className="mt-1 text-xs">请返回精修并确认这一页</div>
+                                    <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>
+                                        暂无可预览的确认页
+                                    </div>
+                                    <div className="mt-1 text-xs">从右侧候选中选定，或返回精修生成</div>
                                 </div>
                             </div>
                         )}
                     </section>
 
-                    <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto" aria-label="当前页交付状态">
+                    <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto" aria-label="当前页交付状态与候选">
                         {loadError ? (
                             <div className="rounded-xl border p-4 text-sm" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder, color: token.colorErrorText }} role="alert">
                                 {loadError}
@@ -171,9 +226,6 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                         第 {activePage.page.index} 页 / 共 {pages.length} 页
                                     </div>
                                     <h3 className="mt-2 text-xl font-semibold leading-7">{activePage.page.title}</h3>
-                                    <div className="mt-2 text-xs" style={{ color: canvasTheme.node.muted }}>
-                                        {activePage.node ? `确认节点：${activePage.node.title}` : "未找到有效的确认节点"}
-                                    </div>
                                 </div>
 
                                 {activePage.issues.length ? (
@@ -197,6 +249,59 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                     </div>
                                 )}
 
+                                {activeWorkspace ? (
+                                    <section aria-label="全部候选稿">
+                                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                                            <span className="text-xs font-semibold" style={{ color: canvasTheme.node.muted }}>
+                                                全部候选稿（跨方案）
+                                            </span>
+                                            {activePage.page.confirmedNodeId ? (
+                                                <button type="button" className="text-[11px] underline underline-offset-2" style={{ color: canvasTheme.node.muted }} onClick={() => cancelConfirm(activePage.page.index)}>
+                                                    取消确认
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                        {activeWorkspace.takes.some((take) => take.candidates.length) ? (
+                                            <div className="grid grid-cols-3 gap-2">
+                                                {activeWorkspace.takes.flatMap((take) =>
+                                                    take.candidates.map((node, versionIndex) => {
+                                                        const confirmed = node.id === activePage.page.confirmedNodeId;
+                                                        return (
+                                                            <button
+                                                                key={node.id}
+                                                                type="button"
+                                                                className="overflow-hidden rounded-lg border p-1 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
+                                                                style={{ borderColor: confirmed ? token.colorSuccessBorder : canvasTheme.node.stroke, outlineColor: canvasTheme.node.activeStroke }}
+                                                                aria-pressed={confirmed}
+                                                                aria-label={`第 ${activePage.page.index} 页，方案 ${take.index + 1}，第 ${versionIndex + 1} 稿${confirmed ? "，已选为最终版" : "，选定为最终版"}`}
+                                                                onClick={() => selectCandidate(activePage.page.index, node.id)}
+                                                            >
+                                                                <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.node.fill }}>
+                                                                    {node.metadata?.content ? (
+                                                                        <img src={node.metadata.content} alt="" className="size-full object-contain" />
+                                                                    ) : (
+                                                                        <ImageOff className="size-4" style={{ color: canvasTheme.node.faint }} aria-hidden="true" />
+                                                                    )}
+                                                                </span>
+                                                                <span className="mt-1 flex items-center gap-1 px-0.5 text-[10px]">
+                                                                    {confirmed ? <CheckCircle2 className="size-3 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" /> : null}
+                                                                    <span className="truncate" style={{ color: canvasTheme.node.muted }}>
+                                                                        方案{take.index + 1}·第{versionIndex + 1}稿
+                                                                    </span>
+                                                                </span>
+                                                            </button>
+                                                        );
+                                                    }),
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-lg border border-dashed p-3 text-center text-xs" style={{ borderColor: canvasTheme.node.stroke, color: canvasTheme.node.muted }}>
+                                                这一页还没有候选稿
+                                            </div>
+                                        )}
+                                    </section>
+                                ) : null}
+
                                 <Button icon={<Pencil className="size-4" />} onClick={() => onEditPage(activePage.page.index)}>
                                     返回精修第 {activePage.page.index} 页
                                 </Button>
@@ -218,16 +323,12 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                             下一页
                         </Button>
                     </div>
-                    <Button
-                        type="primary"
-                        icon={exporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-                        disabled={!inspection?.ready || loading || exporting || !project}
-                        onClick={() => void handleExport()}
-                    >
+                    <Button type="primary" icon={exporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />} disabled={!inspection?.ready || loading || exporting || !project} onClick={() => void handleExport()}>
                         {exporting ? "正在打包" : "打包下载"}
                     </Button>
                 </footer>
             </div>
+            <CanvasImageLightbox src={lightboxSrc} alt={activePage ? `第 ${activePage.page.index} 页：${activePage.page.title}` : undefined} onClose={() => setLightboxSrc(null)} />
         </Modal>
     );
 }

@@ -1013,6 +1013,17 @@ function InfiniteCanvasPage() {
         navigate("/canvas");
     }, [cleanupAssetImages, deleteProjects, navigate, projectId]);
 
+    const confirmDeleteCurrentProject = useCallback(() => {
+        modal.confirm({
+            title: "删除画布？",
+            content: "将删除当前画布，里面的节点和连线也会一起移除。",
+            okText: "删除",
+            cancelText: "取消",
+            okButtonProps: { danger: true },
+            onOk: () => deleteCurrentProject(),
+        });
+    }, [deleteCurrentProject, modal]);
+
     const exportCurrentProject = useCallback(async () => {
         const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
         if (!project) return message.error("未找到当前画布");
@@ -2759,7 +2770,7 @@ function InfiniteCanvasPage() {
                     onHome={() => navigate("/")}
                     onProjects={() => navigate("/canvas")}
                     onCreateProject={createAndOpenProject}
-                    onDeleteProject={deleteCurrentProject}
+                    onDeleteProject={confirmDeleteCurrentProject}
                     onExportProject={exportCurrentProject}
                     onImportImage={() => handleUploadRequest()}
                     onOpenPlugins={() => setPluginManagerOpen(true)}

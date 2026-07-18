@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Checkbox, Input, Modal, theme as antdTheme } from "antd";
-import { Check, CheckCircle2, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Network, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, WandSparkles } from "lucide-react";
+import { App, Button, Dropdown, Input, Modal, theme as antdTheme } from "antd";
+import { ArrowRight, Check, CheckCircle2, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Video, WandSparkles } from "lucide-react";
 import { nanoid } from "nanoid";
 
+import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
-import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
+import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
+import { buildPptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { pageTakes, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
@@ -21,16 +23,36 @@ type Props = {
     pageIndex: number;
     onPageChange: (pageIndex: number) => void;
     controls: {
-        anchorEnabled: boolean;
-        anchorDisabled: boolean;
         batchLabel: string;
         batchDisabled: boolean;
-        onAnchorEnabledChange: (enabled: boolean) => void;
+        batchHidden: boolean;
         onBatchAction: () => void;
         onOpenFinalReview: () => void;
         onShowCanvas: (nodeId?: string) => void;
     };
 };
+
+/** 生成中已用时长（#28），组件内计时，不持久化。 */
+function useElapsedSeconds(active: boolean) {
+    const [seconds, setSeconds] = useState(0);
+    useEffect(() => {
+        if (!active) {
+            setSeconds(0);
+            return;
+        }
+        const start = Date.now();
+        setSeconds(0);
+        const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - start) / 1000)), 1000);
+        return () => window.clearInterval(timer);
+    }, [active]);
+    return seconds;
+}
+
+function formatElapsed(seconds: number) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+}
 
 export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChange, controls }: Props) {
     const { message, modal } = App.useApp();
@@ -44,22 +66,19 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const [activeNodeId, setActiveNodeId] = useState<string>();
     const [promptDraft, setPromptDraft] = useState("");
     const [newTakeDraft, setNewTakeDraft] = useState<{ sourceTakeKey?: string; prompt: string } | null>(null);
+    const [editingLockedPrompt, setEditingLockedPrompt] = useState(false);
+    const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
     const selectionPageIndexRef = useRef<number | undefined>(undefined);
 
     const workspaces = useMemo(() => {
         if (!project?.ppt) return [];
-        return [...project.ppt.pages]
-            .sort((left, right) => left.index - right.index)
-            .map((page) => buildPptPageWorkspace(project, page));
+        return [...project.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(project, page));
     }, [project]);
     const workspace = workspaces.find((item) => item.page.index === pageIndex);
     const activeTake = workspace?.takes.find((take) => take.index === activeTakeIndex) ?? workspace?.takes[0];
     const isExtractMode = project?.ppt?.mode === "extract";
-    const fallbackPrompt = workspace
-        ? isExtractMode
-            ? workspace.page.outline
-            : [`标题：${workspace.page.title}`, workspace.page.outline, workspace.page.visualHint ? `视觉建议：${workspace.page.visualHint}` : ""].filter(Boolean).join("\n\n")
-        : "";
+    const fallbackPrompt = workspace ? (isExtractMode ? workspace.page.outline : [`标题：${workspace.page.title}`, workspace.page.outline, workspace.page.visualHint ? `视觉建议：${workspace.page.visualHint}` : ""].filter(Boolean).join("\n\n")) : "";
+    const generatingElapsed = useElapsedSeconds(Boolean(activeTake?.generating));
 
     useEffect(() => {
         if (!open) return;
@@ -68,10 +87,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         const fallbackTake = [...workspace.takes].reverse().find((take) => take.candidates.length) ?? workspace.takes.at(-1);
         const currentTake = workspace.takes.find((take) => take.index === activeTakeIndex);
         const pageChanged = selectionPageIndexRef.current !== pageIndex;
-        const nextTake = pageChanged ? confirmedTake ?? fallbackTake : currentTake ?? confirmedTake ?? fallbackTake;
-        const nextNodeId = nextTake?.candidates.some((node) => node.id === activeNodeId)
-            ? activeNodeId
-            : nextTake?.candidates.find((node) => node.id === workspace.page.confirmedNodeId)?.id ?? nextTake?.candidates.at(-1)?.id;
+        const nextTake = pageChanged ? (confirmedTake ?? fallbackTake) : (currentTake ?? confirmedTake ?? fallbackTake);
+        const nextNodeId = nextTake?.candidates.some((node) => node.id === activeNodeId) ? activeNodeId : (nextTake?.candidates.find((node) => node.id === workspace.page.confirmedNodeId)?.id ?? nextTake?.candidates.at(-1)?.id);
         selectionPageIndexRef.current = pageIndex;
         if (activeTakeIndex !== (nextTake?.index ?? 0)) setActiveTakeIndex(nextTake?.index ?? 0);
         if (activeNodeId !== nextNodeId) setActiveNodeId(nextNodeId);
@@ -82,6 +99,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         setPromptDraft(activeTake?.prompt ?? fallbackPrompt);
     }, [activeTake?.key, activeTake?.prompt, fallbackPrompt, newTakeDraft, pageIndex]);
 
+    useEffect(() => {
+        setEditingLockedPrompt(false);
+    }, [activeTake?.key]);
+
+    useEffect(() => {
+        setLightboxSrc(null);
+    }, [pageIndex]);
+
     if (!open || !project?.ppt || !workspace) return null;
 
     const ppt = project.ppt;
@@ -90,11 +115,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const activeConfirmed = Boolean(activeNode && activeNode.id === page.confirmedNodeId);
     const candidateCount = workspace.takes.reduce((total, take) => total + take.candidates.length, 0);
     const promptDirty = Boolean(activeTake?.canEditPrompt && promptDraft !== activeTake.prompt);
+    const forkDirty = Boolean(activeTake && !activeTake.canEditPrompt && editingLockedPrompt && promptDraft.trim() !== activeTake.prompt.trim());
+    const hasPendingPromptEdit = promptDirty || forkDirty;
+    const centerGenerateCtaShown = Boolean(!activeNode && !activeTake?.generating && activeTake?.configNode && !editingLockedPrompt);
 
-    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp =>
-        isExtractMode
-            ? { type: "run_generation", nodeId: configNodeId, mode: "image" }
-            : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT };
+    const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp => (isExtractMode ? { type: "run_generation", nodeId: configNodeId, mode: "image" } : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT });
 
     const runGeneration = () => {
         if (!canvasContext) {
@@ -102,11 +127,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             return;
         }
         if (!activeTake?.configNode) {
-            message.warning(`第 ${page.index} 页方案分支 ${activeTakeIndex + 1} 的配置节点缺失`);
+            message.warning(`第 ${page.index} 页方案分支 ${activeTakeIndex + 1} 的配置缺失`);
             return;
         }
         if (!activeTake.anchorNode) {
-            message.warning(`第 ${page.index} 页方案分支 ${activeTakeIndex + 1} 的提示词节点缺失`);
+            message.warning(`第 ${page.index} 页方案分支 ${activeTakeIndex + 1} 的提示词缺失`);
             return;
         }
         if (activeTake.canEditPrompt && !promptDraft.trim()) {
@@ -132,27 +157,30 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     };
 
     const setConfirmed = (confirmedNodeId?: string) => {
-        updateProject(projectId, {
-            ppt: {
-                ...ppt,
-                pages: ppt.pages.map((item) => (item.index === page.index ? { ...item, confirmedNodeId } : item)),
-            },
-        });
+        updateProject(projectId, { ppt: setPptPageConfirmedNode(ppt, page.index, confirmedNodeId) });
     };
 
-    const addPageTake = () => {
+    // #20：确认后自动前进到下一个未确认页；全部确认完则跳最终检视。
+    const goToNextUnconfirmed = () => {
+        const currentPos = workspaces.findIndex((item) => item.page.index === page.index);
+        const rotated = [...workspaces.slice(currentPos + 1), ...workspaces.slice(0, currentPos + 1)];
+        const next = rotated.find((item) => item.page.index !== page.index && item.confirmationIssues.length > 0);
+        if (next) changePage(next.page.index);
+        else discardPendingPrompt(controls.onOpenFinalReview);
+    };
+
+    const createTakeFromPrompt = (prompt: string, sourceTake: PptPageWorkspaceTake | undefined, autoGenerate: boolean) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
-        if (!newTakeDraft?.prompt.trim()) {
+        if (!prompt.trim()) {
             message.warning("方案提示词不能为空");
             return;
         }
 
         const outlineId = nanoid();
         const configId = nanoid();
-        const sourceTake = workspace.takes.find((take) => take.key === newTakeDraft.sourceTakeKey) ?? activeTake;
         const configMetadata: CanvasNodeMetadata = { prompt: isExtractMode ? "" : PPT_PAGE_PROMPT, size: "16:9", count: 1, pptPageIndex: page.index, pptRole: "page" };
         if (isExtractMode) configMetadata.composerContent = "";
 
@@ -165,37 +193,39 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             ? [...new Set(project.connections.filter((connection) => connection.toNodeId === sourceTake.configNode?.id && connection.fromNodeId !== sourceTake.anchorNode?.id).map((connection) => connection.fromNodeId))]
             : project.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
         const ops: CanvasAgentOp[] = [
-            { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, position: outlinePosition, metadata: { content: newTakeDraft.prompt, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
+            { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, position: outlinePosition, metadata: { content: prompt, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
             { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, position: configPosition, metadata: configMetadata },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...inheritedInputNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
+        if (autoGenerate) ops.push(buildRunGenerationOp(configId));
         const next = canvasContext.applyOps(ops);
+        const nextTakes = [...pageTakes(page), { anchorNodeId: outlineId, configNodeId: configId }];
         updateProject(projectId, {
             nodes: next.nodes,
             connections: next.connections,
             ppt: {
                 ...ppt,
-                pages: ppt.pages.map((item) =>
-                    item.index === page.index
-                        ? {
-                              ...item,
-                              takes: [...pageTakes(item), { anchorNodeId: outlineId, configNodeId: configId }],
-                              anchorNodeId: undefined,
-                              configNodeId: undefined,
-                          }
-                        : item,
-                ),
+                pages: ppt.pages.map((item) => (item.index === page.index ? { ...item, takes: nextTakes, anchorNodeId: undefined, configNodeId: undefined } : item)),
             },
         });
-        setActiveTakeIndex(workspace.takes.length);
+        setActiveTakeIndex(nextTakes.length - 1);
         setActiveNodeId(undefined);
         setNewTakeDraft(null);
-        message.success(`已创建方案分支 ${workspace.takes.length + 1}，确认提示词后再生成`);
+        setEditingLockedPrompt(false);
+        message.success(autoGenerate ? `已基于新提示词创建方案分支 ${nextTakes.length} 并开始生成` : `已创建方案分支 ${nextTakes.length}，确认提示词后再生成`);
+    };
+
+    const addPageTake = () => {
+        if (!newTakeDraft?.prompt.trim()) {
+            message.warning("方案提示词不能为空");
+            return;
+        }
+        createTakeFromPrompt(newTakeDraft.prompt, workspace.takes.find((take) => take.key === newTakeDraft.sourceTakeKey) ?? activeTake, false);
     };
 
     const discardPendingPrompt = (next: () => void) => {
-        if (!newTakeDraft && !promptDirty) {
+        if (!newTakeDraft && !hasPendingPromptEdit) {
             next();
             return;
         }
@@ -206,6 +236,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             cancelText: "继续编辑",
             onOk: () => {
                 setNewTakeDraft(null);
+                setEditingLockedPrompt(false);
                 setPromptDraft(activeTake?.prompt ?? fallbackPrompt);
                 next();
             },
@@ -216,18 +247,43 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         discardPendingPrompt(() => setNewTakeDraft({ sourceTakeKey: sourceTake?.key, prompt: sourceTake ? sourceTake.prompt : fallbackPrompt }));
     };
 
-    const selectTake = (takeIndex: number) => discardPendingPrompt(() => {
-        const take = workspace.takes.find((item) => item.index === takeIndex);
-        setActiveTakeIndex(takeIndex);
-        setActiveNodeId(take?.candidates.find((node) => node.id === page.confirmedNodeId)?.id ?? take?.candidates.at(-1)?.id);
-    });
+    const selectTake = (takeIndex: number) =>
+        discardPendingPrompt(() => {
+            const take = workspace.takes.find((item) => item.index === takeIndex);
+            setActiveTakeIndex(takeIndex);
+            setActiveNodeId(take?.candidates.find((node) => node.id === page.confirmedNodeId)?.id ?? take?.candidates.at(-1)?.id);
+        });
 
-    const selectCandidate = (takeIndex: number, nodeId: string) => discardPendingPrompt(() => {
-        setActiveTakeIndex(takeIndex);
-        setActiveNodeId(nodeId);
-    });
+    const selectCandidate = (takeIndex: number, nodeId: string) =>
+        discardPendingPrompt(() => {
+            setActiveTakeIndex(takeIndex);
+            setActiveNodeId(nodeId);
+        });
 
     const changePage = (nextPageIndex: number) => discardPendingPrompt(() => onPageChange(nextPageIndex));
+
+    // #21：键盘导航——↑/↓ 切页，←/→ 切候选；输入框/文本域/可编辑区聚焦时放行，不劫持按键。
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        event.stopPropagation();
+        const target = event.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            const currentPos = workspaces.findIndex((item) => item.page.index === pageIndex);
+            const nextPage = workspaces[event.key === "ArrowUp" ? currentPos - 1 : currentPos + 1];
+            if (nextPage) {
+                event.preventDefault();
+                changePage(nextPage.page.index);
+            }
+        } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            if (!activeTake?.candidates.length) return;
+            const currentIdx = activeTake.candidates.findIndex((node) => node.id === activeNodeId);
+            const nextNode = activeTake.candidates[event.key === "ArrowLeft" ? currentIdx - 1 : currentIdx + 1];
+            if (nextNode) {
+                event.preventDefault();
+                selectCandidate(activeTake.index, nextNode.id);
+            }
+        }
+    };
 
     return (
         <Modal
@@ -253,7 +309,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                 className="flex h-full min-h-0 flex-col overflow-hidden"
                 style={{ background: canvasTheme.node.panel, color: canvasTheme.node.text }}
                 data-canvas-no-zoom
-                onKeyDown={(event) => event.stopPropagation()}
+                onKeyDown={handleKeyDown}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
@@ -263,29 +319,25 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                             <Layers3 className="size-5" aria-hidden="true" />
                         </div>
                         <div className="min-w-0">
-                            <h2 className="truncate text-lg font-semibold">第 {page.index} 页 · {page.title}</h2>
+                            <h2 className="truncate text-lg font-semibold">
+                                第 {page.index} 页 · {page.title}
+                            </h2>
                             <p className="mt-1 text-sm" style={{ color: canvasTheme.node.muted }}>
                                 {workspace.takes.length} 个方案分支 · {candidateCount} 个候选稿
                             </p>
                         </div>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2">
-                        <Checkbox checked={controls.anchorEnabled} disabled={controls.anchorDisabled} onChange={(event) => controls.onAnchorEnabledChange(event.target.checked)}>
-                            <span className="text-xs" style={{ color: canvasTheme.node.muted }}>首页锚定</span>
-                        </Checkbox>
-                        <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled || Boolean(newTakeDraft) || promptDirty} onClick={controls.onBatchAction}>
-                            {controls.batchLabel}
+                        {!controls.batchHidden ? (
+                            <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled || Boolean(newTakeDraft) || hasPendingPromptEdit} onClick={controls.onBatchAction}>
+                                {controls.batchLabel}
+                            </Button>
+                        ) : null}
+                        <Button size="small" icon={<Presentation className="size-3.5" />} onClick={() => discardPendingPrompt(controls.onOpenFinalReview)}>
+                            最终检视
                         </Button>
-                        <Button size="small" icon={<Presentation className="size-3.5" />} onClick={() => discardPendingPrompt(controls.onOpenFinalReview)}>最终检视</Button>
-                        <Button
-                            size="small"
-                            icon={<Network className="size-3.5" />}
-                            onClick={() => discardPendingPrompt(() => controls.onShowCanvas(activeNode?.id ?? activeTake?.configNode?.id ?? activeTake?.anchorNode?.id))}
-                        >
+                        <Button size="small" icon={<Network className="size-3.5" />} onClick={() => discardPendingPrompt(() => controls.onShowCanvas(activeNode?.id ?? activeTake?.configNode?.id ?? activeTake?.anchorNode?.id))}>
                             查看结构画布
-                        </Button>
-                        <Button size="small" icon={<GitBranchPlus className="size-3.5" />} disabled={!canvasContext || Boolean(newTakeDraft)} onClick={() => beginPageTake()}>
-                            新建方案分支
                         </Button>
                     </div>
                 </header>
@@ -309,7 +361,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                     onClick={() => changePage(item.page.index)}
                                 >
                                     <span className="flex items-center gap-2 text-xs font-semibold">
-                                        {confirmed ? <CheckCircle2 className="size-3.5 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" /> : <span className="size-3.5 shrink-0 rounded-full border" style={{ borderColor: canvasTheme.node.faint }} aria-hidden="true" />}
+                                        {confirmed ? (
+                                            <CheckCircle2 className="size-3.5 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" />
+                                        ) : (
+                                            <span className="size-3.5 shrink-0 rounded-full border" style={{ borderColor: canvasTheme.node.faint }} aria-hidden="true" />
+                                        )}
                                         第 {item.page.index} 页
                                     </span>
                                     <span className="mt-1 block truncate text-[11px]" style={{ color: canvasTheme.node.muted }}>
@@ -327,7 +383,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                     <div className="flex items-start justify-between gap-3">
                                         <div>
                                             <h3 className="text-sm font-semibold">新方案分支提示词</h3>
-                                            <p className="mt-1 text-xs" style={{ color: canvasTheme.node.muted }}>先调整提示词，创建分支后再决定是否生成，不会自动消耗 API。</p>
+                                            <p className="mt-1 text-xs" style={{ color: canvasTheme.node.muted }}>
+                                                先调整提示词，创建分支后再决定是否生成，不会自动消耗 API。
+                                            </p>
                                         </div>
                                         <GitBranchPlus className="size-4 shrink-0" aria-hidden="true" />
                                     </div>
@@ -340,8 +398,12 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         onChange={(event) => setNewTakeDraft((current) => (current ? { ...current, prompt: event.target.value } : current))}
                                     />
                                     <div className="mt-3 flex justify-end gap-2">
-                                        <Button size="small" onClick={() => setNewTakeDraft(null)}>取消</Button>
-                                        <Button size="small" type="primary" icon={<Plus className="size-3.5" />} disabled={!newTakeDraft.prompt.trim()} onClick={addPageTake}>创建方案分支</Button>
+                                        <Button size="small" onClick={() => setNewTakeDraft(null)}>
+                                            取消
+                                        </Button>
+                                        <Button size="small" type="primary" icon={<Plus className="size-3.5" />} disabled={!newTakeDraft.prompt.trim()} onClick={addPageTake}>
+                                            创建方案分支
+                                        </Button>
                                     </div>
                                 </>
                             ) : activeTake ? (
@@ -350,11 +412,17 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         <div>
                                             <h3 className="text-sm font-semibold">方案分支 {activeTake.index + 1} 提示词</h3>
                                             <p className="mt-1 text-xs" style={{ color: canvasTheme.node.muted }}>
-                                                {activeTake.generating ? "生成中，提示词暂时锁定" : activeTake.canEditPrompt ? "首个候选生成前可以继续调整" : "已有候选稿；调整提示词会派生新分支"}
+                                                {activeTake.generating
+                                                    ? "生成中，提示词暂时锁定"
+                                                    : activeTake.canEditPrompt
+                                                      ? "首个候选生成前可以继续调整"
+                                                      : editingLockedPrompt
+                                                        ? "调整后可另存为新方案分支，原方案不受影响"
+                                                        : "已有候选稿；只读展示，点击「调整」可派生新方案"}
                                             </p>
                                         </div>
-                                        <span className="shrink-0 text-[11px] font-medium" style={{ color: activeTake.canEditPrompt ? token.colorWarningText : canvasTheme.node.muted }}>
-                                            {activeTake.canEditPrompt ? "可编辑" : "只读"}
+                                        <span className="shrink-0 text-[11px] font-medium" style={{ color: activeTake.canEditPrompt || editingLockedPrompt ? token.colorWarningText : canvasTheme.node.muted }}>
+                                            {activeTake.canEditPrompt || editingLockedPrompt ? "可编辑" : "只读"}
                                         </span>
                                     </div>
                                     <Input.TextArea
@@ -362,95 +430,186 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         value={promptDraft}
                                         autoSize={{ minRows: 4, maxRows: 8 }}
                                         variant="filled"
-                                        readOnly={!activeTake.canEditPrompt}
+                                        readOnly={!activeTake.canEditPrompt && !editingLockedPrompt}
                                         placeholder="填写这一方案分支的完整提示词"
                                         onChange={(event) => setPromptDraft(event.target.value)}
                                     />
                                     <div className="mt-3 flex items-center justify-between gap-3">
                                         <span className="text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                            {promptDirty ? "有未保存修改；直接生成时也会先使用这份提示词" : activeTake.candidates.length ? `${activeTake.candidates.length} 个候选稿共用这份提示词` : "创建和生成是两个独立步骤"}
+                                            {activeTake.canEditPrompt
+                                                ? promptDirty
+                                                    ? "有未保存修改；直接生成时也会先使用这份提示词"
+                                                    : "创建和生成是两个独立步骤"
+                                                : editingLockedPrompt
+                                                  ? forkDirty
+                                                      ? "内容已修改，可生成或另存为新方案"
+                                                      : "内容未变化，修改后才能另存为新方案"
+                                                  : `${activeTake.candidates.length} 个候选稿共用这份提示词`}
                                         </span>
                                         {activeTake.canEditPrompt ? (
-                                            <Button size="small" icon={<Save className="size-3.5" />} disabled={!promptDirty || !promptDraft.trim() || !canvasContext} onClick={savePrompt}>保存提示词</Button>
+                                            <Button size="small" icon={<Save className="size-3.5" />} disabled={!promptDirty || !promptDraft.trim() || !canvasContext} onClick={savePrompt}>
+                                                保存提示词
+                                            </Button>
+                                        ) : editingLockedPrompt ? (
+                                            <div className="flex items-center gap-2">
+                                                <Button
+                                                    size="small"
+                                                    onClick={() => {
+                                                        setEditingLockedPrompt(false);
+                                                        setPromptDraft(activeTake.prompt);
+                                                    }}
+                                                >
+                                                    取消调整
+                                                </Button>
+                                                <Button size="small" disabled={!forkDirty || !canvasContext} onClick={() => createTakeFromPrompt(promptDraft, activeTake, false)}>
+                                                    仅保存为新方案
+                                                </Button>
+                                                <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={!forkDirty || !canvasContext} onClick={() => createTakeFromPrompt(promptDraft, activeTake, true)}>
+                                                    以新提示词生成（新方案）
+                                                </Button>
+                                            </div>
                                         ) : (
-                                            <Button size="small" icon={<GitBranchPlus className="size-3.5" />} disabled={activeTake.generating || !canvasContext} onClick={() => beginPageTake(activeTake)}>基于此方案调整</Button>
+                                            <Button size="small" icon={<Pencil className="size-3.5" />} disabled={activeTake.generating} onClick={() => setEditingLockedPrompt(true)}>
+                                                调整
+                                            </Button>
                                         )}
                                     </div>
+                                    <UpstreamInputsPanel take={activeTake} canvasTheme={canvasTheme} muted={canvasTheme.node.muted} />
                                 </>
                             ) : (
                                 <div className="py-4 text-center">
                                     <div className="text-sm font-semibold">本页还没有方案分支</div>
-                                    <Button className="mt-3" size="small" icon={<GitBranchPlus className="size-3.5" />} disabled={!canvasContext} onClick={() => beginPageTake(undefined)}>新建方案分支</Button>
+                                    <Button className="mt-3" size="small" icon={<GitBranchPlus className="size-3.5" />} disabled={!canvasContext} onClick={() => beginPageTake(undefined)}>
+                                        新建方案分支
+                                    </Button>
                                 </div>
                             )}
                         </section>
 
                         <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                            {workspace.takes.length
+                                ? workspace.takes.map((take) => {
+                                      const selectedTake = take.index === activeTake?.index;
+                                      return (
+                                          <section
+                                              key={take.key}
+                                              className="rounded-xl border p-3"
+                                              style={{ background: selectedTake ? canvasTheme.toolbar.activeBg : canvasTheme.node.fill, borderColor: selectedTake ? canvasTheme.node.activeStroke : canvasTheme.node.stroke }}
+                                              aria-labelledby={`ppt-take-${page.index}-${take.index}`}
+                                          >
+                                              <button type="button" className="flex w-full items-center justify-between gap-3 text-left" onClick={() => selectTake(take.index)}>
+                                                  <span>
+                                                      <span id={`ppt-take-${page.index}-${take.index}`} className="block text-sm font-semibold">
+                                                          方案分支 {take.index + 1}
+                                                      </span>
+                                                      <span className="mt-0.5 block text-[11px]" style={{ color: canvasTheme.node.muted }}>
+                                                          {take.generating ? "生成中" : take.candidates.length ? `${take.candidates.length} 个候选稿` : "尚未生成"}
+                                                      </span>
+                                                  </span>
+                                                  {selectedTake ? (
+                                                      <span className="flex items-center gap-1 text-xs font-medium">
+                                                          <Check className="size-3.5" aria-hidden="true" />
+                                                          当前分支
+                                                      </span>
+                                                  ) : null}
+                                              </button>
+
+                                              {take.issues.length ? (
+                                                  <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder, color: token.colorErrorText }} role="alert">
+                                                      {take.issues.join("；")}
+                                                  </div>
+                                              ) : null}
+
+                                              {take.candidates.length ? (
+                                                  <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
+                                                      {take.candidates.map((node, versionIndex) => {
+                                                          const viewing = node.id === activeNode?.id;
+                                                          const confirmed = node.id === page.confirmedNodeId;
+                                                          return (
+                                                              <button
+                                                                  key={node.id}
+                                                                  type="button"
+                                                                  className="overflow-hidden rounded-lg border p-1.5 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
+                                                                  style={{
+                                                                      background: viewing ? canvasTheme.node.panel : canvasTheme.canvas.background,
+                                                                      borderColor: viewing ? canvasTheme.node.activeStroke : confirmed ? token.colorSuccessBorder : canvasTheme.node.stroke,
+                                                                      boxShadow: viewing ? `0 0 0 1px ${canvasTheme.node.activeStroke}` : undefined,
+                                                                      outlineColor: canvasTheme.node.activeStroke,
+                                                                  }}
+                                                                  aria-pressed={viewing}
+                                                                  aria-label={`第 ${page.index} 页，方案 ${take.index + 1}，第 ${versionIndex + 1} 稿${confirmed ? "，已选最终版" : ""}`}
+                                                                  onClick={() => selectCandidate(take.index, node.id)}
+                                                              >
+                                                                  <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.node.fill }}>
+                                                                      {node.metadata?.content ? (
+                                                                          <img src={node.metadata.content} alt="" className="size-full object-contain" />
+                                                                      ) : (
+                                                                          <ImageOff className="size-5" style={{ color: canvasTheme.node.faint }} aria-hidden="true" />
+                                                                      )}
+                                                                  </span>
+                                                                  <span className="mt-1.5 flex items-center justify-between gap-2 px-0.5 text-[11px]">
+                                                                      <span className="font-medium">
+                                                                          第{page.index}页 · 方案{take.index + 1} · 第{versionIndex + 1}稿
+                                                                      </span>
+                                                                      {confirmed ? (
+                                                                          <span className="flex shrink-0 items-center gap-1 font-semibold" style={{ color: token.colorSuccess }}>
+                                                                              <CheckCircle2 className="size-3" aria-hidden="true" />
+                                                                              最终版
+                                                                          </span>
+                                                                      ) : viewing ? (
+                                                                          <span className="shrink-0" style={{ color: canvasTheme.node.muted }}>
+                                                                              查看中
+                                                                          </span>
+                                                                      ) : null}
+                                                                  </span>
+                                                              </button>
+                                                          );
+                                                      })}
+                                                  </div>
+                                              ) : (
+                                                  <button
+                                                      type="button"
+                                                      className="mt-3 flex aspect-video w-full items-center justify-center rounded-lg border border-dashed text-sm"
+                                                      style={{ borderColor: canvasTheme.node.stroke, color: canvasTheme.node.muted }}
+                                                      onClick={() => selectTake(take.index)}
+                                                  >
+                                                      {take.generating ? (
+                                                          <span className="flex items-center gap-2">
+                                                              <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                                                              正在生成第一个候选稿
+                                                          </span>
+                                                      ) : (
+                                                          "此分支还没有候选稿"
+                                                      )}
+                                                  </button>
+                                              )}
+                                          </section>
+                                      );
+                                  })
+                                : null}
+
                             {workspace.takes.length ? (
-                                workspace.takes.map((take) => {
-                                    const selectedTake = take.index === activeTake?.index;
-                                    return (
-                                        <section
-                                            key={take.key}
-                                            className="rounded-xl border p-3"
-                                            style={{ background: selectedTake ? canvasTheme.toolbar.activeBg : canvasTheme.node.fill, borderColor: selectedTake ? canvasTheme.node.activeStroke : canvasTheme.node.stroke }}
-                                            aria-labelledby={`ppt-take-${page.index}-${take.index}`}
-                                        >
-                                            <button type="button" className="flex w-full items-center justify-between gap-3 text-left" onClick={() => selectTake(take.index)}>
-                                                <span>
-                                                    <span id={`ppt-take-${page.index}-${take.index}`} className="block text-sm font-semibold">方案分支 {take.index + 1}</span>
-                                                    <span className="mt-0.5 block text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                                        {take.generating ? "生成中" : take.candidates.length ? `${take.candidates.length} 个候选稿` : "尚未生成"}
-                                                    </span>
-                                                </span>
-                                                {selectedTake ? <span className="flex items-center gap-1 text-xs font-medium"><Check className="size-3.5" aria-hidden="true" />当前分支</span> : null}
-                                            </button>
-
-                                            {take.issues.length ? (
-                                                <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder, color: token.colorErrorText }} role="alert">
-                                                    {take.issues.join("；")}
-                                                </div>
-                                            ) : null}
-
-                                            {take.candidates.length ? (
-                                                <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
-                                                    {take.candidates.map((node, versionIndex) => {
-                                                        const viewing = node.id === activeNode?.id;
-                                                        const confirmed = node.id === page.confirmedNodeId;
-                                                        return (
-                                                            <button
-                                                                key={node.id}
-                                                                type="button"
-                                                                className="overflow-hidden rounded-lg border p-1.5 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
-                                                                style={{
-                                                                    background: viewing ? canvasTheme.node.panel : canvasTheme.canvas.background,
-                                                                    borderColor: viewing ? canvasTheme.node.activeStroke : confirmed ? token.colorSuccessBorder : canvasTheme.node.stroke,
-                                                                    boxShadow: viewing ? `0 0 0 1px ${canvasTheme.node.activeStroke}` : undefined,
-                                                                    outlineColor: canvasTheme.node.activeStroke,
-                                                                }}
-                                                                aria-pressed={viewing}
-                                                                aria-label={`第 ${page.index} 页，方案分支 ${take.index + 1}，候选稿 ${versionIndex + 1}${confirmed ? "，已选最终版" : ""}`}
-                                                                onClick={() => selectCandidate(take.index, node.id)}
-                                                            >
-                                                                <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.node.fill }}>
-                                                                    {node.metadata?.content ? <img src={node.metadata.content} alt="" className="size-full object-contain" /> : <ImageOff className="size-5" style={{ color: canvasTheme.node.faint }} aria-hidden="true" />}
-                                                                </span>
-                                                                <span className="mt-1.5 flex items-center justify-between gap-2 px-0.5 text-[11px]">
-                                                                    <span className="font-medium">P{page.index} · B{take.index + 1} · V{versionIndex + 1}</span>
-                                                                    {confirmed ? <span className="flex shrink-0 items-center gap-1 font-semibold" style={{ color: token.colorSuccess }}><CheckCircle2 className="size-3" aria-hidden="true" />最终版</span> : viewing ? <span className="shrink-0" style={{ color: canvasTheme.node.muted }}>查看中</span> : null}
-                                                                </span>
-                                                            </button>
-                                                        );
-                                                    })}
-                                                </div>
-                                            ) : (
-                                                <button type="button" className="mt-3 flex aspect-video w-full items-center justify-center rounded-lg border border-dashed text-sm" style={{ borderColor: canvasTheme.node.stroke, color: canvasTheme.node.muted }} onClick={() => selectTake(take.index)}>
-                                                    {take.generating ? <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />正在生成第一个候选稿</span> : "此分支还没有候选稿"}
-                                                </button>
-                                            )}
-                                        </section>
-                                    );
-                                })
+                                <Dropdown
+                                    trigger={["click"]}
+                                    disabled={!canvasContext || Boolean(newTakeDraft)}
+                                    menu={{
+                                        items: [
+                                            { key: "blank", label: "空白方案" },
+                                            { key: "copy", label: "复制当前方案", disabled: !activeTake },
+                                        ],
+                                        onClick: ({ key }) => beginPageTake(key === "copy" ? activeTake : undefined),
+                                    }}
+                                >
+                                    <button
+                                        type="button"
+                                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed py-2.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
+                                        style={{ borderColor: canvasTheme.node.stroke, color: canvasTheme.node.muted }}
+                                        disabled={!canvasContext || Boolean(newTakeDraft)}
+                                    >
+                                        <Plus className="size-4" aria-hidden="true" />
+                                        新方案
+                                    </button>
+                                </Dropdown>
                             ) : null}
                         </div>
                     </section>
@@ -458,13 +617,32 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                     <section className="flex min-h-[420px] min-w-0 flex-col overflow-hidden rounded-xl border xl:min-h-0" style={{ background: canvasTheme.canvas.background, borderColor: canvasTheme.node.stroke }} aria-label="当前候选稿大图预览">
                         <div className="flex min-h-0 flex-1 items-center justify-center p-3">
                             {activeNode?.metadata?.content ? (
-                                <img src={activeNode.metadata.content} alt={`第 ${page.index} 页当前查看候选稿`} className="max-h-full max-w-full rounded-lg object-contain" />
+                                <img src={activeNode.metadata.content} alt={`第 ${page.index} 页当前查看候选稿`} className="max-h-full max-w-full cursor-zoom-in rounded-lg object-contain" onClick={() => setLightboxSrc(activeNode.metadata!.content!)} />
+                            ) : activeTake?.generating ? (
+                                <div className="flex flex-col items-center gap-3 text-center" style={{ color: canvasTheme.node.muted }}>
+                                    <LoaderCircle className="size-8 animate-spin" aria-hidden="true" />
+                                    <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>
+                                        正在生成第一个候选稿…
+                                    </div>
+                                </div>
+                            ) : activeTake?.configNode ? (
+                                <div className="flex flex-col items-center gap-3 text-center">
+                                    <ScanSearch className="size-10" style={{ color: canvasTheme.node.muted }} aria-hidden="true" />
+                                    <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>
+                                        这一方案还没有候选稿
+                                    </div>
+                                    <Button type="primary" icon={<Sparkles className="size-4" />} disabled={!canvasContext || Boolean(newTakeDraft) || (activeTake.canEditPrompt && !promptDraft.trim())} onClick={runGeneration}>
+                                        {promptDirty ? "保存并生成首稿" : "生成首稿"}
+                                    </Button>
+                                </div>
                             ) : (
                                 <div className="flex flex-col items-center gap-3 text-center" style={{ color: canvasTheme.node.muted }}>
                                     <ScanSearch className="size-10" aria-hidden="true" />
                                     <div>
-                                        <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>选择一个候选稿查看大图</div>
-                                        <div className="mt-1 text-xs">也可以先确认提示词，再生成首个候选稿</div>
+                                        <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>
+                                            本页还没有方案分支
+                                        </div>
+                                        <div className="mt-1 text-xs">先在中间栏创建一个方案分支</div>
                                     </div>
                                 </div>
                             )}
@@ -474,26 +652,127 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 <div className="min-w-0">
                                     <div className="text-sm font-semibold">方案分支 {activeTake?.index != null ? activeTake.index + 1 : "-"}</div>
                                     <div className="mt-0.5 truncate text-xs" style={{ color: canvasTheme.node.muted }}>
-                                        {activeNode ? activeConfirmed ? "此候选稿已选为本页最终版" : "正在查看，尚未确认为最终版" : activeTake?.generating ? "生成中，请稍候" : "暂无选中候选稿"}
+                                        {activeNode ? (activeConfirmed ? "此候选稿已选为本页最终版" : "正在查看，尚未确认为最终版") : activeTake?.generating ? "生成中，请稍候" : "暂无选中候选稿"}
                                     </div>
                                 </div>
-                                {activeConfirmed ? <span className="flex shrink-0 items-center gap-1 text-xs font-semibold" style={{ color: token.colorSuccess }}><CheckCircle2 className="size-4" aria-hidden="true" />已选最终版</span> : null}
+                                {activeConfirmed ? (
+                                    <span className="flex shrink-0 items-center gap-1 text-xs font-semibold" style={{ color: token.colorSuccess }}>
+                                        <CheckCircle2 className="size-4" aria-hidden="true" />
+                                        已选最终版
+                                    </span>
+                                ) : null}
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Button icon={activeTake?.generating ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />} disabled={!activeTake?.configNode || activeTake.generating || !canvasContext || Boolean(newTakeDraft)} onClick={runGeneration}>
-                                    {activeTake?.generating ? "生成中" : activeTake?.candidates.length ? "继续生成" : promptDirty ? "保存并生成首稿" : "生成首稿"}
-                                </Button>
-                                <Button icon={<WandSparkles className="size-4" />} disabled={!activeNode?.metadata?.content} onClick={() => activeNode && openAnnotate(activeNode.id)}>
-                                    标注改图
-                                </Button>
-                                <Button type="primary" icon={<CheckCircle2 className="size-4" />} disabled={!activeNode?.metadata?.storageKey} onClick={() => setConfirmed(activeConfirmed ? undefined : activeNode?.id)}>
-                                    {activeConfirmed ? "取消确认" : "确认此候选稿"}
-                                </Button>
-                            </div>
+                            {centerGenerateCtaShown ? null : (
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                        icon={activeTake?.generating ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+                                        disabled={!activeTake?.configNode || activeTake.generating || !canvasContext || Boolean(newTakeDraft) || editingLockedPrompt}
+                                        onClick={runGeneration}
+                                    >
+                                        {activeTake?.generating ? (
+                                            <span className="inline-flex items-center gap-1.5">
+                                                生成中
+                                                <span className="font-mono text-[11px]">{formatElapsed(generatingElapsed)}</span>
+                                            </span>
+                                        ) : activeTake?.candidates.length ? (
+                                            "继续生成"
+                                        ) : promptDirty ? (
+                                            "保存并生成首稿"
+                                        ) : (
+                                            "生成首稿"
+                                        )}
+                                    </Button>
+                                    <Button icon={<WandSparkles className="size-4" />} disabled={!activeNode?.metadata?.content} onClick={() => activeNode && openAnnotate(activeNode.id)}>
+                                        标注改图
+                                    </Button>
+                                    {activeConfirmed ? (
+                                        <>
+                                            <Button type="primary" icon={<ArrowRight className="size-4" />} onClick={goToNextUnconfirmed}>
+                                                {workspaces.some((item) => item.page.index !== page.index && item.confirmationIssues.length > 0) ? "下一未确认页" : "最终检视"}
+                                            </Button>
+                                            <Button icon={<CheckCircle2 className="size-4" />} onClick={() => setConfirmed(undefined)}>
+                                                取消确认
+                                            </Button>
+                                        </>
+                                    ) : (
+                                        <Button type="primary" icon={<CheckCircle2 className="size-4" />} disabled={!activeNode?.metadata?.storageKey} onClick={() => setConfirmed(activeNode?.id)}>
+                                            确认此候选稿
+                                        </Button>
+                                    )}
+                                </div>
+                            )}
                         </footer>
                     </section>
                 </main>
             </div>
+            <CanvasImageLightbox src={lightboxSrc} alt={`第 ${page.index} 页候选稿`} onClose={() => setLightboxSrc(null)} />
         </Modal>
+    );
+}
+
+/** #16：所见即所生成——除锚点提示词外，实际会拼进生成 prompt 的其余输入，展示逻辑与生成路径同源。 */
+function UpstreamInputsPanel({ take, canvasTheme, muted }: { take: PptPageWorkspaceTake; canvasTheme: (typeof canvasThemes)[keyof typeof canvasThemes]; muted: string }) {
+    if (take.composerContent) {
+        return (
+            <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: canvasTheme.node.stroke, background: canvasTheme.node.fill }}>
+                <div className="font-medium" style={{ color: canvasTheme.node.text }}>
+                    本分支已启用组装提示词，生成以组装内容为准
+                </div>
+                <div className="mt-1 line-clamp-3 whitespace-pre-wrap" style={{ color: muted }}>
+                    {take.composerContent}
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="mt-3 space-y-2">
+            <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: muted }}>
+                其他生成输入
+            </div>
+            {take.upstreamInputs.length ? (
+                <ul className="space-y-1.5">
+                    {take.upstreamInputs.map((input) => (
+                        <li key={input.nodeId} className="flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
+                            {input.type === "image" ? (
+                                input.image?.dataUrl ? (
+                                    <img src={input.image.dataUrl} alt="" className="size-8 shrink-0 rounded object-cover" />
+                                ) : (
+                                    <ImageOff className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                                )
+                            ) : input.type === "video" ? (
+                                <Video className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                            ) : input.type === "audio" ? (
+                                <Music2 className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                            ) : (
+                                <FileText className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                                <div className="font-medium" style={{ color: canvasTheme.node.text }}>
+                                    {input.pptRole === "style" ? "风格基调" : input.title}
+                                </div>
+                                {input.text ? (
+                                    <div className="mt-0.5 line-clamp-2 whitespace-pre-wrap" style={{ color: muted }}>
+                                        {input.text}
+                                    </div>
+                                ) : null}
+                            </div>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <div className="text-xs" style={{ color: muted }}>
+                    版式指令 + 风格基调将随生成自动拼入
+                </div>
+            )}
+            {take.layoutPrompt ? (
+                <details className="text-xs" style={{ color: muted }}>
+                    <summary className="cursor-pointer select-none font-medium" style={{ color: canvasTheme.node.text }}>
+                        版式指令（点击展开）
+                    </summary>
+                    <div className="mt-1 whitespace-pre-wrap">{take.layoutPrompt}</div>
+                </details>
+            ) : null}
+        </div>
     );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { App, Button, Checkbox, Tooltip, theme as antdTheme } from "antd";
-import { CheckCircle2, ChevronRight, CircleAlert, ImageOff, Layers, LoaderCircle, Presentation, Sparkles, X } from "lucide-react";
+import { App, Button, Modal, Radio, Tooltip, Typography, theme as antdTheme } from "antd";
+import { CheckCircle2, ChevronRight, CircleAlert, ImageOff, Layers, LoaderCircle, Presentation, RotateCcw, Sparkles, X } from "lucide-react";
 
 import { CanvasPptFinalReview } from "@/components/canvas/canvas-ppt-final-review";
 import { CanvasPptPageWorkspace } from "@/components/canvas/canvas-ppt-page-workspace";
@@ -14,8 +14,19 @@ import { pageTakes, useCanvasStore, type CanvasProject, type CanvasProjectPptPag
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 
+// #11：面板实际宽度（w-[360px]）与外层安全间距同源，消除 :169 与 showStructure 计算的双源魔法数字。
+const PANEL_WIDTH = 360;
+const PANEL_GAP = 16; // 对应 tailwind `right-4`
+const PANEL_SAFE_WIDTH = PANEL_WIDTH + PANEL_GAP * 2;
+
+type BatchState = { kind: "start" } | { kind: "waitingFirst" } | { kind: "confirmRest"; count: number } | { kind: "hidden" };
+
+function isPageUntouched(workspace: PptPageWorkspace) {
+    return !workspace.takes.some((take) => take.candidates.length > 0 || take.generating);
+}
+
 export function CanvasPptPanel() {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const { token } = antdTheme.useToken();
     const params = useParams<{ id: string }>();
     const projectId = params.id || "";
@@ -25,41 +36,41 @@ export function CanvasPptPanel() {
     const canvasContext = useAgentStore((state) => state.canvasContext);
     const [panelOpen, setPanelOpen] = useState(true);
     const [surface, setSurface] = useState<"workbench" | "structure">("workbench");
-    const [skipAnchorOverride, setSkipAnchorOverride] = useState<boolean | null>(null);
     const [focusPageIndex, setFocusPageIndex] = useState<number | null>(null);
     const [finalReviewOpen, setFinalReviewOpen] = useState(false);
+    const [startModalOpen, setStartModalOpen] = useState(false);
+    const [restModalOpen, setRestModalOpen] = useState(false);
 
     useEffect(() => {
         setPanelOpen(true);
         setSurface("workbench");
-        setSkipAnchorOverride(null);
         setFocusPageIndex(null);
         setFinalReviewOpen(false);
+        setStartModalOpen(false);
+        setRestModalOpen(false);
     }, [projectId]);
 
     const nodeById = useMemo(() => new Map((currentProject?.nodes || []).map((node) => [node.id, node])), [currentProject?.nodes]);
     const pageWorkspaces = useMemo(() => {
         if (!currentProject?.ppt) return [];
-        return [...currentProject.ppt.pages]
-            .sort((left, right) => left.index - right.index)
-            .map((page) => buildPptPageWorkspace(currentProject, page));
+        return [...currentProject.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(currentProject, page));
     }, [currentProject]);
 
     const ppt = currentProject?.ppt;
     if (!ppt || !currentProject) return null;
 
     const pages = ppt.pages;
-    const isExtractMode = ppt.mode === "extract";
     const styleNodeIds = currentProject.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
-    const skipAnchor = skipAnchorOverride ?? (isExtractMode && styleNodeIds.length === 0);
+    const hasStyleNode = styleNodeIds.length > 0;
+    // #18：skipAnchor 改为写回 ppt 数据的持久默认，不再靠面板内勾选框临时覆盖。
+    const skipAnchor = ppt.skipAnchor ?? !hasStyleNode;
     const confirmedCount = pageWorkspaces.filter((item) => item.confirmationIssues.length === 0).length;
+    const generatingCount = pageWorkspaces.filter((item) => item.takes.some((take) => take.generating)).length;
     const firstPageIndex = pageWorkspaces[0]?.page.index ?? pages[0]?.index ?? 1;
     const activePageIndex = focusPageIndex != null && pageWorkspaces.some((item) => item.page.index === focusPageIndex) ? focusPageIndex : firstPageIndex;
 
     const buildRunGenerationOp = (configNodeId: string): CanvasAgentOp =>
-        isExtractMode
-            ? { type: "run_generation", nodeId: configNodeId, mode: "image" }
-            : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT };
+        ppt.mode === "extract" ? { type: "run_generation", nodeId: configNodeId, mode: "image" } : { type: "run_generation", nodeId: configNodeId, mode: "image", prompt: PPT_PAGE_PROMPT };
 
     const runGeneration = (page: CanvasProjectPptPage) => {
         if (!canvasContext) {
@@ -93,21 +104,65 @@ export function CanvasPptPanel() {
     const firstPage = pages.find((page) => page.index === 1) || pages[0];
     const firstWorkspace = pageWorkspaces.find((item) => item.page.index === firstPage?.index);
     const firstConfirmed = Boolean(firstWorkspace && firstWorkspace.confirmationIssues.length === 0);
-    const anchorPending = !skipAnchor && pages.length > 1 && !ppt.anchorConfirmed;
+    const nothingGenerated = pageWorkspaces.length > 0 && pageWorkspaces.every(isPageUntouched);
+    // 首页单独排除只在「锚定流程」下有意义（首页已确认，天然不在未生成集合里）；skipAnchor=true 时不应
+    // 无条件排除首页——否则用户若先手动生成过某一其他页，首页会被永久挡在批量「生成其余」之外。
+    const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.index !== firstPage?.index) && isPageUntouched(item));
+    const anchorHandoffPending = !skipAnchor && !ppt.anchorConfirmed && Boolean(firstPage?.confirmedNodeId);
 
-    const confirmAnchorAndGenerateRest = () => {
-        if (!canvasContext || !firstPage?.confirmedNodeId) return;
-        const restConfigNodeIds = pages
-            .filter((page) => page.index !== firstPage.index)
-            .map((page) => pageTakes(page).at(-1)?.configNodeId)
-            .filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId));
+    // #3+#26：批量按钮四态状态机，替换旧的「anchorPending 二态」实现，杜绝首页候选未确认时仍可重复触发生成。
+    let batchState: BatchState = { kind: "hidden" };
+    if (pages.length > 1) {
+        if (nothingGenerated) batchState = { kind: "start" };
+        else if (!skipAnchor && !ppt.anchorConfirmed && !firstConfirmed) batchState = { kind: "waitingFirst" };
+        else if (restUntouchedWorkspaces.length) batchState = { kind: "confirmRest", count: restUntouchedWorkspaces.length };
+    }
+
+    const batchLabel = batchState.kind === "start" ? "开始生成" : batchState.kind === "waitingFirst" ? "等待确认首页" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
+    const batchHidden = batchState.kind === "hidden";
+    const batchDisabled = !canvasContext || batchState.kind === "waitingFirst";
+    // #4：精修台头部按钮只在「锚定流程相关」的前两态出现；confirmRest 阶段收敛到结构面板，避免头部与
+    // 结构面板双入口并存。结构面板自身仍按 batchHidden 展示全部三个非隐藏态。
+    const workspaceBatchHidden = batchHidden || batchState.kind === "confirmRest";
+
+    const openBatchModal = () => {
+        if (batchState.kind === "start") setStartModalOpen(true);
+        else if (batchState.kind === "confirmRest") setRestModalOpen(true);
+    };
+
+    const confirmStart = (anchorFirst: boolean) => {
+        setStartModalOpen(false);
+        updateProject(projectId, { ppt: { ...ppt, skipAnchor: !anchorFirst } });
+        if (anchorFirst) {
+            if (firstPage) runGeneration(firstPage);
+        } else {
+            generateAll(pageWorkspaces.filter(isPageUntouched).map((item) => item.page));
+        }
+    };
+
+    const confirmRest = () => {
+        setRestModalOpen(false);
+        if (!canvasContext) {
+            message.warning("画布尚未就绪，请稍后再试");
+            return;
+        }
+        const restConfigNodeIds = restUntouchedWorkspaces.map((item) => pageTakes(item.page).at(-1)?.configNodeId).filter((configNodeId): configNodeId is string => configNodeId != null && nodeById.has(configNodeId));
         if (!restConfigNodeIds.length) return;
-        const ops: CanvasAgentOp[] = [
-            ...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: firstPage.confirmedNodeId!, toNodeId: configNodeId })),
-            ...restConfigNodeIds.map((configNodeId) => buildRunGenerationOp(configNodeId)),
-        ];
+        const ops: CanvasAgentOp[] = [];
+        if (anchorHandoffPending) ops.push(...restConfigNodeIds.map((configNodeId): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: firstPage!.confirmedNodeId!, toNodeId: configNodeId })));
+        ops.push(...restConfigNodeIds.map((configNodeId) => buildRunGenerationOp(configNodeId)));
         canvasContext.applyOps(ops);
-        updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: true } });
+        if (anchorHandoffPending) updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: true } });
+    };
+
+    const reanchor = () => {
+        modal.confirm({
+            title: "重新锚定？",
+            content: "回到先确认首页再批量的流程，不会删除已生成的内容。",
+            okText: "重新锚定",
+            cancelText: "取消",
+            onOk: () => updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: false } }),
+        });
     };
 
     const showStructure = (nodeId?: string) => {
@@ -119,8 +174,7 @@ export function CanvasPptPanel() {
         // [二开] 上游 v0.9 引入可调宽/收起的左侧面板，main 已不等于画布可视区；
         // 改读 project.tsx 画布 section 上标记的 data-canvas-viewport。
         const containerRect = document.querySelector("[data-canvas-viewport]")?.getBoundingClientRect();
-        const panelWidth = 392;
-        const width = Math.max((containerRect?.width || window.innerWidth) - panelWidth, 320);
+        const width = Math.max((containerRect?.width || window.innerWidth) - PANEL_SAFE_WIDTH, 320);
         const height = containerRect?.height || window.innerHeight;
         canvasContext.applyOps([
             {
@@ -149,25 +203,13 @@ export function CanvasPptPanel() {
         setSurface("workbench");
     };
 
-    let batchLabel = "全部生成";
-    let batchAction = () => generateAll(pages);
-    if (anchorPending && firstPage) {
-        if (!firstConfirmed) {
-            batchLabel = "生成第 1 页（锚定）";
-            batchAction = () => runGeneration(firstPage);
-        } else {
-            batchLabel = "确认后生成其余页";
-            batchAction = confirmAnchorAndGenerateRest;
-        }
-    }
-
     return (
         <>
             {surface === "structure" ? (
                 panelOpen ? (
                     <aside
-                        className="absolute right-4 top-20 z-40 flex max-h-[calc(100%-140px)] w-[360px] flex-col overflow-hidden rounded-xl border shadow-2xl backdrop-blur"
-                        style={{ background: canvasTheme.toolbar.panel, borderColor: canvasTheme.toolbar.border, color: canvasTheme.node.text }}
+                        className="absolute right-4 top-20 z-40 flex max-h-[calc(100%-140px)] flex-col overflow-hidden rounded-xl border shadow-2xl backdrop-blur"
+                        style={{ width: PANEL_WIDTH, background: canvasTheme.toolbar.panel, borderColor: canvasTheme.toolbar.border, color: canvasTheme.node.text }}
                         onMouseDown={(event) => event.stopPropagation()}
                         onPointerDown={(event) => event.stopPropagation()}
                         aria-label="PPT 结构画布导航"
@@ -177,11 +219,15 @@ export function CanvasPptPanel() {
                                 <Layers className="size-4 shrink-0" aria-hidden="true" />
                                 <div className="min-w-0">
                                     <div className="truncate text-sm font-semibold">结构画布</div>
-                                    <div className="truncate text-[11px]" style={{ color: canvasTheme.node.muted }}>节点与连线 · {confirmedCount}/{pages.length} 页已确认</div>
+                                    <div className="truncate text-[11px]" style={{ color: canvasTheme.node.muted }}>
+                                        节点与连线 · {confirmedCount}/{pages.length} 页已确认{generatingCount > 0 ? ` · ${generatingCount} 页生成中` : ""}
+                                    </div>
                                 </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1">
-                                <Button size="small" type="text" icon={<Presentation className="size-3.5" />} onClick={showWorkbench}>返回工作台</Button>
+                                <Button size="small" type="text" icon={<Presentation className="size-3.5" />} onClick={showWorkbench}>
+                                    返回工作台
+                                </Button>
                                 <button type="button" className="grid size-7 place-items-center rounded-md" style={{ color: canvasTheme.node.muted }} onClick={() => setPanelOpen(false)} aria-label="收起 PPT 结构面板">
                                     <X className="size-4" aria-hidden="true" />
                                 </button>
@@ -189,10 +235,19 @@ export function CanvasPptPanel() {
                         </header>
 
                         <div className="flex items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: canvasTheme.toolbar.border }}>
-                            <Checkbox checked={!skipAnchor} disabled={pages.length <= 1} onChange={(event) => setSkipAnchorOverride(!event.target.checked)}>
-                                <span className="text-xs" style={{ color: canvasTheme.node.muted }}>首页锚定</span>
-                            </Checkbox>
-                            <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={!canvasContext} onClick={batchAction}>{batchLabel}</Button>
+                            <div className="min-h-[20px]">
+                                {ppt.anchorConfirmed ? (
+                                    <button type="button" className="flex items-center gap-1 text-[11px] underline underline-offset-2" style={{ color: canvasTheme.node.muted }} onClick={reanchor}>
+                                        <RotateCcw className="size-3" aria-hidden="true" />
+                                        重新锚定
+                                    </button>
+                                ) : null}
+                            </div>
+                            {!batchHidden ? (
+                                <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={batchDisabled} onClick={openBatchModal}>
+                                    {batchLabel}
+                                </Button>
+                            ) : null}
                         </div>
 
                         <div className="thin-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
@@ -213,7 +268,9 @@ export function CanvasPptPanel() {
                         </div>
 
                         <footer className="border-t px-3 py-2.5" style={{ borderColor: canvasTheme.toolbar.border }}>
-                            <Button block icon={<Presentation className="size-3.5" />} onClick={() => setFinalReviewOpen(true)}>最终检视</Button>
+                            <Button block icon={<Presentation className="size-3.5" />} onClick={() => setFinalReviewOpen(true)}>
+                                最终检视
+                            </Button>
                         </footer>
                     </aside>
                 ) : (
@@ -238,12 +295,10 @@ export function CanvasPptPanel() {
                 pageIndex={activePageIndex}
                 onPageChange={setFocusPageIndex}
                 controls={{
-                    anchorEnabled: !skipAnchor,
-                    anchorDisabled: pages.length <= 1,
                     batchLabel,
-                    batchDisabled: !canvasContext,
-                    onAnchorEnabledChange: (enabled) => setSkipAnchorOverride(!enabled),
-                    onBatchAction: batchAction,
+                    batchDisabled,
+                    batchHidden: workspaceBatchHidden,
+                    onBatchAction: openBatchModal,
                     onOpenFinalReview: () => setFinalReviewOpen(true),
                     onShowCanvas: showStructure,
                 }}
@@ -258,7 +313,39 @@ export function CanvasPptPanel() {
                     setSurface("workbench");
                 }}
             />
+
+            <BatchConfirmModal open={startModalOpen} pageCount={pages.length} defaultAnchorFirst={hasStyleNode} onCancel={() => setStartModalOpen(false)} onConfirm={confirmStart} />
+            <Modal open={restModalOpen} onCancel={() => setRestModalOpen(false)} onOk={confirmRest} title={`生成其余 ${batchState.kind === "confirmRest" ? batchState.count : 0} 页？`} okText="生成" cancelText="取消" destroyOnHidden>
+                <Typography.Text type="secondary">将发起 {batchState.kind === "confirmRest" ? batchState.count : 0} 次生图调用。</Typography.Text>
+            </Modal>
         </>
+    );
+}
+
+function BatchConfirmModal({ open, pageCount, defaultAnchorFirst, onCancel, onConfirm }: { open: boolean; pageCount: number; defaultAnchorFirst: boolean; onCancel: () => void; onConfirm: (anchorFirst: boolean) => void }) {
+    const [anchorFirst, setAnchorFirst] = useState(defaultAnchorFirst);
+
+    useEffect(() => {
+        if (open) setAnchorFirst(defaultAnchorFirst);
+    }, [open, defaultAnchorFirst]);
+
+    return (
+        <Modal open={open} onCancel={onCancel} onOk={() => onConfirm(anchorFirst)} title={`开始生成 ${pageCount} 页？`} okText={anchorFirst ? "生成第 1 页" : `生成全部 ${pageCount} 页`} cancelText="取消" destroyOnHidden>
+            <Radio.Group className="flex flex-col gap-3" value={anchorFirst} onChange={(event) => setAnchorFirst(event.target.value)}>
+                <Radio value={true}>
+                    <div className="text-sm font-medium">先生成第 1 页，确认风格后再批量</div>
+                    <Typography.Text type="secondary" className="text-xs">
+                        推荐，先花 1 次调用；确认第 1 页效果后再生成其余 {pageCount - 1} 页
+                    </Typography.Text>
+                </Radio>
+                <Radio value={false}>
+                    <div className="text-sm font-medium">直接生成全部 {pageCount} 页</div>
+                    <Typography.Text type="secondary" className="text-xs">
+                        将发起 {pageCount} 次生图调用
+                    </Typography.Text>
+                </Radio>
+            </Radio.Group>
+        </Modal>
     );
 }
 
@@ -292,11 +379,21 @@ function PptPageRow({
             aria-label={`精修第 ${page.index} 页，${confirmed ? "已确认" : "待确认"}`}
         >
             <span className="flex h-[68px] w-[120px] shrink-0 items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.node.fill }} aria-hidden="true">
-                {imageNode?.metadata?.content ? <img src={imageNode.metadata.content} alt="" className="size-full object-contain" /> : generating ? <LoaderCircle className="size-5 animate-spin" style={{ color: canvasTheme.node.muted }} /> : <ImageOff className="size-5" style={{ color: canvasTheme.node.faint }} />}
+                {imageNode?.metadata?.content ? (
+                    <img src={imageNode.metadata.content} alt="" className="size-full object-contain" />
+                ) : generating ? (
+                    <LoaderCircle className="size-5 animate-spin" style={{ color: canvasTheme.node.muted }} />
+                ) : (
+                    <ImageOff className="size-5" style={{ color: canvasTheme.node.faint }} />
+                )}
             </span>
             <span className="min-w-0 flex-1 py-0.5">
                 <span className="flex items-center gap-1.5">
-                    {confirmed ? <CheckCircle2 className="size-3.5 shrink-0" style={{ color: successColor }} aria-hidden="true" /> : confirmationIssues.some((issue) => !issue.includes("尚未确认")) ? <CircleAlert className="size-3.5 shrink-0" style={{ color: errorColor }} aria-hidden="true" /> : null}
+                    {confirmed ? (
+                        <CheckCircle2 className="size-3.5 shrink-0" style={{ color: successColor }} aria-hidden="true" />
+                    ) : confirmationIssues.some((issue) => !issue.includes("尚未确认")) ? (
+                        <CircleAlert className="size-3.5 shrink-0" style={{ color: errorColor }} aria-hidden="true" />
+                    ) : null}
                     <span className="shrink-0 text-[11px] font-medium" style={{ color: canvasTheme.node.muted }}>
                         第{page.index}页
                     </span>

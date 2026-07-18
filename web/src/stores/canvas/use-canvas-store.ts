@@ -42,6 +42,8 @@ export type CanvasProjectPpt = {
     pages: CanvasProjectPptPage[];
     anchorConfirmed?: boolean;
     mode?: "outline" | "extract";
+    /** 批量生成确认弹窗记住的选择：true=直接生成全部、false=先锚定首页（07-17-ppt-ux-fixes #18）。 */
+    skipAnchor?: boolean;
 };
 
 export type CanvasProject = {

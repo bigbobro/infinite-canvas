@@ -23,6 +23,8 @@ export type BuildPptDeckParams = {
 
 const COLUMN_GAP = 96;
 const ROW_GAP = 48;
+// [二开] 顶栏高 64px，视口整体下移 96px 留出呼吸空间，避免首排节点顶边顶进标题栏（07-17-ppt-ux-fixes #5b）。
+const INITIAL_VIEWPORT_Y = 96;
 
 export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasProject> {
     const { title, sourceMaterial, requirements, style, pages, uploadedRefs, mode = "outline" } = params;
@@ -132,6 +134,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
         title,
         nodes,
         connections,
+        viewport: { x: 0, y: INITIAL_VIEWPORT_Y, k: 1 },
         ppt: {
             sourceMaterial,
             requirements,

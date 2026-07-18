@@ -69,6 +69,7 @@ export type PptExtractResult = {
     pages: PptOutlinePage[]; // outline 为原文逐字切片，visualHint 恒为 ""
     globalStyle: string; // 公共前缀检测的产物：命中则为 ""，未命中则为文档中未被任何页面占用的内容
     droppedCount: number; // 因越界/倒置/空白被丢弃的页数，供调用方告警
+    droppedTitles: string[]; // 被丢弃各页的标题（模型未给标题时退化为「第N段」），供调用方点名具体哪几页
 };
 
 // 内部中间产物：模型只回这个形状（无正文），不出模块
@@ -115,18 +116,23 @@ function buildExtractResult(raw: string, lines: string[]): PptExtractResult {
     const totalLines = lines.length;
     const coveredLines = new Set<number>();
     let droppedCount = 0;
+    const droppedTitles: string[] = [];
+    const dropRange = (range: PptPageRange, index: number) => {
+        droppedCount++;
+        droppedTitles.push(range.title || `第${index + 1}段`);
+    };
 
     const pages: PptOutlinePage[] = [];
     ranges.forEach((range, index) => {
         if (!Number.isFinite(range.startLine) || !Number.isFinite(range.endLine)) {
-            droppedCount++;
+            dropRange(range, index);
             return;
         }
         // 倒置判定须用原始值：若先各自钳制到 [1, totalLines] 再比较，两端同向越界的
         // 倒置区间（如 startLine=999 > endLine=900，totalLines=300）会被一起钳制到
         // totalLines，变成 startLine === endLine，倒置检测因此失效。
         if (Math.round(range.startLine) > Math.round(range.endLine)) {
-            droppedCount++;
+            dropRange(range, index);
             return;
         }
         const startLine = clamp(Math.round(range.startLine), 1, totalLines);
@@ -135,7 +141,7 @@ function buildExtractResult(raw: string, lines: string[]): PptExtractResult {
             .join("\n")
             .trim();
         if (!outline) {
-            droppedCount++;
+            dropRange(range, index);
             return;
         }
         for (let line = startLine; line <= endLine; line++) coveredLines.add(line);
@@ -145,7 +151,7 @@ function buildExtractResult(raw: string, lines: string[]): PptExtractResult {
     if (!pages.length) throw new Error("未能在材料中识别出分页结构，请确认材料已按页组织，或改用老模式");
 
     const globalStyle = resolveGlobalStyle(pages, lines, coveredLines);
-    return { pages, globalStyle, droppedCount };
+    return { pages, globalStyle, droppedCount, droppedTitles };
 }
 
 function parseExtractJson(raw: string): PptPageRange[] {

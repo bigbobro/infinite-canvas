@@ -1,5 +1,9 @@
+import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { pageTakes, type CanvasProject, type CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
+
+/** 其余生成输入项：与 buildNodeGenerationInputs 同源，附带 pptRole 用于「风格基调」等展示标签（#16 所见即所生成）。 */
+export type PptPageUpstreamInput = NodeGenerationInput & { pptRole?: CanvasNodeMetadata["pptRole"] };
 
 export type PptPageWorkspaceTake = {
     key: string;
@@ -11,6 +15,12 @@ export type PptPageWorkspaceTake = {
     candidates: CanvasNodeData[];
     generating: boolean;
     issues: string[];
+    /** 版式指令：配置节点自身 metadata.prompt（不含上游拼接内容），供折叠展示。 */
+    layoutPrompt: string;
+    /** 组装提示词内容（非空时生成以此为准，见 canvas-guidelines「Config 节点的 prompt 回写」）。 */
+    composerContent?: string;
+    /** 除锚点提示词外，实际会被拼进生成 prompt 的其余上游输入（同源 buildNodeGenerationInputs，禁止另写遍历）。 */
+    upstreamInputs: PptPageUpstreamInput[];
 };
 
 export type PptPageWorkspace = {
@@ -34,23 +44,21 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
         const anchorNode = nodeById.get(take.anchorNodeId);
         const configNode = nodeById.get(take.configNodeId);
         const reachableIds = collectReachableIds(take.configNodeId, page.index, nodeById, downstreamById);
-        const candidates = project.nodes.filter(
-            (node) =>
-                reachableIds.has(node.id) &&
-                node.type === CanvasNodeType.Image &&
-                node.metadata?.status === "success" &&
-                !node.metadata?.batchRootId &&
-                !seenCandidates.has(node.id),
-        );
+        const candidates = project.nodes.filter((node) => reachableIds.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.status === "success" && !node.metadata?.batchRootId && !seenCandidates.has(node.id));
         candidates.forEach((node) => seenCandidates.add(node.id));
         const generating = configNode?.metadata?.status === "loading" || project.nodes.some((node) => reachableIds.has(node.id) && node.metadata?.status === "loading");
         const prompt = anchorNode?.type === CanvasNodeType.Text && typeof anchorNode.metadata?.content === "string" ? anchorNode.metadata.content : "";
+        const composerContent = configNode?.metadata?.composerContent?.trim() ? configNode.metadata.composerContent : undefined;
+        const upstreamInputs: PptPageUpstreamInput[] = configNode
+            ? buildNodeGenerationInputs(configNode.id, project.nodes, project.connections)
+                  .filter((input) => input.nodeId !== take.anchorNodeId)
+                  .map((input) => ({ ...input, pptRole: nodeById.get(input.nodeId)?.metadata?.pptRole }))
+            : [];
 
+        // #7：技术分支归并为面向用户的两类，不出现「节点」字样，同一问题不重复表述。
         const issues: string[] = [];
-        if (!anchorNode) issues.push("方案分支提示词节点不存在");
-        else if (anchorNode.type !== CanvasNodeType.Text) issues.push("方案分支提示词节点类型异常");
-        if (!configNode) issues.push("方案分支配置节点不存在");
-        else if (configNode.type !== CanvasNodeType.Config) issues.push("方案分支配置节点类型异常");
+        if (!anchorNode || anchorNode.type !== CanvasNodeType.Text) issues.push("方案分支提示词丢失或异常，请重新创建分支");
+        if (!configNode || configNode.type !== CanvasNodeType.Config) issues.push("方案分支配置丢失或异常，请重新创建分支");
         if (configNode?.metadata?.status === "error") {
             const errorDetails = configNode.metadata.errorDetails || "方案分支生成失败";
             issues.push(candidates.length ? `最近一次生成失败：${errorDetails}` : errorDetails);
@@ -66,19 +74,19 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             candidates,
             generating,
             issues,
+            layoutPrompt: configNode?.metadata?.prompt || "",
+            composerContent,
+            upstreamInputs,
         };
     });
 
     const confirmedNode = page.confirmedNodeId ? nodeById.get(page.confirmedNodeId) : undefined;
     const candidateIds = new Set(takes.flatMap((take) => take.candidates.map((node) => node.id)));
+    // #7：确认状态只归并为两类用户语言问题，避免「节点不存在/类型异常/不属于本页」等技术分支重复表述。
     const confirmationIssues: string[] = [];
     if (!page.confirmedNodeId) confirmationIssues.push("尚未确认最终版本");
-    else if (!confirmedNode) confirmationIssues.push("已确认的版本节点不存在");
-    else {
-        if (confirmedNode.type !== CanvasNodeType.Image) confirmationIssues.push("已确认的版本不是图片");
-        if (confirmedNode.metadata?.status !== "success") confirmationIssues.push("已确认的图片未生成成功");
-        if (!confirmedNode.metadata?.storageKey) confirmationIssues.push("已确认的图片缺少本地存储标识");
-        if (!candidateIds.has(confirmedNode.id)) confirmationIssues.push("已确认的版本不属于当前页");
+    else if (!confirmedNode || confirmedNode.type !== CanvasNodeType.Image || confirmedNode.metadata?.status !== "success" || !confirmedNode.metadata?.storageKey || !candidateIds.has(confirmedNode.id)) {
+        confirmationIssues.push("已确认的版本已失效，请重新确认");
     }
 
     return { page, takes, confirmedNode, confirmationIssues };
