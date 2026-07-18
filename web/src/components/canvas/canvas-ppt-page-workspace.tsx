@@ -393,21 +393,21 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
-                <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-4 py-2">
+                <header className="flex h-12 shrink-0 items-center justify-between gap-3 px-4 py-1.5">
                     <div className="flex min-w-0 items-center gap-2">
                         <div className="grid size-7 shrink-0 place-items-center rounded-lg border" style={{ background: canvasTheme.node.fill, borderColor: canvasTheme.node.stroke }}>
                             <Layers3 className="size-3.5" aria-hidden="true" />
                         </div>
-                        <div className="min-w-0">
-                            <h2 className="truncate text-base font-medium">
+                        <h2 className="flex min-w-0 items-baseline gap-2 text-base font-medium">
+                            <span className="truncate">
                                 第 {page.index} 页 · {page.title}
-                            </h2>
-                            <p className="mt-0.5 text-xs" style={{ color: canvasTheme.node.muted }}>
-                                <span className="font-mono tabular-nums">{workspace.takes.length}</span> 个方案分支 · <span className="font-mono tabular-nums">{candidateCount}</span> 个候选稿
-                            </p>
-                        </div>
+                            </span>
+                            <span className="shrink-0 font-mono text-[11px] font-normal tabular-nums" style={{ color: canvasTheme.node.muted }}>
+                                {workspace.takes.length} 个方案分支 · {candidateCount} 个候选稿
+                            </span>
+                        </h2>
                     </div>
-                    <div className="flex flex-wrap items-center justify-end gap-1">
+                    <div className="flex shrink-0 items-center justify-end gap-1">
                         {!controls.batchHidden ? (
                             <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled || Boolean(newTakeDraft) || hasPendingPromptEdit} onClick={controls.onBatchAction}>
                                 {controls.batchLabel}
@@ -422,7 +422,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                     </div>
                 </header>
 
-                <main className="thin-scrollbar grid min-h-0 flex-1 gap-3 overflow-y-auto border-y p-3 xl:grid-cols-[124px_minmax(320px,0.8fr)_minmax(480px,1.2fr)] xl:overflow-hidden" style={{ borderColor: canvasTheme.node.stroke }}>
+                <main className="thin-scrollbar grid min-h-0 flex-1 gap-2 overflow-y-auto border-y p-2.5 xl:grid-cols-[96px_minmax(320px,0.8fr)_minmax(480px,1.2fr)] xl:overflow-hidden" style={{ borderColor: canvasTheme.node.stroke }}>
                     <nav className="flex min-h-0 flex-col gap-0.5 xl:overflow-y-auto" aria-label="PPT 页面导航">
                         {workspaces.map((item) => {
                             const selected = item.page.index === page.index;
@@ -490,28 +490,18 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 </>
                             ) : activeTake ? (
                                 <>
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div>
-                                            <h3 className="text-sm font-semibold">方案分支 {activeTake.index + 1} 提示词</h3>
-                                            <p className="mt-1 text-xs" style={{ color: canvasTheme.node.muted }}>
-                                                {activeTake.generating
-                                                    ? "生成中，提示词暂时锁定"
-                                                    : activeTake.canEditPrompt
-                                                      ? "首个候选生成前可以继续调整"
-                                                      : editingLockedPrompt
-                                                        ? "调整后可另存为新方案分支，原方案不受影响"
-                                                        : "已有候选稿；只读展示，点击「调整」可派生新方案"}
-                                            </p>
-                                        </div>
-                                        <span className="shrink-0 text-[11px] font-medium" style={{ color: activeTake.canEditPrompt || editingLockedPrompt ? token.colorWarningText : canvasTheme.node.muted }}>
-                                            {activeTake.canEditPrompt || editingLockedPrompt ? "可编辑" : "只读"}
-                                        </span>
-                                    </div>
                                     {/* #29：方案提示词是本卡视觉主体——只读态自适应内容高度（超长内滚），编辑态给足展开空间。 */}
                                     {activeTake.canEditPrompt || editingLockedPrompt ? (
-                                        <Input.TextArea className="mt-3" value={promptDraft} autoSize={{ minRows: 8, maxRows: 24 }} variant="filled" placeholder="填写这一方案分支的完整提示词" onChange={(event) => setPromptDraft(event.target.value)} />
+                                        <Input.TextArea
+                                            value={promptDraft}
+                                            autoSize={{ minRows: 8, maxRows: 24 }}
+                                            variant="filled"
+                                            placeholder="填写这一方案分支的完整提示词"
+                                            aria-label={`方案分支 ${activeTake.index + 1} 提示词`}
+                                            onChange={(event) => setPromptDraft(event.target.value)}
+                                        />
                                     ) : (
-                                        <div className="thin-scrollbar mt-3 max-h-[46vh] overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-sm" style={{ background: canvasTheme.node.fill }}>
+                                        <div className="thin-scrollbar max-h-[46vh] overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-sm" style={{ background: canvasTheme.node.fill }} aria-label={`方案分支 ${activeTake.index + 1} 提示词`}>
                                             {promptDraft || <span style={{ color: canvasTheme.node.muted }}>暂无提示词</span>}
                                         </div>
                                     )}
@@ -567,7 +557,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                             )}
                         </section>
 
-                        <div className="thin-scrollbar min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
+                        <div className="thin-scrollbar min-h-0 flex-1 space-y-2.5 overflow-y-auto">
                             {workspace.takes.length
                                 ? workspace.takes.map((take) => {
                                       const selectedTake = take.index === activeTake?.index;

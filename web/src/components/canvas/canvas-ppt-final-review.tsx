@@ -167,7 +167,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                     styles={{ body: { padding: 0 }, container: { background: "var(--surface-cinema)" } }}
                 >
                     <div
-                        className="flex h-[min(88vh,920px)] min-h-0 flex-col overflow-hidden outline-none bg-[var(--surface-cinema)] text-white/85 duration-200 ease-out animate-in fade-in-0 zoom-in-98 motion-reduce:animate-none"
+                        className="flex h-[min(94vh,980px)] min-h-0 flex-col overflow-hidden outline-none bg-[var(--surface-cinema)] text-white/85 duration-200 ease-out animate-in fade-in-0 zoom-in-98 motion-reduce:animate-none"
                         data-canvas-no-zoom
                         onKeyDown={handleKeyDown}
                         // 打开即聚焦容器:焦点落在 body 时容器级 onKeyDown 收不到 ←/→(实测),tabIndex+autofocus 保证键盘直达。
@@ -176,52 +176,48 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                             if (node && open) node.focus({ preventScroll: true });
                         }}
                     >
-                        <header className="flex shrink-0 items-start justify-between gap-4 px-5 pb-4 pr-14 pt-5">
-                            <div className="flex min-w-0 items-start gap-3">
-                                <div className="grid size-10 shrink-0 place-items-center rounded-lg border border-white/15 bg-white/5 text-white/85">
-                                    <Presentation className="size-5" aria-hidden="true" />
+                        <header className="flex h-[72px] shrink-0 items-center gap-4 border-b border-white/10 px-4 pr-14">
+                            <div className="flex w-56 shrink-0 items-center gap-2.5">
+                                <div className="grid size-8 shrink-0 place-items-center rounded-lg border border-white/15 bg-white/5 text-white/85">
+                                    <Presentation className="size-4" aria-hidden="true" />
                                 </div>
                                 <div className="min-w-0">
-                                    <h2 className="text-lg font-semibold leading-6 text-white/90">最终检视</h2>
-                                    <p className="mt-1 text-sm text-white/70">
+                                    <h2 className="text-sm font-semibold leading-5 text-white/90">最终检视</h2>
+                                    <p className="truncate text-xs leading-4 text-white/70">
                                         {loading ? "正在检查每页已确认版本…" : inspection?.ready ? `全部 ${pages.length} 页已定稿，可以打包下载` : problemCount ? `还有 ${problemCount} 页需要处理` : "请先完成每页确认"}
                                     </p>
                                 </div>
                             </div>
+                            <nav className="thin-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto py-1" aria-label="PPT 页面终检导航">
+                                {pages.map((item) => {
+                                    const selected = item.page.index === activePage?.page.index;
+                                    const ready = item.issues.length === 0;
+                                    return (
+                                        <button
+                                            key={item.page.index}
+                                            type="button"
+                                            className={cn(
+                                                "w-[88px] shrink-0 rounded-md border border-white/10 bg-white/5 p-1 text-left transition-all duration-150 hover:bg-white/10",
+                                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-cinema)]",
+                                                selected && "bg-white/10 ring-2 ring-white/80",
+                                            )}
+                                            aria-current={selected ? "page" : undefined}
+                                            aria-label={`第 ${item.page.index} 页，${ready ? "已定稿" : "需要处理"}`}
+                                            onClick={() => setActivePageIndex(item.page.index)}
+                                        >
+                                            <span className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded bg-black/40" aria-hidden="true">
+                                                {item.previewUrl ? <img src={item.previewUrl} alt="" className="size-full object-contain" /> : <ImageOff className="size-4 text-white/30" />}
+                                                <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1 font-mono text-[9px] font-semibold leading-4 tabular-nums text-white/85">{pad2(item.page.index)}</span>
+                                                <span className={cn("absolute right-1 top-1 size-2 rounded-full ring-1 ring-black/50", ready ? "bg-green-400" : "bg-red-400")} />
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </nav>
                         </header>
 
-                        <nav className="thin-scrollbar flex shrink-0 gap-2 overflow-x-auto border-y border-white/10 px-5 py-3" aria-label="PPT 页面终检导航">
-                            {pages.map((item) => {
-                                const selected = item.page.index === activePage?.page.index;
-                                const ready = item.issues.length === 0;
-                                return (
-                                    <button
-                                        key={item.page.index}
-                                        type="button"
-                                        className={cn(
-                                            "w-40 shrink-0 rounded-lg border border-white/10 bg-white/5 p-2 text-left transition-all duration-150 hover:bg-white/10",
-                                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-cinema)]",
-                                            selected && "bg-white/10 ring-2 ring-white/80",
-                                        )}
-                                        aria-current={selected ? "page" : undefined}
-                                        aria-label={`第 ${item.page.index} 页，${ready ? "已定稿" : "需要处理"}`}
-                                        onClick={() => setActivePageIndex(item.page.index)}
-                                    >
-                                        <span className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-md bg-black/40" aria-hidden="true">
-                                            {item.previewUrl ? <img src={item.previewUrl} alt="" className="size-full object-contain" /> : <ImageOff className="size-5 text-white/30" />}
-                                            <span className={cn("absolute right-1.5 top-1.5 size-2 rounded-full ring-1 ring-black/50", ready ? "bg-green-400" : "bg-red-400")} />
-                                        </span>
-                                        <span className="mt-2 flex min-w-0 items-center gap-1.5">
-                                            <span className="font-mono text-xs font-semibold tabular-nums text-white/85">{pad2(item.page.index)}</span>
-                                            <span className="min-w-0 flex-1 truncate text-[11px] text-white/70">{selected ? "正在查看" : ready ? "已定稿" : `${item.issues.length} 项问题`}</span>
-                                        </span>
-                                    </button>
-                                );
-                            })}
-                        </nav>
-
-                        <main className="thin-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden">
-                            <section className="relative flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black p-3 lg:min-h-0" aria-label="已确认页面大图预览">
+                        <main className="thin-scrollbar grid min-h-0 flex-1 gap-3 overflow-y-auto px-4 py-3.5 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden">
+                            <section className="relative flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black p-2 lg:min-h-0" aria-label="已确认页面大图预览">
                                 {loading ? (
                                     <div className="flex flex-col items-center gap-3 text-white/70" role="status">
                                         <LoaderCircle className="size-7 animate-spin" aria-hidden="true" />
@@ -230,10 +226,13 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                 ) : activePage?.previewUrl ? (
                                     <div
                                         key={activePage.page.index}
-                                        className="flex aspect-video max-h-full w-full max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg shadow-artwork duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none lg:h-full lg:w-auto"
+                                        className="relative flex aspect-video h-full max-h-full w-fit max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg shadow-artwork duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none"
                                         onClick={() => setLightboxSrc(activePage.previewUrl || null)}
                                     >
                                         <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认版本）`} className="size-full object-contain" />
+                                        <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/55 px-2 py-1 font-mono text-xs tabular-nums text-white/75">
+                                            {pad2(activePosition + 1)} / {pad2(pages.length)}
+                                        </span>
                                     </div>
                                 ) : (
                                     <div key={activePage?.page.index ?? "empty"} className="flex flex-col items-center gap-3 text-center text-white/70 duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none">
@@ -244,14 +243,9 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                         </div>
                                     </div>
                                 )}
-                                {!loading && pages.length ? (
-                                    <span className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs tabular-nums text-white/70">
-                                        {pad2(activePosition + 1)} / {pad2(pages.length)}
-                                    </span>
-                                ) : null}
                             </section>
 
-                            <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto" aria-label="当前页交付状态与候选">
+                            <aside className="flex min-h-0 flex-col gap-3 lg:overflow-y-auto" aria-label="当前页交付状态与候选">
                                 {loadError ? (
                                     <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-300" role="alert">
                                         {loadError}
@@ -352,7 +346,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                             </aside>
                         </main>
 
-                        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-white/10 px-5 py-4">
+                        <footer className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-t border-white/10 px-4 py-2">
                             <div className="flex items-center gap-2">
                                 <Button ghost icon={<ChevronLeft className="size-4" />} disabled={!activePage || activePosition === 0} onClick={() => changePage(activePosition - 1)}>
                                     上一页
