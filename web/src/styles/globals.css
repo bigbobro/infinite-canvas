@@ -471,3 +471,19 @@
     animation: none;
     mix-blend-mode: normal;
 }
+
+/* PPT 工作台美学 token(任务 07-17-ppt-aesthetic-upgrade design.md)
+   --surface-well: 预览井(工作室的深色底衬);--surface-cinema: 放映室,两主题一致 */
+:root {
+    --surface-well: oklch(0.205 0 0);
+    --surface-cinema: oklch(0.145 0 0);
+}
+.dark {
+    --surface-well: oklch(0.16 0 0);
+}
+/* 作品投影:近层定形 + 远层托起 */
+.shadow-artwork {
+    box-shadow:
+        0 2px 8px rgb(0 0 0 / 0.35),
+        0 24px 64px rgb(0 0 0 / 0.4);
+}

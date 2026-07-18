@@ -1,18 +1,53 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { App, Button, Empty, Input, Modal, Popconfirm, Progress, Segmented, Steps, Tooltip } from "antd";
+import { App, Button, Empty, Input, Modal, Popconfirm, Progress, Segmented, Steps } from "antd";
 import { ArrowLeft, ArrowRight, FolderOpen, Pencil, Plus, Sparkles, Trash2, Upload } from "lucide-react";
 
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { uploadImage, type UploadedImage } from "@/services/image-storage";
-import { extractPptPages, generatePptOutline, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
+import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
+import { extractPptPages, generatePptOutline, previewExtractPages, previewOutlinePages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
 import { buildPptDeckProject, type BuildPptDeckParams } from "@/lib/ppt/deck-builder";
+import { resolvePageImageNode } from "@/lib/ppt/deck-export";
 
 type PptWizardMode = NonNullable<BuildPptDeckParams["mode"]>;
+type PptDeck = CanvasProject & { ppt: NonNullable<CanvasProject["ppt"]> };
 
 const { TextArea } = Input;
+
+/** 已确认首页图（index 最小的已确认页）；找不到则返回 null，卡片改用排版化封面。 */
+function resolveDeckCoverNode(deck: PptDeck) {
+    const firstConfirmed = [...deck.ppt.pages].filter((page) => page.confirmedNodeId).sort((a, b) => a.index - b.index)[0];
+    if (!firstConfirmed) return null;
+    return resolvePageImageNode(deck, firstConfirmed) ?? null;
+}
+
+/** 封面 URL:先同步用节点 content(本会话生成的图直接可用);img 报错(跨会话 blob 已死)时
+ *  经 storageKey 异步重试一次,再失败才回排版化封面——绝不把本来能显示的图降级。 */
+function useDeckCover(deck: PptDeck) {
+    const [cover, setCover] = useState<string | null>(() => resolveDeckCoverNode(deck)?.metadata?.content || null);
+    const retriedRef = useRef(false);
+    useEffect(() => {
+        retriedRef.current = false;
+        setCover(resolveDeckCoverNode(deck)?.metadata?.content || null);
+    }, [deck]);
+    const onCoverError = () => {
+        const node = resolveDeckCoverNode(deck);
+        if (!retriedRef.current && node?.metadata?.storageKey) {
+            retriedRef.current = true;
+            void resolveImageUrl(node.metadata.storageKey, "").then((url) => setCover(url || null));
+        } else {
+            setCover(null);
+        }
+    };
+    return { cover, onCoverError };
+}
+
+/** 每次新增页卡的浮现 stagger 延迟；封顶避免页数很多时尾部等太久。 */
+function revealDelay(index: number) {
+    return `${Math.min(index, 8) * 60}ms`;
+}
 
 export default function PptPage() {
     const { message, modal } = App.useApp();
@@ -24,18 +59,25 @@ export default function PptPage() {
     const deleteProjects = useCanvasStore((state) => state.deleteProjects);
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
 
-    const decks = useMemo(() => projects.filter((project): project is CanvasProject & { ppt: NonNullable<CanvasProject["ppt"]> } => Boolean(project.ppt)), [projects]);
+    const decks = useMemo(() => projects.filter((project): project is PptDeck => Boolean(project.ppt)), [projects]);
 
     const [wizardOpen, setWizardOpen] = useState(false);
     const [renameTarget, setRenameTarget] = useState<{ id: string; title: string } | null>(null);
+    const deletingDeckIdRef = useRef<string | null>(null);
 
     const confirmDeleteDeck = (deck: CanvasProject) => {
+        // 防重入:连点删除会让 modal.confirm 排队弹出第二个同款确认框(实测)。
+        if (deletingDeckIdRef.current === deck.id) return;
+        deletingDeckIdRef.current = deck.id;
         modal.confirm({
             title: "删除画布？",
             content: `将删除「${deck.title}」，里面的节点和连线也会一起移除，同时会从「我的画布」移除。`,
             okText: "删除",
             cancelText: "取消",
             okButtonProps: { danger: true },
+            afterClose: () => {
+                deletingDeckIdRef.current = null;
+            },
             onOk: () => {
                 deleteProjects([deck.id]);
                 cleanupImages();
@@ -80,35 +122,14 @@ export default function PptPage() {
 
                 {decks.length ? (
                     <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                        {decks.map((deck) => {
-                            const total = deck.ppt.pages.length;
-                            const confirmed = deck.ppt.pages.filter((page) => page.confirmedNodeId).length;
-                            return (
-                                <article
-                                    key={deck.id}
-                                    className="flex cursor-pointer flex-col gap-3 rounded-lg border border-stone-200 bg-card p-4 text-left shadow-sm transition hover:border-stone-400 dark:border-stone-800 dark:hover:border-stone-600"
-                                    onClick={() => navigate(`/canvas/${deck.id}`)}
-                                >
-                                    <div className="flex items-center justify-between gap-2">
-                                        <span className="truncate text-base font-semibold">{deck.title}</span>
-                                        <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
-                                            <Button type="text" size="small" shape="circle" icon={<Pencil className="size-3.5" />} aria-label="重命名" onClick={() => setRenameTarget({ id: deck.id, title: deck.title })} />
-                                            <Button type="text" size="small" shape="circle" danger icon={<Trash2 className="size-3.5" />} aria-label="删除" onClick={() => confirmDeleteDeck(deck)} />
-                                            <FolderOpen className="size-4 text-stone-400" />
-                                        </div>
-                                    </div>
-                                    <div className="text-xs text-stone-500">
-                                        共 {total} 页 · 已确认 {confirmed} 页
-                                    </div>
-                                    <Progress percent={total ? Math.round((confirmed / total) * 100) : 0} size="small" showInfo={false} />
-                                </article>
-                            );
-                        })}
+                        {decks.map((deck) => (
+                            <DeckCard key={deck.id} deck={deck} onOpen={() => navigate(`/canvas/${deck.id}`)} onRename={() => setRenameTarget({ id: deck.id, title: deck.title })} onDelete={() => confirmDeleteDeck(deck)} />
+                        ))}
                     </div>
                 ) : (
-                    <section className="flex min-h-[360px] flex-col items-center justify-center border-y border-stone-200 text-center dark:border-stone-800">
-                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有 PPT 工程" />
-                        <Button type="primary" className="mt-6" icon={<Plus className="size-4" />} onClick={() => setWizardOpen(true)}>
+                    <section className="flex min-h-[360px] flex-col items-center justify-center gap-4 border-y border-stone-200 text-center dark:border-stone-800">
+                        <p className="text-sm text-stone-500">从一份材料开始你的第一份 deck</p>
+                        <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setWizardOpen(true)}>
                             新建 PPT
                         </Button>
                     </section>
@@ -119,6 +140,53 @@ export default function PptPage() {
                 <Input value={renameTarget?.title ?? ""} onChange={(event) => setRenameTarget((prev) => (prev ? { ...prev, title: event.target.value } : prev))} onPressEnter={saveRename} autoFocus />
             </Modal>
         </main>
+    );
+}
+
+function DeckCard({ deck, onOpen, onRename, onDelete }: { deck: PptDeck; onOpen: () => void; onRename: () => void; onDelete: () => void }) {
+    const total = deck.ppt.pages.length;
+    const confirmed = deck.ppt.pages.filter((page) => page.confirmedNodeId).length;
+    const { cover, onCoverError } = useDeckCover(deck);
+    const headline = [...deck.ppt.pages].sort((a, b) => a.index - b.index)[0]?.title || deck.title;
+    const iconButtonClass =
+        "flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors duration-150 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white/70 motion-reduce:transition-none";
+
+    return (
+        <article
+            className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border border-stone-200 bg-card text-left shadow-sm transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0 dark:border-stone-800 dark:hover:border-stone-600"
+            onClick={onOpen}
+        >
+            <div className="relative aspect-video w-full overflow-hidden bg-stone-100 dark:bg-stone-900">
+                {cover ? (
+                    <img src={cover} alt="" onError={onCoverError} className="size-full object-cover transition-transform duration-150 group-hover:scale-[1.02] motion-reduce:transition-none motion-reduce:group-hover:scale-100" />
+                ) : (
+                    <div className="flex size-full flex-col items-center justify-center gap-2 px-6 text-center">
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-stone-400 dark:text-stone-500">未定稿</span>
+                        <span className="line-clamp-3 text-lg font-semibold leading-snug text-stone-600 dark:text-stone-300">{headline}</span>
+                    </div>
+                )}
+                <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none" onClick={(event) => event.stopPropagation()}>
+                    <button type="button" className={iconButtonClass} aria-label="打开" onClick={onOpen}>
+                        <FolderOpen className="size-3.5" />
+                    </button>
+                    <button type="button" className={iconButtonClass} aria-label="重命名" onClick={onRename}>
+                        <Pencil className="size-3.5" />
+                    </button>
+                    <button type="button" className={iconButtonClass} aria-label="删除" onClick={onDelete}>
+                        <Trash2 className="size-3.5" />
+                    </button>
+                </div>
+            </div>
+            <div className="flex flex-col gap-2 px-4 py-3">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-semibold">{deck.title}</span>
+                    <span className="shrink-0 font-mono text-xs tabular-nums text-stone-500 dark:text-stone-400">
+                        {confirmed}/{total}
+                    </span>
+                </div>
+                <Progress percent={total ? Math.round((confirmed / total) * 100) : 0} size="small" showInfo={false} strokeWidth={2} />
+            </div>
+        </article>
     );
 }
 
@@ -155,11 +223,15 @@ function PptWizard({
             message.error("请先粘贴材料内容");
             return;
         }
+        const previousPages = pages;
         setOutlineLoading(true);
         setOutlineRaw("");
         try {
             if (mode === "extract") {
-                const result = await extractPptPages(effectiveConfig, material, (text) => setOutlineRaw(text));
+                const result = await extractPptPages(effectiveConfig, material, (text) => {
+                    setOutlineRaw(text);
+                    setPages(previewExtractPages(text, material));
+                });
                 setPages(result.pages);
                 setStyleDescription(result.globalStyle);
                 if (result.droppedCount > 0) {
@@ -169,11 +241,15 @@ function PptWizard({
                 }
                 message.success(`已展开 ${result.pages.length} 页`);
             } else {
-                const result = await generatePptOutline(effectiveConfig, material, requirements, (text) => setOutlineRaw(text));
+                const result = await generatePptOutline(effectiveConfig, material, requirements, (text) => {
+                    setOutlineRaw(text);
+                    setPages(previewOutlinePages(text));
+                });
                 setPages(result.pages);
                 message.success(`已生成 ${result.pages.length} 页大纲`);
             }
         } catch (error) {
+            setPages(previousPages);
             message.error(error instanceof Error ? error.message : mode === "extract" ? "展开分页失败，请重试" : "大纲生成失败，请重试");
         } finally {
             setOutlineLoading(false);
@@ -243,7 +319,7 @@ function PptWizard({
                     <h1 className="text-xl font-semibold">新建 PPT</h1>
                 </header>
 
-                <Steps current={step} size="small" items={[{ title: "材料与要求" }, { title: "大纲编辑" }, { title: "风格配置" }]} />
+                <Steps current={step} size="small" className="[&_.ant-steps-item-icon-number]:font-mono [&_.ant-steps-item-icon-number]:tabular-nums" items={[{ title: "材料与要求" }, { title: "大纲编辑" }, { title: "风格配置" }]} />
 
                 {step === 0 ? (
                     <div className="flex flex-col gap-4">
@@ -313,16 +389,29 @@ function PptWizard({
                             ) : null}
                         </div>
 
-                        {outlineLoading ? <div className="thin-scrollbar max-h-40 overflow-y-auto rounded-lg border border-dashed border-stone-300 p-3 text-xs text-stone-500 dark:border-stone-700">{outlineRaw || "生成中..."}</div> : null}
+                        {outlineLoading ? (
+                            <div className="thin-scrollbar max-h-96 overflow-y-auto rounded-lg border border-dashed border-stone-300 p-3 font-mono text-xs text-stone-500 dark:border-stone-700 dark:text-stone-400">{outlineRaw || "生成中..."}</div>
+                        ) : null}
 
                         {pages.length ? (
                             <div className="flex flex-col gap-3">
                                 {pages.map((page, index) => (
-                                    <div key={index} className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
+                                    <div
+                                        key={index}
+                                        style={{ animationDelay: revealDelay(index) }}
+                                        className="group animate-in fade-in-0 slide-in-from-bottom-2 duration-200 ease-out motion-reduce:animate-none rounded-lg border border-stone-200 p-3 dark:border-stone-800"
+                                    >
                                         <div className="mb-2 flex items-center justify-between gap-2">
-                                            <span className="text-xs font-medium text-stone-500">第 {index + 1} 页</span>
+                                            <span className="font-mono text-xs font-medium tabular-nums text-stone-500">{String(index + 1).padStart(2, "0")}</span>
                                             <Popconfirm title="删除该页？" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removePage(index)}>
-                                                <Button size="small" type="text" danger icon={<Trash2 className="size-3.5" />} />
+                                                <Button
+                                                    size="small"
+                                                    type="text"
+                                                    danger
+                                                    icon={<Trash2 className="size-3.5" />}
+                                                    className="opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none"
+                                                    aria-label="删除该页"
+                                                />
                                             </Popconfirm>
                                         </div>
                                         <div className="grid gap-2">
@@ -387,23 +476,26 @@ function PptWizard({
                                     上传
                                 </Button>
                             </div>
-                            <div className="hover-scrollbar flex min-h-24 w-full gap-2 overflow-x-auto rounded-lg border border-dashed border-stone-300 p-2 dark:border-stone-700">
-                                {styleRefs.map((ref, index) => (
-                                    <div key={ref.storageKey} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                        <img src={ref.url} alt={`风格参考图${index + 1}`} className="size-full object-cover" />
-                                        <Tooltip title="移除">
-                                            <button
-                                                type="button"
-                                                className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
-                                                onClick={() => setStyleRefs((prev) => prev.filter((item) => item.storageKey !== ref.storageKey))}
-                                                aria-label="移除参考图"
-                                            >
-                                                <Trash2 className="size-3.5" />
-                                            </button>
-                                        </Tooltip>
+                            <div className="rounded-lg border border-dashed border-stone-300 p-2 dark:border-stone-700">
+                                {styleRefs.length ? (
+                                    <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+                                        {styleRefs.map((ref, index) => (
+                                            <div key={ref.storageKey} className="group relative aspect-square overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
+                                                <img src={ref.url} alt={`风格参考图${index + 1}`} className="size-full object-cover" />
+                                                <button
+                                                    type="button"
+                                                    className="absolute right-1 top-1 flex size-6 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white/70"
+                                                    onClick={() => setStyleRefs((prev) => prev.filter((item) => item.storageKey !== ref.storageKey))}
+                                                    aria-label="移除参考图"
+                                                >
+                                                    <Trash2 className="size-3.5" />
+                                                </button>
+                                            </div>
+                                        ))}
                                     </div>
-                                ))}
-                                {!styleRefs.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">暂无参考图</div> : null}
+                                ) : (
+                                    <div className="flex min-h-24 items-center justify-center text-sm text-stone-500">暂无参考图</div>
+                                )}
                             </div>
                             <input
                                 ref={fileInputRef}

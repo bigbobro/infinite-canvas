@@ -1,21 +1,36 @@
 import { useEffect, useMemo, useState } from "react";
-import { App, Button, Modal, theme as antdTheme } from "antd";
+import { App, Button, ConfigProvider, Modal, theme as antdTheme } from "antd";
 import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Download, ImageOff, LoaderCircle, Pencil, Presentation } from "lucide-react";
 
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
-import { canvasThemes } from "@/lib/canvas-theme";
 import { exportPptDeckImages, inspectPptDeckExport } from "@/lib/ppt/deck-export";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
+import { cn } from "@/lib/utils";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { useThemeStore } from "@/stores/use-theme-store";
 
 type Inspection = Awaited<ReturnType<typeof inspectPptDeckExport>>;
 
+/** 放映室：终审唯一深色场域，两主题一致，靠嵌套 ConfigProvider（darkAlgorithm）驱动 antd 内建组件（Button/Modal 关闭态）跟随。 */
+const CINEMA_THEME = {
+    algorithm: antdTheme.darkAlgorithm,
+    token: {
+        colorBgContainer: "var(--surface-cinema)",
+        colorBgElevated: "var(--surface-cinema)",
+        colorBorder: "rgba(255,255,255,0.14)",
+        colorPrimary: "#fafafa",
+        colorPrimaryHover: "rgba(255,255,255,0.85)",
+        colorPrimaryActive: "rgba(255,255,255,0.7)",
+        colorTextLightSolid: "#0a0a0a",
+    },
+};
+
+function pad2(value: number) {
+    return String(value).padStart(2, "0");
+}
+
 export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: { open: boolean; projectId: string; onClose: () => void; onEditPage: (pageIndex: number) => void }) {
     const { message } = App.useApp();
-    const { token } = antdTheme.useToken();
-    const canvasTheme = canvasThemes[useThemeStore((state) => state.theme)];
     const project = useCanvasStore((state) => state.projects.find((item) => item.id === projectId));
     const updateProject = useCanvasStore((state) => state.updateProject);
     const [inspection, setInspection] = useState<Inspection | null>(null);
@@ -120,6 +135,12 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
         if (lightboxSrc) return;
         const target = event.target as HTMLElement;
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
+        // 容器聚焦后 stopPropagation 会拦掉 antd 的 Esc 关闭,须在此显式处理。
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+        }
         if (event.key === "ArrowLeft" && activePosition > 0) {
             event.preventDefault();
             changePage(activePosition - 1);
@@ -130,205 +151,235 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
     };
 
     return (
-        <Modal title="PPT 最终检视" classNames={{ header: "sr-only" }} open={open} onCancel={onClose} maskClosable footer={null} width="min(96vw, 1600px)" centered destroyOnHidden styles={{ body: { padding: 0 } }}>
-            <div className="flex h-[min(88vh,920px)] min-h-0 flex-col overflow-hidden" style={{ background: canvasTheme.node.panel, color: canvasTheme.node.text }} data-canvas-no-zoom onKeyDown={handleKeyDown}>
-                <header className="flex shrink-0 items-start justify-between gap-4 px-5 pb-4 pr-14 pt-5">
-                    <div className="flex min-w-0 items-start gap-3">
-                        <div className="grid size-10 shrink-0 place-items-center rounded-lg border" style={{ background: canvasTheme.node.fill, borderColor: canvasTheme.node.stroke }}>
-                            <Presentation className="size-5" aria-hidden="true" />
-                        </div>
-                        <div className="min-w-0">
-                            <h2 className="text-lg font-semibold leading-6">最终检视</h2>
-                            <p className="mt-1 text-sm" style={{ color: canvasTheme.node.muted }}>
-                                {loading ? "正在检查每页已确认版本…" : inspection?.ready ? `全部 ${pages.length} 页已就绪，可以打包下载` : problemCount ? `还有 ${problemCount} 页需要处理` : "请先完成每页确认"}
-                            </p>
-                        </div>
-                    </div>
-                </header>
-
-                <nav className="thin-scrollbar flex shrink-0 gap-2 overflow-x-auto border-y px-5 py-3" style={{ borderColor: canvasTheme.node.stroke }} aria-label="PPT 页面终检导航">
-                    {pages.map((item) => {
-                        const selected = item.page.index === activePage?.page.index;
-                        const ready = item.issues.length === 0;
-                        return (
-                            <button
-                                key={item.page.index}
-                                type="button"
-                                className="w-40 shrink-0 rounded-lg border p-2 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
-                                style={{
-                                    background: selected ? canvasTheme.toolbar.activeBg : canvasTheme.node.fill,
-                                    borderColor: selected ? canvasTheme.node.activeStroke : ready ? token.colorSuccessBorder : token.colorErrorBorder,
-                                    boxShadow: selected ? `0 0 0 1px ${canvasTheme.node.activeStroke}` : undefined,
-                                    outlineColor: canvasTheme.node.activeStroke,
-                                }}
-                                aria-current={selected ? "page" : undefined}
-                                aria-label={`第 ${item.page.index} 页，${ready ? "已就绪" : "需要处理"}`}
-                                onClick={() => setActivePageIndex(item.page.index)}
-                            >
-                                <span className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.canvas.background }} aria-hidden="true">
-                                    {item.previewUrl ? <img src={item.previewUrl} alt="" className="size-full object-contain" /> : <ImageOff className="size-5" style={{ color: canvasTheme.node.faint }} />}
-                                </span>
-                                <span className="mt-2 flex min-w-0 items-center gap-1.5">
-                                    {ready ? <CheckCircle2 className="size-3.5 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" /> : <CircleAlert className="size-3.5 shrink-0" style={{ color: token.colorError }} aria-hidden="true" />}
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block text-xs font-semibold">第 {item.page.index} 页</span>
-                                        <span className="block truncate text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                            {selected ? "正在查看" : ready ? "已就绪" : `${item.issues.length} 项问题`}
-                                        </span>
-                                    </span>
-                                </span>
-                            </button>
-                        );
-                    })}
-                </nav>
-
-                <main className="thin-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden">
-                    <section
-                        className="flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border p-3 lg:min-h-0"
-                        style={{ background: canvasTheme.canvas.background, borderColor: canvasTheme.node.stroke }}
-                        aria-label="已确认页面大图预览"
+        <>
+            <ConfigProvider theme={CINEMA_THEME}>
+                <Modal
+                    title="PPT 最终检视"
+                    classNames={{ header: "sr-only" }}
+                    open={open}
+                    onCancel={onClose}
+                    maskClosable
+                    footer={null}
+                    width="min(96vw, 1600px)"
+                    centered
+                    destroyOnHidden
+                    transitionName=""
+                    styles={{ body: { padding: 0 }, container: { background: "var(--surface-cinema)" } }}
+                >
+                    <div
+                        className="flex h-[min(88vh,920px)] min-h-0 flex-col overflow-hidden outline-none bg-[var(--surface-cinema)] text-white/85 duration-200 ease-out animate-in fade-in-0 zoom-in-98 motion-reduce:animate-none"
+                        data-canvas-no-zoom
+                        onKeyDown={handleKeyDown}
+                        // 打开即聚焦容器:焦点落在 body 时容器级 onKeyDown 收不到 ←/→(实测),tabIndex+autofocus 保证键盘直达。
+                        tabIndex={-1}
+                        ref={(node) => {
+                            if (node && open) node.focus({ preventScroll: true });
+                        }}
                     >
-                        {loading ? (
-                            <div className="flex flex-col items-center gap-3" role="status" style={{ color: canvasTheme.node.muted }}>
-                                <LoaderCircle className="size-7 animate-spin" aria-hidden="true" />
-                                <span className="text-sm">正在读取已确认图片</span>
-                            </div>
-                        ) : activePage?.previewUrl ? (
-                            <div
-                                className="flex aspect-video max-h-full w-full max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg lg:h-full lg:w-auto"
-                                style={{ background: canvasTheme.node.fill }}
-                                onClick={() => setLightboxSrc(activePage.previewUrl || null)}
-                            >
-                                <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认版本）`} className="size-full object-contain" />
-                            </div>
-                        ) : (
-                            <div className="flex flex-col items-center gap-3 text-center" style={{ color: canvasTheme.node.muted }}>
-                                <ImageOff className="size-10" aria-hidden="true" />
-                                <div>
-                                    <div className="text-sm font-semibold" style={{ color: canvasTheme.node.text }}>
-                                        暂无可预览的确认页
-                                    </div>
-                                    <div className="mt-1 text-xs">从右侧候选中选定，或返回精修生成</div>
+                        <header className="flex shrink-0 items-start justify-between gap-4 px-5 pb-4 pr-14 pt-5">
+                            <div className="flex min-w-0 items-start gap-3">
+                                <div className="grid size-10 shrink-0 place-items-center rounded-lg border border-white/15 bg-white/5 text-white/85">
+                                    <Presentation className="size-5" aria-hidden="true" />
+                                </div>
+                                <div className="min-w-0">
+                                    <h2 className="text-lg font-semibold leading-6 text-white/90">最终检视</h2>
+                                    <p className="mt-1 text-sm text-white/70">
+                                        {loading ? "正在检查每页已确认版本…" : inspection?.ready ? `全部 ${pages.length} 页已定稿，可以打包下载` : problemCount ? `还有 ${problemCount} 页需要处理` : "请先完成每页确认"}
+                                    </p>
                                 </div>
                             </div>
-                        )}
-                    </section>
+                        </header>
 
-                    <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto" aria-label="当前页交付状态与候选">
-                        {loadError ? (
-                            <div className="rounded-xl border p-4 text-sm" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder, color: token.colorErrorText }} role="alert">
-                                {loadError}
-                            </div>
-                        ) : activePage ? (
-                            <>
-                                <div>
-                                    <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: canvasTheme.node.faint }}>
-                                        第 {activePage.page.index} 页 / 共 {pages.length} 页
+                        <nav className="thin-scrollbar flex shrink-0 gap-2 overflow-x-auto border-y border-white/10 px-5 py-3" aria-label="PPT 页面终检导航">
+                            {pages.map((item) => {
+                                const selected = item.page.index === activePage?.page.index;
+                                const ready = item.issues.length === 0;
+                                return (
+                                    <button
+                                        key={item.page.index}
+                                        type="button"
+                                        className={cn(
+                                            "w-40 shrink-0 rounded-lg border border-white/10 bg-white/5 p-2 text-left transition-all duration-150 hover:bg-white/10",
+                                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-cinema)]",
+                                            selected && "bg-white/10 ring-2 ring-white/80",
+                                        )}
+                                        aria-current={selected ? "page" : undefined}
+                                        aria-label={`第 ${item.page.index} 页，${ready ? "已定稿" : "需要处理"}`}
+                                        onClick={() => setActivePageIndex(item.page.index)}
+                                    >
+                                        <span className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-md bg-black/40" aria-hidden="true">
+                                            {item.previewUrl ? <img src={item.previewUrl} alt="" className="size-full object-contain" /> : <ImageOff className="size-5 text-white/30" />}
+                                            <span className={cn("absolute right-1.5 top-1.5 size-2 rounded-full ring-1 ring-black/50", ready ? "bg-green-400" : "bg-red-400")} />
+                                        </span>
+                                        <span className="mt-2 flex min-w-0 items-center gap-1.5">
+                                            <span className="font-mono text-xs font-semibold tabular-nums text-white/85">{pad2(item.page.index)}</span>
+                                            <span className="min-w-0 flex-1 truncate text-[11px] text-white/70">{selected ? "正在查看" : ready ? "已定稿" : `${item.issues.length} 项问题`}</span>
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </nav>
+
+                        <main className="thin-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden">
+                            <section className="relative flex min-h-[320px] min-w-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black p-3 lg:min-h-0" aria-label="已确认页面大图预览">
+                                {loading ? (
+                                    <div className="flex flex-col items-center gap-3 text-white/70" role="status">
+                                        <LoaderCircle className="size-7 animate-spin" aria-hidden="true" />
+                                        <span className="text-sm">正在读取已确认图片</span>
                                     </div>
-                                    <h3 className="mt-2 text-xl font-semibold leading-7">{activePage.page.title}</h3>
-                                </div>
-
-                                {activePage.issues.length ? (
-                                    <section className="rounded-xl border p-4" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder }} aria-labelledby="ppt-review-issues-title">
-                                        <div id="ppt-review-issues-title" className="flex items-center gap-2 text-sm font-semibold" style={{ color: token.colorErrorText }}>
-                                            <CircleAlert className="size-4" aria-hidden="true" />
-                                            本页暂不能交付
-                                        </div>
-                                        <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm" style={{ color: token.colorErrorText }}>
-                                            {activePage.issues.map((issue) => (
-                                                <li key={issue}>{issue}</li>
-                                            ))}
-                                        </ul>
-                                    </section>
+                                ) : activePage?.previewUrl ? (
+                                    <div
+                                        key={activePage.page.index}
+                                        className="flex aspect-video max-h-full w-full max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg shadow-artwork duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none lg:h-full lg:w-auto"
+                                        onClick={() => setLightboxSrc(activePage.previewUrl || null)}
+                                    >
+                                        <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认版本）`} className="size-full object-contain" />
+                                    </div>
                                 ) : (
-                                    <div className="rounded-xl border p-4" style={{ background: token.colorSuccessBg, borderColor: token.colorSuccessBorder, color: token.colorSuccessText }} role="status">
-                                        <div className="flex items-center gap-2 text-sm font-semibold">
-                                            <CheckCircle2 className="size-4" aria-hidden="true" />
-                                            已确认，图片文件完整
+                                    <div key={activePage?.page.index ?? "empty"} className="flex flex-col items-center gap-3 text-center text-white/70 duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none">
+                                        <ImageOff className="size-10" aria-hidden="true" />
+                                        <div>
+                                            <div className="text-sm font-semibold text-white/85">暂无可预览的确认页</div>
+                                            <div className="mt-1 text-xs">从右侧候选中选定，或返回精修生成</div>
                                         </div>
                                     </div>
                                 )}
+                                {!loading && pages.length ? (
+                                    <span className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs tabular-nums text-white/70">
+                                        {pad2(activePosition + 1)} / {pad2(pages.length)}
+                                    </span>
+                                ) : null}
+                            </section>
 
-                                {activeWorkspace ? (
-                                    <section aria-label="全部候选稿">
-                                        <div className="mb-1.5 flex items-center justify-between gap-2">
-                                            <span className="text-xs font-semibold" style={{ color: canvasTheme.node.muted }}>
-                                                全部候选稿（跨方案）
-                                            </span>
-                                            {activePage.page.confirmedNodeId ? (
-                                                <button type="button" className="text-[11px] underline underline-offset-2" style={{ color: canvasTheme.node.muted }} onClick={() => cancelConfirm(activePage.page.index)}>
-                                                    取消确认
-                                                </button>
-                                            ) : null}
-                                        </div>
-                                        {activeWorkspace.takes.some((take) => take.candidates.length) ? (
-                                            <div className="grid grid-cols-3 gap-2">
-                                                {activeWorkspace.takes.flatMap((take) =>
-                                                    take.candidates.map((node, versionIndex) => {
-                                                        const confirmed = node.id === activePage.page.confirmedNodeId;
-                                                        return (
-                                                            <button
-                                                                key={node.id}
-                                                                type="button"
-                                                                className="overflow-hidden rounded-lg border p-1 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2"
-                                                                style={{ borderColor: confirmed ? token.colorSuccessBorder : canvasTheme.node.stroke, outlineColor: canvasTheme.node.activeStroke }}
-                                                                aria-pressed={confirmed}
-                                                                aria-label={`第 ${activePage.page.index} 页，方案 ${take.index + 1}，第 ${versionIndex + 1} 稿${confirmed ? "，已选为最终版" : "，选定为最终版"}`}
-                                                                onClick={() => selectCandidate(activePage.page.index, node.id)}
-                                                            >
-                                                                <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.node.fill }}>
-                                                                    {node.metadata?.content ? (
-                                                                        <img src={node.metadata.content} alt="" className="size-full object-contain" />
-                                                                    ) : (
-                                                                        <ImageOff className="size-4" style={{ color: canvasTheme.node.faint }} aria-hidden="true" />
-                                                                    )}
-                                                                </span>
-                                                                <span className="mt-1 flex items-center gap-1 px-0.5 text-[10px]">
-                                                                    {confirmed ? <CheckCircle2 className="size-3 shrink-0" style={{ color: token.colorSuccess }} aria-hidden="true" /> : null}
-                                                                    <span className="truncate" style={{ color: canvasTheme.node.muted }}>
-                                                                        方案{take.index + 1}·第{versionIndex + 1}稿
-                                                                    </span>
-                                                                </span>
-                                                            </button>
-                                                        );
-                                                    }),
-                                                )}
+                            <aside className="flex min-h-0 flex-col gap-4 lg:overflow-y-auto" aria-label="当前页交付状态与候选">
+                                {loadError ? (
+                                    <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-300" role="alert">
+                                        {loadError}
+                                    </div>
+                                ) : activePage ? (
+                                    <>
+                                        <div>
+                                            <div className="font-mono text-xs font-semibold uppercase tracking-wider tabular-nums text-white/70">
+                                                第 {pad2(activePage.page.index)} 页 / 共 {pad2(pages.length)} 页
                                             </div>
+                                            <h3 className="mt-2 text-xl font-semibold leading-7 text-white/90">{activePage.page.title}</h3>
+                                        </div>
+
+                                        {activePage.issues.length ? (
+                                            <section className="rounded-xl border border-red-400/25 bg-red-500/10 p-4" aria-labelledby="ppt-review-issues-title">
+                                                <div id="ppt-review-issues-title" className="flex items-center gap-2 text-sm font-semibold text-red-300">
+                                                    <CircleAlert className="size-4" aria-hidden="true" />
+                                                    本页暂不能交付
+                                                </div>
+                                                <ul className="mt-3 space-y-1.5 text-sm text-red-200/90">
+                                                    {activePage.issues.map((issue) => (
+                                                        <li key={issue} className="flex items-start gap-2">
+                                                            <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-red-400" aria-hidden="true" />
+                                                            <span>{issue}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </section>
                                         ) : (
-                                            <div className="rounded-lg border border-dashed p-3 text-center text-xs" style={{ borderColor: canvasTheme.node.stroke, color: canvasTheme.node.muted }}>
-                                                这一页还没有候选稿
+                                            <div className="rounded-xl border border-green-400/25 bg-green-500/10 p-4 text-green-300" role="status">
+                                                <div className="flex items-center gap-2 text-sm font-semibold">
+                                                    <CheckCircle2 className="size-4" aria-hidden="true" />
+                                                    已定稿，图片文件完整
+                                                </div>
                                             </div>
                                         )}
-                                    </section>
-                                ) : null}
 
-                                <Button icon={<Pencil className="size-4" />} onClick={() => onEditPage(activePage.page.index)}>
-                                    返回精修第 {activePage.page.index} 页
+                                        {activeWorkspace ? (
+                                            <section aria-label="全部候选稿">
+                                                <div className="mb-1.5 flex items-center justify-between gap-2">
+                                                    <span className="text-xs font-semibold text-white/70">全部候选稿（跨方案）</span>
+                                                    {activePage.page.confirmedNodeId ? (
+                                                        <button
+                                                            type="button"
+                                                            className="rounded text-[11px] text-white/70 underline underline-offset-2 hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                                                            onClick={() => cancelConfirm(activePage.page.index)}
+                                                        >
+                                                            取消确认
+                                                        </button>
+                                                    ) : null}
+                                                </div>
+                                                {activeWorkspace.takes.some((take) => take.candidates.length) ? (
+                                                    <div className="grid grid-cols-3 gap-2">
+                                                        {activeWorkspace.takes.flatMap((take) =>
+                                                            take.candidates.map((node, versionIndex) => {
+                                                                const confirmed = node.id === activePage.page.confirmedNodeId;
+                                                                return (
+                                                                    <button
+                                                                        key={node.id}
+                                                                        type="button"
+                                                                        className={cn(
+                                                                            "overflow-hidden rounded-lg border border-white/10 bg-white/5 p-1 text-left transition-all duration-150 hover:bg-white/10",
+                                                                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-cinema)]",
+                                                                            confirmed && "ring-2 ring-green-400/80",
+                                                                        )}
+                                                                        aria-pressed={confirmed}
+                                                                        aria-label={`第 ${activePage.page.index} 页，方案 ${take.index + 1}，第 ${versionIndex + 1} 稿${confirmed ? "，已选为最终版" : "，选定为最终版"}`}
+                                                                        onClick={() => selectCandidate(activePage.page.index, node.id)}
+                                                                    >
+                                                                        <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md bg-black/40">
+                                                                            {node.metadata?.content ? <img src={node.metadata.content} alt="" className="size-full object-contain" /> : <ImageOff className="size-4 text-white/30" aria-hidden="true" />}
+                                                                        </span>
+                                                                        <span className="mt-1 flex items-center gap-1 px-0.5 text-[10px]">
+                                                                            {confirmed ? <CheckCircle2 className="size-3 shrink-0 text-green-400" aria-hidden="true" /> : null}
+                                                                            <span className="truncate text-white/70">
+                                                                                第<span className="font-mono tabular-nums">{activePage.page.index}</span>页 · 方案
+                                                                                <span className="font-mono tabular-nums">{take.index + 1}</span> · 第<span className="font-mono tabular-nums">{versionIndex + 1}</span>稿
+                                                                            </span>
+                                                                        </span>
+                                                                    </button>
+                                                                );
+                                                            }),
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="rounded-lg border border-dashed border-white/15 p-3 text-center text-xs text-white/70">这一页还没有候选稿</div>
+                                                )}
+                                            </section>
+                                        ) : null}
+
+                                        <Button ghost icon={<Pencil className="size-4" />} onClick={() => onEditPage(activePage.page.index)}>
+                                            返回精修第 {activePage.page.index} 页
+                                        </Button>
+                                    </>
+                                ) : loading ? null : (
+                                    <div className="rounded-xl border border-white/10 p-4 text-sm text-white/70">当前工程没有可检视的 PPT 页面。</div>
+                                )}
+                            </aside>
+                        </main>
+
+                        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-white/10 px-5 py-4">
+                            <div className="flex items-center gap-2">
+                                <Button ghost icon={<ChevronLeft className="size-4" />} disabled={!activePage || activePosition === 0} onClick={() => changePage(activePosition - 1)}>
+                                    上一页
                                 </Button>
-                            </>
-                        ) : loading ? null : (
-                            <div className="rounded-xl border p-4 text-sm" style={{ borderColor: canvasTheme.node.stroke, color: canvasTheme.node.muted }}>
-                                当前工程没有可检视的 PPT 页面。
+                                <Button ghost icon={<ChevronRight className="size-4" />} iconPosition="end" disabled={!activePage || activePosition >= pages.length - 1} onClick={() => changePage(activePosition + 1)}>
+                                    下一页
+                                </Button>
+                                <span className="ml-1 hidden select-none font-mono text-[10px] text-white/70 sm:inline" aria-hidden="true">
+                                    ← → 翻页
+                                </span>
                             </div>
-                        )}
-                    </aside>
-                </main>
-
-                <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-4" style={{ borderColor: canvasTheme.node.stroke }}>
-                    <div className="flex items-center gap-2">
-                        <Button icon={<ChevronLeft className="size-4" />} disabled={!activePage || activePosition === 0} onClick={() => changePage(activePosition - 1)}>
-                            上一页
-                        </Button>
-                        <Button icon={<ChevronRight className="size-4" />} iconPosition="end" disabled={!activePage || activePosition >= pages.length - 1} onClick={() => changePage(activePosition + 1)}>
-                            下一页
-                        </Button>
+                            <div className="flex items-center gap-3">
+                                {!loading && !inspection?.ready && problemCount > 0 ? <span className="text-xs text-white/70">还有 {problemCount} 页未定稿</span> : null}
+                                <Button
+                                    type="primary"
+                                    icon={exporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+                                    disabled={!inspection?.ready || loading || exporting || !project}
+                                    onClick={() => void handleExport()}
+                                >
+                                    {exporting ? "正在打包" : "打包下载"}
+                                </Button>
+                            </div>
+                        </footer>
                     </div>
-                    <Button type="primary" icon={exporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />} disabled={!inspection?.ready || loading || exporting || !project} onClick={() => void handleExport()}>
-                        {exporting ? "正在打包" : "打包下载"}
-                    </Button>
-                </footer>
-            </div>
+                </Modal>
+            </ConfigProvider>
             <CanvasImageLightbox src={lightboxSrc} alt={activePage ? `第 ${activePage.page.index} 页：${activePage.page.title}` : undefined} onClose={() => setLightboxSrc(null)} />
-        </Modal>
+        </>
     );
 }

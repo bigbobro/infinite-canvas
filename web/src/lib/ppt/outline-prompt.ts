@@ -222,3 +222,97 @@ function hasCommonStylePrefix(pages: PptOutlinePage[]): boolean {
     if (commonLines.length < COMMON_PREFIX_MIN_LINES) return false;
     return commonLines.join("\n").trim().length >= COMMON_PREFIX_MIN_CHARS;
 }
+
+// ---------------------------------------------------------------------------
+// 流式增量预览（向导「大纲逐页浮现」，design.md「2. 向导」）
+//
+// requestImageQuestion 的 onDelta 契约是"累计全文"而非增量片段（见 image.ts
+// consumeResponseStreamBlock/consumeGeminiStreamBlock：state.text += delta 后整段回调），
+// 所以每次都从头扫描一次即可——大纲/展开的输出通常几 KB，重扫描成本可忽略。
+//
+// 两种输出格式（generatePptOutline 的 {title,outline,visualHint} 与 extractPptPages 的
+// {title,startLine,endLine}）都是同一种壳：{"pages":[{...},{...}]}，页对象都在花括号深度 2。
+// 用字符串/转义感知的花括号计数定位已经闭合的深度 2 对象，不要求整体 JSON 已经合法。
+//
+// 这只是生成过程中的 UI 预览：请求结束后仍以 generatePptOutline/extractPptPages 的权威结果
+// 覆盖 pages，预览阶段的容错（如展开模式跳过越界 range）不影响最终结果的正确性。
+// ---------------------------------------------------------------------------
+
+function extractDepth2JsonObjects(raw: string): string[] {
+    const objects: string[] = [];
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let objectStart = -1;
+    for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (ch === "\\") escaped = true;
+            else if (ch === '"') inString = false;
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+        if (ch === "{") {
+            depth++;
+            if (depth === 2) objectStart = i;
+            continue;
+        }
+        if (ch === "}") {
+            if (depth === 2 && objectStart !== -1) {
+                objects.push(raw.slice(objectStart, i + 1));
+                objectStart = -1;
+            }
+            depth--;
+        }
+    }
+    return objects;
+}
+
+function tryParseJson<T>(text: string): T | null {
+    try {
+        return JSON.parse(text) as T;
+    } catch {
+        return null;
+    }
+}
+
+/** 大纲模式（generatePptOutline）流式预览：每有一个完整页对象闭合就映射成一页。 */
+export function previewOutlinePages(raw: string): PptOutlinePage[] {
+    return extractDepth2JsonObjects(raw)
+        .map((slice) => tryParseJson<RawOutlinePage>(slice))
+        .filter((page): page is RawOutlinePage => page !== null)
+        .map((page, index) => ({
+            title: String(page?.title ?? `第${index + 1}页`).trim() || `第${index + 1}页`,
+            outline: String(page?.outline ?? "").trim(),
+            visualHint: String(page?.visualHint ?? "").trim(),
+        }));
+}
+
+/** 展开模式（extractPptPages）流式预览：range 一闭合就立即按行号切片出正文；越界/倒置/空白的
+ * range 静默跳过（不影响预览之外的任何状态），最终仍由 extractPptPages 权威处理与告警。 */
+export function previewExtractPages(raw: string, material: string): PptOutlinePage[] {
+    const lines = material.split("\n");
+    const totalLines = lines.length;
+    return extractDepth2JsonObjects(raw)
+        .map((slice) => tryParseJson<RawExtractPage>(slice))
+        .filter((range): range is RawExtractPage => range !== null)
+        .map((range, index) => previewExtractPage(range, index, lines, totalLines))
+        .filter((page): page is PptOutlinePage => page !== null);
+}
+
+function previewExtractPage(range: RawExtractPage, index: number, lines: string[], totalLines: number): PptOutlinePage | null {
+    const startLine = Number(range?.startLine);
+    const endLine = Number(range?.endLine);
+    if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || Math.round(startLine) > Math.round(endLine)) return null;
+    const clampedStart = clamp(Math.round(startLine), 1, totalLines);
+    const clampedEnd = clamp(Math.round(endLine), 1, totalLines);
+    const outline = stripFenceLines(lines.slice(clampedStart - 1, clampedEnd))
+        .join("\n")
+        .trim();
+    if (!outline) return null;
+    return { title: String(range?.title ?? `第${index + 1}页`).trim() || `第${index + 1}页`, outline, visualHint: "" };
+}

@@ -236,7 +236,17 @@ export function CanvasPptPanel() {
                                 <div className="min-w-0">
                                     <div className="truncate text-sm font-semibold">结构画布</div>
                                     <div className="truncate text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                        节点与连线 · {confirmedCount}/{pages.length} 页已确认{generatingCount > 0 ? ` · ${generatingCount} 页生成中` : ""}
+                                        节点与连线 ·{" "}
+                                        <span className="font-mono tabular-nums">
+                                            {confirmedCount}/{pages.length}
+                                        </span>{" "}
+                                        页已确认
+                                        {generatingCount > 0 ? (
+                                            <>
+                                                {" · "}
+                                                <span className="font-mono tabular-nums">{generatingCount}</span> 页生成中
+                                            </>
+                                        ) : null}
                                     </div>
                                 </div>
                             </div>
@@ -244,7 +254,13 @@ export function CanvasPptPanel() {
                                 <Button size="small" type="text" icon={<Presentation className="size-3.5" />} onClick={showWorkbench}>
                                     返回工作台
                                 </Button>
-                                <button type="button" className="grid size-7 place-items-center rounded-md" style={{ color: canvasTheme.node.muted }} onClick={() => setPanelOpen(false)} aria-label="收起 PPT 结构面板">
+                                <button
+                                    type="button"
+                                    className="grid size-7 place-items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2"
+                                    style={{ color: canvasTheme.node.muted, outlineColor: canvasTheme.node.activeStroke }}
+                                    onClick={() => setPanelOpen(false)}
+                                    aria-label="收起 PPT 结构面板"
+                                >
                                     <X className="size-4" aria-hidden="true" />
                                 </button>
                             </div>
@@ -293,8 +309,8 @@ export function CanvasPptPanel() {
                     <Tooltip title="展开 PPT 结构面板" placement="left">
                         <button
                             type="button"
-                            className="absolute right-4 top-20 z-40 grid size-10 place-items-center rounded-full border shadow-lg backdrop-blur transition hover:scale-105"
-                            style={{ background: canvasTheme.toolbar.panel, borderColor: canvasTheme.toolbar.border, color: canvasTheme.node.text }}
+                            className="absolute right-4 top-20 z-40 grid size-10 place-items-center rounded-full border shadow-lg backdrop-blur transition hover:scale-105 motion-reduce:transition-none motion-reduce:hover:scale-100 focus-visible:outline-2 focus-visible:outline-offset-2"
+                            style={{ background: canvasTheme.toolbar.panel, borderColor: canvasTheme.toolbar.border, color: canvasTheme.node.text, outlineColor: canvasTheme.node.activeStroke }}
                             onClick={() => setPanelOpen(true)}
                             aria-label="展开 PPT 结构面板"
                         >
@@ -389,7 +405,7 @@ function PptPageRow({
     return (
         <button
             type="button"
-            className="flex w-full gap-3 rounded-lg border p-2 text-left transition hover:-translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2"
+            className="flex w-full gap-3 rounded-lg border p-2 text-left transition hover:-translate-y-px motion-reduce:transition-none motion-reduce:hover:translate-y-0 focus-visible:outline-2 focus-visible:outline-offset-2"
             style={{ borderColor: confirmed ? successColor : canvasTheme.node.stroke, outlineColor: canvasTheme.node.activeStroke }}
             onClick={onOpen}
             aria-label={`精修第 ${page.index} 页，${confirmed ? "已确认" : "待确认"}`}
@@ -405,18 +421,22 @@ function PptPageRow({
             </span>
             <span className="min-w-0 flex-1 py-0.5">
                 <span className="flex items-center gap-1.5">
-                    {confirmed ? (
+                    {generating ? (
+                        <LoaderCircle className="size-3.5 shrink-0 animate-spin" style={{ color: canvasTheme.node.muted }} aria-hidden="true" />
+                    ) : confirmed ? (
                         <CheckCircle2 className="size-3.5 shrink-0" style={{ color: successColor }} aria-hidden="true" />
                     ) : confirmationIssues.some((issue) => !issue.includes("尚未确认")) ? (
                         <CircleAlert className="size-3.5 shrink-0" style={{ color: errorColor }} aria-hidden="true" />
-                    ) : null}
+                    ) : (
+                        <span className="size-3.5 shrink-0 rounded-full border" style={{ borderColor: canvasTheme.node.faint }} aria-hidden="true" />
+                    )}
                     <span className="shrink-0 text-[11px] font-medium" style={{ color: canvasTheme.node.muted }}>
-                        第{page.index}页
+                        第<span className="font-mono tabular-nums">{page.index}</span>页
                     </span>
                     <span className="truncate text-sm font-semibold">{page.title}</span>
                 </span>
                 <span className="mt-1.5 block text-xs" style={{ color: canvasTheme.node.muted }}>
-                    {takes.length} 个方案分支 · {candidateCount} 个候选稿
+                    <span className="font-mono tabular-nums">{takes.length}</span> 个方案分支 · <span className="font-mono tabular-nums">{candidateCount}</span> 个候选稿
                 </span>
                 <span className="mt-1 flex items-center justify-between gap-2 text-[11px]">
                     <span style={{ color: confirmed ? successColor : canvasTheme.node.muted }}>{generating ? "生成中" : confirmed ? "已选最终版" : candidateCount ? "待确认" : "未生成"}</span>
