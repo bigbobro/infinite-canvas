@@ -66,6 +66,51 @@ type CanvasProjectPptPage = {
 };
 ```
 
+PPT 的视觉方向、页面职责与编译历史直接保存在同一个工程中：
+
+```ts
+type CanvasProjectPptStyleContract = {
+  source:
+    | {
+        kind: "preset";
+        presetId: "clean-report" | "visual-story" | "brand-led";
+      }
+    | { kind: "custom" };
+  direction: string;
+  references: Array<{ storageKey: string }>;
+};
+
+type CanvasProjectPptDeckBrief = {
+  version: number;
+  audience: string;
+  goal: string;
+  narrative: string;
+  styleContract: CanvasProjectPptStyleContract;
+  globalRules: string[];
+  forbiddenRules: string[];
+  lockedDeckFacts: CanvasProjectPptLockedFact[];
+};
+
+type CanvasProjectPptPageSpec = {
+  pageId: string;
+  version: number;
+  layoutRole:
+    | "cover"
+    | "section"
+    | "content"
+    | "evidence"
+    | "comparison"
+    | "close";
+  layoutIntent: string[];
+  // 另有来源、锁定正文/事实、自由度和人工确认字段
+};
+```
+
+- `deckBrief.styleContract` 是唯一可编辑的 deck 级视觉事实源。`presetId` 只记录选择来源，真正参与 Compiler 的是当时冻结的 `direction`。
+- `styleContract.references` 只保存本地图片 `storageKey`，不会为参考图伪造画布节点。图片清理会把这些 key 计入使用集合。
+- `PageSpec.layoutRole` 是页级职责，和只作用于当前方案的排版要求分开保存。
+- Contract 真正变化会提升 DeckBrief 版本并清除全部页面确认；页面职责或布局变化只提升目标 PageSpec 版本并清除目标页确认。两者都保留方案、候选和 `compilationSnapshots`。
+
 ## 节点结构
 
 每个节点是一个 `CanvasNodeData`：
@@ -154,6 +199,7 @@ candidateEdit?: PptCandidateEditSnapshot;
 - PPT 归属：`pptPageId` / `pptTakeId` 标记节点属于哪一页、哪一方案；`pptPageIndex` 只用于展示。
 - PPT 生成轨迹：`pptGenerationRun` 记录一个页方案运行的摘要，`pptGenerationRequest` 记录一个实际付费请求槽的状态、远端 task ID、结果身份、不含 API Key 的冻结渠道身份与重复计费风险。count=1 时两者在同一输出节点；count>1 时 run summary 在 root，每个子节点保留自己的 request trace。`imageTask` 仅是活动任务句柄，不代替终态轨迹。
 - PPT 修改追溯：修改 Request 本身已含 `requestId` / `runId` / `pageId` / `takeId`，`candidateEdit` 再记录基图、整页要求、点位序号与相对坐标、逐点说明和最终提示词。零点位直接使用原基图，有点位才临时生成带编号标记的请求图片；新结果只追加候选，页面的 `confirmedNodeId` 不因生成而改写。
+- PPT 编译血缘：普通生成候选通过 `compilationSnapshotId` 指向不可变编译快照；修改稿只沿 `candidateEdit.baseNodeId` 递归找到根候选。确认和导出要求血缘唯一且全链同页、同方案；断链、循环、重复快照或跨页/方案借用都会先阻止操作，再读取图片 Blob。
 
 ## 连线结构
 

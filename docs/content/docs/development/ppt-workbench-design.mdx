@@ -5,7 +5,7 @@ description: PPT 工作台模块的架构设计、数据模型、侵入点清单
 
 # PPT 工作台设计文档
 
-> **文档性质**：本文档是 PPT 工作台模块的活文档（living doc），随功能迭代持续更新，反映的是当前实际状态，不是一次性设计快照。P0（材料 → 可编辑大纲 → 风格配置 → 建图落画布 → 面板批量生图（含首页锚定）→ 确认此页 → 图片 zip 打包下载）已上线（`890d305` + review 修复 `c0fcaf0`）。在此基础上新增了「已有规格，直接生图」模式——用户已在外部把每页要发给生图模型的完整提示词写好，工具只做逐字展开，不改写；最终检视现已支持把确认稿下载为图片 ZIP 或每页整图、文字不可编辑的图片版 PPTX。新会话/新 agent 可从本文档直接理解当前架构，具体代码坐标见附录（合并上游后以符号名重新定位行号）。
+> **文档性质**：本文档是 PPT 工作台模块的活文档（living doc），随功能迭代持续更新，反映的是当前实际状态，不是一次性设计快照。当前主流程为材料 → 可编辑大纲 → 视觉方向 → 建图落画布 → 面板批量生图（含首页锚定）→ 确认此页 → 下载图片 ZIP 或图片版 PPTX。在此基础上还支持「已有规格，直接生图」模式——用户已在外部把每页完整提示词写好，工具只做逐字展开，不改写。新会话/新 agent 可从本文档直接理解当前架构，具体代码坐标见附录（合并上游后以符号名重新定位行号）。
 
 ## 1. 背景与目标
 
@@ -13,7 +13,7 @@ description: PPT 工作台模块的架构设计、数据模型、侵入点清单
 
 1. **输入原始材料**：用户提供文字材料（Markdown 或整份文档），明确 PPT 核心内容。
 2. **生成分页大纲（节点化）**：LLM 基于材料生成分页大纲（如 1–9 页），每页在画布上对应一个独立节点。
-3. **风格控制（前置配置）**：生图前配置风格——参考图和/或风格描述（如「专业咨询报告风」）。
+3. **视觉方向（前置配置）**：生图前选择默认方向，或在高级区填写自定义方向、添加本地参考图；整套 deck 只保存一份 `DeckBrief.styleContract`。
 4. **批量生图**：结合大纲与风格，每页分别生成 16:9 页面图。
 5. **多轮精修**：对每页生成结果做第二轮、第三轮乃至多轮调整。
 6. **批量下载**：全部页面确认后，可下载整套页面图片 ZIP 或图片版 PPTX。
@@ -34,8 +34,8 @@ description: PPT 工作台模块的架构设计、数据模型、侵入点清单
 - **方案 B：纯画布模板**——排除。没有流程引导、页状态追踪和批量下载落点，相比手动拼节点价值增量太小。
 - **方案 C（采用）：混合架构**：
   - **步骤 1–3 用向导承载**：新路由 `/ppt`（进顶部导航，与生图/视频工作台并列），deck 列表 + 新建向导。向导第一步先选生成方式，两种模式共用后续落画布/面板/导出流程：
-    - **「从材料拆大纲」**（默认，即 P0 原有流程）：材料输入 → LLM 生成分页大纲（**向导内可编辑：改标题/要点、增删页；确认后才落画布**）→ 风格配置（预设描述 + 参考图）。适合还没想清楚具体每页内容、需要工具帮忙规划的场景。
-    - **「已有规格，直接生图」**：适合用户已经在外部（如与 AI 多轮对话）把每页要发给生图模型的完整提示词都写好的场景。工具的职责从「理解与规划」收窄为「定位与搬运」——LLM 只输出每页在原文中的起止行号，正文由代码从原文按行逐字切片，改写在结构上不可能发生，不需要事后校验。切片后对各页求公共前缀：命中（各页开头逐字相同）判定全局视觉风格已内嵌每页，风格步留空；未命中则从原文中未被任何页面占用的内容里提取候选文案预填风格步，交由用户整理确认（保真度要求低于页面正文本身）。
+    - **「从材料拆大纲」**（默认）：材料输入 → LLM 生成分页大纲（**向导内可编辑：改标题/要点、增删页；确认后才落画布**）→ 选择视觉方向。适合还没想清楚具体每页内容、需要工具帮忙规划的场景。
+    - **「已有规格，直接生图」**：适合用户已经在外部（如与 AI 多轮对话）把每页要发给生图模型的完整提示词都写好的场景。工具的职责从「理解与规划」收窄为「定位与搬运」——LLM 只输出每页在原文中的起止行号，正文由代码从原文按行逐字切片，改写在结构上不可能发生，不需要事后校验。未被页面切片占用的全局视觉说明会作为自定义方向草稿带到第三步，由用户确认；为空时仍默认使用“清晰专业”。
   - **确认后程序化建图**：构造完整 `CanvasProject`（节点 + 连线 + `ppt` 字段）经 `importProject` 入库，跳转 `/canvas/:id`。建图不需要画布页面在场。
   - **步骤 4–6 用 PPT 工作台承载**：页状态总览、批量生成、单页精修、确认此页与最终检视；结构画布作为高级视图保留。
   - **步骤 5 在工作台统一动作语义**：“再生成一稿”是无修改要求的单张探索，“按要求改图”支持整页要求与可选点位；蒙版重绘、裁剪、放大等画布原子能力继续保留。
@@ -48,9 +48,11 @@ description: PPT 工作台模块的架构设计、数据模型、侵入点清单
 
 顺带为 P2 铺路：将来加 `workbench_ppt_*` Agent 站点工具（本地 Codex/Claude 一句话生成整套 deck）几乎免费，落在「MCP/Agent 操作画布」这条差异化护城河上。
 
-### 3.3 风格控制：走画布原生连线语义，不造新机制
+### 3.3 视觉方向：DeckBrief Contract 是唯一事实源
 
-画布上放一个「风格说明」文本节点 + N 张参考图图片节点，全部连入每页的生成配置节点。既有行为（`buildNodeGenerationContext`）保证：上游文本自动拼进 prompt、上游图片自动作为参考图走图生图（`requestEdit`）。风格对用户可见、可改，改完重生成即生效。
+`DeckBrief.styleContract` 是唯一可编辑的 deck 级视觉事实源，保存方向来源、冻结的方向文本和 `{ storageKey }[]` 参考图。预设 ID 只记录用户当时从哪个目录项开始，Compiler 永远消费已经写入 Contract 的 `direction`；未来调整预设目录不会静默改变旧 deck。
+
+新建工程不创建风格文本或风格参考图节点。即使画布中出现旧的 `pptRole: "style"` 投影节点，Compiler 与 GenerationPlan 也必须忽略它。普通画布上游输入仍按原生连线语义参与当前方案，但不能覆盖 deck Contract。
 
 ### 3.4 prompt 冻结
 
@@ -69,31 +71,47 @@ description: PPT 工作台模块的架构设计、数据模型、侵入点清单
 ## 4. 数据模型
 
 ```ts
-// CanvasProject（stores/canvas/use-canvas-store.ts）增加可选字段
-ppt?: {
-    sourceMaterial: string;           // 原始材料
-    requirements: string;             // PPT 要求
-    style: {
-        description: string;          // 风格描述（预设或自定义）
-        // 风格参考图。必须是「带 storageKey 属性的对象」数组：cleanup 的
-        // collectImageStorageKeys 只收集对象上的 storageKey 字段，裸 string[]
-        // 不会进 used-set，画布上的风格图片节点被删后 blob 会被清理误删。
-        references: Array<{ storageKey: string }>;
-    };
-    pages: Array<{
-        pageId: string;               // 稳定页面身份
-        index: number;                // 页序（1 起）
-        title: string;
-        outline: string;              // "outline" 模式下是该页要点；"extract" 模式下是从原文逐字切片的该页完整内容
-        visualHint: string;           // LLM 给的视觉建议；"extract" 模式下恒为空字符串
-        confirmedNodeId?: string;     // 用户确认的最终图像节点 id
+type CanvasProjectPptStyleContract = {
+    source:
+        | { kind: "preset"; presetId: "clean-report" | "visual-story" | "brand-led" }
+        | { kind: "custom" };
+    direction: string;                         // Compiler 消费的冻结文本
+    references: Array<{ storageKey: string }>; // 本地 Blob 长期标识
+};
 
-        // 该页全部线路（平行提示词）。一条线路 = 一对 outline/config 节点；新建 deck 只写这个，
-        // 数组序即线路创建序（排序依据见 §6）。
+type CanvasProjectPpt = {
+    sourceMaterial: string;
+    requirements: string;
+    deckBrief: {
+        version: number;
+        audience: string;
+        goal: string;
+        narrative: string;
+        styleContract: CanvasProjectPptStyleContract;
+        globalRules: string[];
+        forbiddenRules: string[];
+        lockedDeckFacts: CanvasProjectPptLockedFact[];
+    };
+    pageSpecs: Array<{
+        pageId: string;
+        version: number;
+        layoutRole: "cover" | "section" | "content" | "evidence" | "comparison" | "close";
+        layoutIntent: string[];
+        // 另有来源、锁定正文/事实、自由度和人工确认字段
+    }>;
+    pages: Array<{
+        pageId: string;                       // 稳定页面身份
+        index: number;                        // 页序（1 起）
+        title: string;
+        outline: string;
+        visualHint: string;
+        confirmedNodeId?: string;
         takes: Array<{ takeId: string; anchorNodeId: string; configNodeId: string }>;
     }>;
-    anchorConfirmed?: boolean;        // 首页锚定是否已完成
-    mode?: "outline" | "extract";     // 建 deck 用的生成方式，缺省视为 "outline"（存量 deck 天然兼容）
+    compilationSnapshots: CanvasProjectPptCompilationSnapshot[];
+    anchorConfirmed?: boolean;
+    skipAnchor?: boolean;
+    mode?: "outline" | "extract";
 };
 
 // CanvasNodeMetadata（types/canvas.ts）增加的可选标记字段
@@ -105,7 +123,7 @@ pptGenerationRun?: PptGenerationRunSummary;             // root 唯一持有
 pptGenerationRequest?: PptGenerationRequestTrace;       // 每个固定请求槽唯一持有，终态保留
 ```
 
-项目尚未上线，PPT 数据直接采用稳定身份新结构，不保留旧单值字段兼容。`pageId`/`takeId` 是页面、方案、Run、Request、候选归属与通知定位的业务身份；`index` 只负责页序展示，anchor/config ID 只负责节点引用。
+项目尚未上线，PPT 数据直接采用当前结构，不保留旧视觉字段迁移。`styleContract` 是唯一 deck 视觉事实源；`layoutRole` 是页级职责，方案排版仍由当前 take 的配置保存。`pageId`/`takeId` 是页面、方案、Run、Request、候选归属与通知定位的业务身份；`index` 只负责页序展示，anchor/config ID 只负责节点引用。
 
 **防御性解析原则**：面板以 `ppt.pages` 为纲、以 metadata 标记做校验，发现引用或台账缺失时给出可复制诊断而不崩溃。普通位置、尺寸与视角编辑仍留在结构画布；Run/Request 所有者、生成归属连线和未解决方案的输入配置由工作台保护，不能通过普通删除、替换、Agent、撤销或图片派生工具绕过。方案删除统一走工作台，并在运行中或待处理时阻止删除。
 
@@ -114,10 +132,9 @@ pptGenerationRequest?: PptGenerationRequestTrace;       // 每个固定请求槽
 ## 5. 画布工程结构（deck 的形状）
 
 ```
-[风格说明 文本节点]──┐
-[参考图1 图片节点]──┼──→ [第1页 生成配置] → (生成后出现) [第1页 页面图] → 精修链向右生长…
-[参考图N 图片节点]──┘        ↑
-[第1页大纲 文本节点]─────────┘
+DeckBrief.styleContract ──→ Compiler ──→ 冻结 prompt / referenceSnapshots
+
+[第1页大纲 文本节点]──→ [第1页 生成配置] → (生成后出现) [第1页 页面图] → 精修链向右生长…
 （每页一列，横向排布；第 2–N 页结构同上）
 ```
 
@@ -131,9 +148,9 @@ pptGenerationRequest?: PptGenerationRequestTrace;       // 每个固定请求槽
 
 ## 6. 关键设计难题与对策
 
-1. **风格一致性（成败点）**——三层叠加：
-   - 每页 prompt = deck 级统一风格前缀 + 该页大纲；
-   - 相同参考图集连入每页；
+1. **视觉一致性（成败点）**——三层叠加：
+   - 每页 prompt 都由同一份冻结 Contract direction + 页面职责 + 页面规格编译；
+   - Contract 参考图以 `storageKey` 快照进入每个请求，并与普通上游图片去重；
    - **「首页锚定」两段式批量，默认开、可跳过**：先只生成第 1 页 → 用户精修确认 → 把确认图自动 `connect_nodes` 进第 2–N 页的配置节点 → 再批量生成。
 2. **文字渲染准确性取决于模型能力**：当前使用的文字渲染强模型已经可以产出高信息密度的中文页面，不再把“中文小字天然不可用”作为产品前提。仍需按具体模型和页面实测，个别错字可用按要求改图或蒙版重绘修正。当前 ZIP 和图片版 PPTX 都以整页图片为内容，文字不能单独编辑；“图片型”描述的是交付格式，不再限制内容只能是低文字量、视觉冲击型页面。
 3. **并发与失败处理**：现有机制无并发上限（生图工作台 count=15 也是全并发），9 页规模 MVP 直接沿用；**必须给单页失败重试**（面板每页独立重生成按钮），一页失败不毁整批。更长 deck 的并发队列（3–4 并发）留 P1。
@@ -358,13 +375,17 @@ createGenerationPlan(
 
 ## 14. PPT Prompt Compiler：生成请求的唯一提示词事实源
 
-PPT 页面生成不再把 outline、全局风格、排版模板和临时 prompt 分散拼接。两个向导入口都先形成 `DeckBrief + PageSpec[]`：从材料规划允许模型参与拆页，但无法溯源的结论必须确认；已有逐页规格优先按原始行号确定性切片，正文、数字、术语、点数与表格语义进入锁定字段，布局指令单独进入 `layoutIntent`。
+PPT 页面生成不再把 outline、视觉方向、页面职责、方案排版和临时 prompt 分散拼接。两个向导入口都先形成 `DeckBrief + PageSpec[]`：`DeckBrief.styleContract` 是唯一 deck 级视觉事实源；`PageSpec.layoutRole` 表达封面、章节、内容、证据、对比或收尾职责；方案排版留在对应 target。不存在 page 级视觉 override。
 
-`compilePptPromptSnapshot()` 是唯一编译入口。一个不可变 `CompilationSnapshot` 同时冻结 DeckBrief/PageSpec 版本、每个 `pageId + takeId` 的输入 target、最终提示词、来源与检查结果。工作台快速生成和展开审阅消费同一份编译结果；普通调整更新 PageSpec，直接编辑最终提示词保存为显式 override。override 与自定义排版的人工确认都绑定完整精确文本，后续任意新增、删减、改写或重排都会使确认失效。
+`compilePptPromptSnapshot()` 是唯一编译入口。一个不可变 `CompilationSnapshot` 深拷贝并冻结完整 Contract、DeckBrief/PageSpec 版本、每个 `pageId + takeId` 的输入 target、最终提示词、来源与检查结果。Compiler 只消费 Contract 已冻结的 `direction`，不按 preset ID 查询最新目录，也忽略所有 `pptRole: "style"` 投影节点。六类页面职责分别进入最终提示词；空方向、损坏来源、未知 preset、缺失/未知职责以及 override 删除必要方向或职责都会形成阻断问题。
 
-生成计划把每个 Request 绑定到 `snapshotId + promptId + prompt`。可靠执行模块在 durable 写入和真正 POST 前重新读取工程，校验快照存在且未篡改、Request 提示词与快照完全相同、PageSpec 版本未变化、当前节点输入仍等于冻结 target。缺失、漂移、事实冲突、禁止项冲突或阻断检查未处理时均为 0 POST。页面生成使用 `pageGeneration` 计划；候选“按要求改图”使用独立 `candidateEdit` 计划，不能互相降级绕过门禁。
+Contract 写入采用 DeckBrief 版本 CAS：真正变化才升版并清除全部页面确认，相同语义 no-op，过期版本失败；方案、候选和历史快照始终保留。页面职责或 `layoutIntent` 的变化只提升目标 PageSpec 版本并清除目标页确认。工作台快速生成和展开审阅消费同一份编译结果；直接编辑最终提示词保存为显式 override，override 与方案排版的人工确认都绑定完整精确文本。
 
-DeckBrief、PageSpec、编译快照、Run/Request 和图片引用仍保存在浏览器本地 localforage/IndexedDB，不代表云同步。自动化与 localhost 验证证明的是请求前的确定性编译、可见性和绑定；真实模型是否准确渲染全部文字与版式仍需在单独确认调用预算后验收。
+生成计划把每个 Request 绑定到 `snapshotId + promptId + prompt`。Contract 参考图写入 `referenceSnapshots` 并按 `storageKey` 与普通图片去重，但不伪造 `inputRefs.nodeId`。可靠执行模块在 durable 写入和真正 POST 前重新读取工程，校验快照存在且未篡改、Request 提示词与快照完全相同、当前 Contract、PageSpec 与节点输入仍等于冻结值；参考 Blob 缺失、不可读或解析为空同样在 provider submit 前失败。已有远端 task 只恢复旧 task，不因当前 Contract 改变而重提。
+
+候选确认与 ZIP/PPTX 导出还必须沿 `compilationSnapshotId` 或 `candidateEdit.baseNodeId` 回溯到唯一、同页同方案的 CompilationSnapshot。修改稿自身伪造的 snapshot ID 不参与判断；断链、循环、重复快照或跨页/方案借用会阻止确认，导出在读取图片 Blob 前终止。旧快照候选不要求与当前 Contract 相同，但必须由用户重新显式确认。
+
+DeckBrief、PageSpec、编译快照、Run/Request 和图片引用仍保存在浏览器本地 localforage/IndexedDB，不代表云同步。自动化与 localhost 验证证明的是请求前的确定性编译、可见性和绑定；真实模型是否准确渲染全部文字与版式仍需单独的真实调用验收。
 
 ## 15. 精修动作与工作区状态
 
