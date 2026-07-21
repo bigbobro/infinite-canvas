@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, ConfigProvider, Modal, theme as antdTheme } from "antd";
 import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, Download, ImageOff, LoaderCircle, Pencil, Presentation } from "lucide-react";
 
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
-import { exportPptDeckImages, inspectPptDeckExport } from "@/lib/ppt/deck-export";
+import { exportPptDeckImages, exportPptDeckPptx, inspectPptDeckExport, type PptDeckExportProgress } from "@/lib/ppt/deck-export";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { cn } from "@/lib/utils";
 import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 type Inspection = Awaited<ReturnType<typeof inspectPptDeckExport>>;
+type ExportState = PptDeckExportProgress & { kind: "pptx" | "zip" };
 
 /** 放映室：终审唯一深色场域，两主题一致，靠嵌套 ConfigProvider（darkAlgorithm）驱动 antd 内建组件（Button/Modal 关闭态）跟随。 */
 const CINEMA_THEME = {
@@ -36,9 +37,10 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
     const [inspection, setInspection] = useState<Inspection | null>(null);
     const [activePageId, setActivePageId] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
-    const [exporting, setExporting] = useState(false);
+    const [exporting, setExporting] = useState<ExportState | null>(null);
     const [loadError, setLoadError] = useState("");
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+    const exportLock = useRef(false);
 
     // #17+#27：不再依赖手动「重新检查」，effect 依赖 project 引用——store 更新（选定/取消确认）后引用变化即自动重算。
     useEffect(() => {
@@ -90,6 +92,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
     const activePage = pages[activePosition];
     const activeWorkspace = activePage ? pageWorkspaces.find((item) => item.page.pageId === activePage.page.pageId) : undefined;
     const problemCount = pages.filter((item) => item.issues.length > 0).length;
+    const pptxIssuePages = pages.filter((item) => item.pptxIssues.length > 0);
 
     const changePage = (position: number) => {
         const target = pages[position];
@@ -125,16 +128,24 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
         }
     };
 
-    const handleExport = async () => {
-        if (!project || !inspection?.ready) return;
-        setExporting(true);
+    const handleExport = async (kind: "pptx" | "zip") => {
+        if (!project || exportLock.current || (kind === "pptx" ? !inspection?.pptxReady : !inspection?.ready)) return;
+        exportLock.current = true;
+        setExporting({ kind, current: 0, total: pages.length, message: kind === "pptx" ? "正在准备 PPT…" : "正在准备图片…" });
         try {
-            await exportPptDeckImages(project);
-            message.success("PPT 图片已打包下载");
+            const onProgress = (progress: PptDeckExportProgress) => setExporting({ kind, ...progress });
+            if (kind === "pptx") {
+                await exportPptDeckPptx(project, { onProgress });
+                message.success("图片版 PPT 已下载");
+            } else {
+                await exportPptDeckImages(project, { onProgress });
+                message.success("页面图片 ZIP 已下载");
+            }
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "打包下载失败");
+            message.error(error instanceof Error ? error.message : kind === "pptx" ? "PPT 下载失败" : "ZIP 下载失败");
         } finally {
-            setExporting(false);
+            exportLock.current = false;
+            setExporting(null);
         }
     };
 
@@ -195,7 +206,15 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                 <div className="min-w-0">
                                     <h2 className="text-sm font-semibold leading-5 text-white/90">最终检视</h2>
                                     <p className="truncate text-xs leading-4 text-white/70">
-                                        {loading ? "正在检查每页最终版…" : inspection?.ready ? `全部 ${pages.length} 页已定稿，可以打包下载` : problemCount ? `还有 ${problemCount} 页需要处理` : "请先完成每页确认"}
+                                        {loading
+                                            ? "正在检查每页最终版…"
+                                            : inspection?.pptxReady
+                                              ? `全部 ${pages.length} 页已定稿，可以下载交付文件`
+                                              : inspection?.ready
+                                                ? `页面图片已就绪，还有 ${pptxIssuePages.length} 页不能生成 PPT`
+                                                : problemCount
+                                                  ? `还有 ${problemCount} 页需要处理`
+                                                  : "请先完成每页确认"}
                                     </p>
                                 </div>
                             </div>
@@ -203,6 +222,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                 {pages.map((item) => {
                                     const selected = item.page.pageId === activePage?.page.pageId;
                                     const ready = item.issues.length === 0;
+                                    const pptxReady = item.pptxIssues.length === 0;
                                     return (
                                         <button
                                             key={item.page.pageId}
@@ -213,13 +233,13 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                                 selected && "bg-white/10 ring-2 ring-white/80",
                                             )}
                                             aria-current={selected ? "page" : undefined}
-                                            aria-label={`第 ${item.page.index} 页，${ready ? "已定稿" : "需要处理"}`}
+                                            aria-label={`第 ${item.page.index} 页，${!ready ? "需要处理" : pptxReady ? "已定稿" : "不能生成 PPT"}`}
                                             onClick={() => setActivePageId(item.page.pageId)}
                                         >
                                             <span className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded bg-black/40" aria-hidden="true">
                                                 {item.previewUrl ? <img src={item.previewUrl} alt="" className="size-full object-contain" /> : <ImageOff className="size-4 text-white/30" />}
                                                 <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1 font-mono text-[9px] font-semibold leading-4 tabular-nums text-white/85">{pad2(item.page.index)}</span>
-                                                <span className={cn("absolute right-1 top-1 size-2 rounded-full ring-1 ring-black/50", ready ? "bg-green-400" : "bg-red-400")} />
+                                                <span className={cn("absolute right-1 top-1 size-2 rounded-full ring-1 ring-black/50", !ready ? "bg-red-400" : pptxReady ? "bg-green-400" : "bg-amber-400")} />
                                             </span>
                                         </button>
                                     );
@@ -293,6 +313,23 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                                 </div>
                                             </div>
                                         )}
+
+                                        {activePage.pptxIssues.length ? (
+                                            <section className="rounded-xl border border-amber-300/25 bg-amber-400/10 p-4" aria-labelledby="ppt-review-pptx-issues-title">
+                                                <div id="ppt-review-pptx-issues-title" className="flex items-center gap-2 text-sm font-semibold text-amber-200">
+                                                    <CircleAlert className="size-4" aria-hidden="true" />
+                                                    本页暂不能生成图片版 PPT
+                                                </div>
+                                                <ul className="mt-3 space-y-1.5 text-sm text-amber-100/90">
+                                                    {activePage.pptxIssues.map((issue) => (
+                                                        <li key={issue} className="flex items-start gap-2">
+                                                            <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-amber-300" aria-hidden="true" />
+                                                            <span>{issue}</span>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </section>
+                                        ) : null}
 
                                         {activeWorkspace ? (
                                             <section aria-label="全部候选稿">
@@ -369,16 +406,32 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                     ← → 翻页
                                 </span>
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex flex-wrap items-center justify-end gap-3">
                                 {!loading && !inspection?.ready && problemCount > 0 ? <span className="text-xs text-white/70">还有 {problemCount} 页未定稿</span> : null}
+                                {!loading && inspection?.ready && !inspection.pptxReady ? (
+                                    <span className="max-w-72 text-right text-xs text-amber-200/90">第 {pptxIssuePages.map((item) => item.page.index).join("、")} 页暂不能生成 PPT，仍可下载 ZIP</span>
+                                ) : null}
                                 <Button
-                                    type="primary"
-                                    icon={exporting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-                                    disabled={!inspection?.ready || loading || exporting || !project}
-                                    onClick={() => void handleExport()}
+                                    type="text"
+                                    className="hover:!bg-white/10"
+                                    style={{ color: "rgba(255,255,255,0.82)" }}
+                                    icon={exporting?.kind === "zip" ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+                                    disabled={!inspection?.ready || loading || Boolean(exporting) || !project}
+                                    onClick={() => void handleExport("zip")}
                                 >
-                                    {exporting ? "正在打包" : "打包下载"}
+                                    {exporting?.kind === "zip" ? exporting.message : "下载页面图片（ZIP）"}
                                 </Button>
+                                <div className="flex flex-col items-start gap-0.5">
+                                    <Button
+                                        type="primary"
+                                        icon={exporting?.kind === "pptx" ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+                                        disabled={!inspection?.pptxReady || loading || Boolean(exporting) || !project}
+                                        onClick={() => void handleExport("pptx")}
+                                    >
+                                        {exporting?.kind === "pptx" ? exporting.message : "下载图片版 PPT"}
+                                    </Button>
+                                    <span className="pl-1 text-[11px] leading-4 text-white/70">每页为整张图片，文字不可编辑</span>
+                                </div>
                             </div>
                         </footer>
                     </div>
