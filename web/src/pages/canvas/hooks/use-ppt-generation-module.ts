@@ -319,6 +319,11 @@ function queueDurableMutation<T>(projectId: string, mutation: () => Promise<T>):
     return pending;
 }
 
+export function buildPptGenerationNotificationHref({ projectId, pageId, takeId, runId, status }: { projectId: string; pageId: string; takeId: string; runId: string; status: PptGenerationRunStatus }) {
+    const search = new URLSearchParams({ pptPage: pageId, pptTake: takeId, pptRun: runId, pptStatus: status });
+    return `/canvas/${projectId}?${search.toString()}`;
+}
+
 function notifyRun(
     message: { open: (config: { key?: string; type: "success" | "warning" | "error" | "info"; content: ReactNode; duration?: number }) => unknown },
     navigate: NavigateFunction,
@@ -352,10 +357,7 @@ function notifyRun(
             {
                 type: "button",
                 className: "bg-transparent text-left",
-                onClick: () => {
-                    const search = new URLSearchParams({ pptPage: pageId, pptTake: takeId, pptRun: runId, pptStatus: status });
-                    navigate(`/canvas/${projectId}?${search.toString()}`);
-                },
+                onClick: () => navigate(buildPptGenerationNotificationHref({ projectId, pageId, takeId, runId, status })),
             },
             `${label}${result.text} · 点击查看`,
         ),

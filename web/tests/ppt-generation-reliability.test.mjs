@@ -18,6 +18,7 @@ let agentOpsTouchPptGenerationLedger;
 let historyEntryTouchesPptGenerationLedger;
 let nodeIdsTouchPptControlledNodes;
 let sanitizeCopiedCanvasMetadata;
+let buildPptGenerationNotificationHref;
 
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
@@ -28,6 +29,7 @@ before(async () => {
     ({ hasPptRepeatBillingRisk, agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, sanitizeCopiedCanvasMetadata } = await vite.ssrLoadModule("/src/lib/ppt/generation-ledger.ts"));
     ({ buildPptDeckProject } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
+    ({ buildPptGenerationNotificationHref } = await vite.ssrLoadModule("/src/pages/canvas/hooks/use-ppt-generation-module.ts"));
 });
 
 after(async () => {
@@ -576,8 +578,63 @@ test("刷新看到无 task ID 的 submitting 时进入 unknown，且不会自动
     const abandoned = await module.recover({ type: "abandonUnknown", requestId: "request-unknown" });
     await abandoned.settled;
     assert.deepEqual(abandoned.abandonedRequestIds, ["request-unknown"]);
-    assert.equal(requestTrace(await harness.durable.read(), "request-unknown").status, "abandoned");
+    const abandonedTrace = requestTrace(await harness.durable.read(), "request-unknown");
+    assert.equal(abandonedTrace.status, "abandoned");
+    assert.deepEqual(
+        abandonedTrace.recentEvents.map((event) => event.status),
+        ["submitting", "submission_unknown", "abandoned"],
+    );
+    assert.equal(hasPptRepeatBillingRisk([abandonedTrace]), true);
     assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("task 已创建后断网，恢复沿用原 request/task 且不重复 POST", async () => {
+    const suffix = "task-created-offline";
+    const plan = generationPlan(1, suffix);
+    const harness = createHarness(baseProject(suffix), {
+        taskBeforeSubmitError: true,
+        submitError: new Error("offline after task created"),
+    });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    const started = await module.start(plan);
+    await started.settled;
+    let durable = await harness.durable.read();
+    let trace = requestTrace(durable, `request-${suffix}-0`);
+    assert.equal(trace.requestId, `request-${suffix}-0`);
+    assert.equal(trace.runId, `run-${suffix}`);
+    assert.equal(trace.remoteTaskId, `task-request-${suffix}-0`);
+    assert.equal(trace.status, "recoverable_error");
+    assert.equal(harness.stats.submitCalls, 1);
+    assert.equal(harness.stats.resumeCalls, 0);
+    assert.equal(harness.stats.materializeCalls, 0);
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["needs_attention"],
+    );
+
+    const recovered = await module.recover({ type: "retrieveExisting", requestId: trace.requestId });
+    await recovered.settled;
+    durable = await harness.durable.read();
+    trace = requestTrace(durable, trace.requestId);
+    assert.equal(trace.remoteTaskId, `task-request-${suffix}-0`);
+    assert.equal(trace.status, "completed");
+    assert.equal(harness.stats.submitCalls, 1);
+    assert.equal(harness.stats.resumeCalls, 1);
+    assert.deepEqual(harness.stats.resumedTaskIds, [`task-request-${suffix}-0`]);
+    assert.equal(harness.stats.materializeCalls, 1);
+    assert.deepEqual(harness.stats.materializedResultIdentities, [`result-request-${suffix}-0`]);
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["needs_attention", "completed"],
+    );
+
+    const finalRecovery = await module.recover({ type: "reconcileProject" });
+    await finalRecovery.settled;
+    assert.equal(harness.stats.submitCalls, 1);
+    assert.equal(harness.stats.resumeCalls, 1);
+    assert.equal(harness.stats.materializeCalls, 1);
+    assert.equal(harness.notifications.length, 2);
 });
 
 test("已有 task ID 只 resume 原任务，物化失败后可再次取回且不 POST", async () => {
@@ -589,17 +646,41 @@ test("已有 task ID 只 resume 原任务，物化失败后可再次取回且不
     await firstRecovery.settled;
     assert.equal(harness.stats.submitCalls, 0);
     assert.equal(harness.stats.resumeCalls, 1);
-    assert.equal(requestTrace(await harness.durable.read(), "request-resume").status, "recoverable_error");
+    let trace = requestTrace(await harness.durable.read(), "request-resume");
+    assert.equal(trace.requestId, "request-resume");
+    assert.equal(trace.runId, "run-resume");
+    assert.equal(trace.remoteTaskId, "task-resume");
+    assert.equal(trace.resultIdentity, "result-request-resume");
+    assert.equal(trace.status, "recoverable_error");
+    assert.equal(harness.stats.materializeCalls, 1);
+    assert.deepEqual(harness.stats.materializedResultIdentities, []);
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["needs_attention"],
+    );
 
     const retry = await module.recover({ type: "retrieveExisting", requestId: "request-resume" });
     await retry.settled;
     assert.equal(harness.stats.submitCalls, 0);
     assert.equal(harness.stats.resumeCalls, 2);
-    assert.equal(requestTrace(await harness.durable.read(), "request-resume").status, "completed");
+    trace = requestTrace(await harness.durable.read(), "request-resume");
+    assert.equal(trace.remoteTaskId, "task-resume");
+    assert.equal(trace.resultIdentity, "result-request-resume");
+    assert.equal(trace.status, "completed");
+    assert.deepEqual(harness.stats.resumedTaskIds, ["task-resume", "task-resume"]);
+    assert.equal(harness.stats.materializeCalls, 2);
+    assert.deepEqual(harness.stats.materializedResultIdentities, ["result-request-resume"]);
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["needs_attention", "completed"],
+    );
 
     const finalRecovery = await module.recover({ type: "reconcileProject" });
     await finalRecovery.settled;
+    assert.equal(harness.stats.submitCalls, 0);
     assert.equal(harness.stats.resumeCalls, 2);
+    assert.equal(harness.stats.materializeCalls, 2);
+    assert.equal(harness.notifications.length, 2);
 });
 
 test("无 task ID 的网络失败保守进入 submission_unknown", async () => {
@@ -644,15 +725,71 @@ test("已有 task ID 的临时网络错误保持 recoverable，恢复时不 POST
 
     const offlineRecovery = await module.recover({ type: "reconcileProject" });
     await offlineRecovery.settled;
-    assert.equal(requestTrace(await harness.durable.read(), "request-offline").status, "recoverable_error");
+    let trace = requestTrace(await harness.durable.read(), "request-offline");
+    assert.equal(trace.requestId, "request-offline");
+    assert.equal(trace.runId, "run-offline");
+    assert.equal(trace.remoteTaskId, "task-offline");
+    assert.equal(trace.status, "recoverable_error");
     assert.equal(harness.stats.submitCalls, 0);
     assert.equal(harness.stats.resumeCalls, 1);
+    assert.equal(harness.stats.materializeCalls, 0);
+    assert.deepEqual(harness.stats.resumedTaskIds, ["task-offline"]);
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["needs_attention"],
+    );
 
-    const onlineRecovery = await module.recover({ type: "retrieveExisting", requestId: "request-offline" });
+    const refreshedModule = createPptGenerationModule(harness.dependencies);
+    const onlineRecovery = await refreshedModule.recover({ type: "retrieveExisting", requestId: "request-offline" });
     await onlineRecovery.settled;
-    assert.equal(requestTrace(await harness.durable.read(), "request-offline").status, "completed");
+    trace = requestTrace(await harness.durable.read(), "request-offline");
+    assert.equal(trace.remoteTaskId, "task-offline");
+    assert.equal(trace.status, "completed");
     assert.equal(harness.stats.submitCalls, 0);
     assert.equal(harness.stats.resumeCalls, 2);
+    assert.equal(harness.stats.materializeCalls, 1);
+    assert.deepEqual(harness.stats.resumedTaskIds, ["task-offline", "task-offline"]);
+    assert.deepEqual(harness.stats.materializedResultIdentities, ["result-request-offline"]);
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["needs_attention", "completed"],
+    );
+
+    const finalRecovery = await refreshedModule.recover({ type: "reconcileProject" });
+    await finalRecovery.settled;
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 2);
+    assert.equal(harness.stats.materializeCalls, 1);
+    assert.equal(harness.notifications.length, 2);
+});
+
+test("跨页终态通知保留稳定身份、生成直达地址且每个终态只 claim 一次", async () => {
+    const project = projectWithRequest("cross-page-notification", {
+        status: "running",
+        remoteTaskId: "task-cross-page",
+        pageId: "page-2",
+        takeId: "take-2",
+        pageIndex: 2,
+    });
+    const harness = createHarness(project);
+    const module = createPptGenerationModule(harness.dependencies);
+
+    const recovered = await module.recover({ type: "reconcileProject" });
+    await recovered.settled;
+    assert.deepEqual(harness.notifications, [{ runId: "run-cross-page-notification", pageId: "page-2", takeId: "take-2", status: "completed" }]);
+    assert.equal(
+        buildPptGenerationNotificationHref({ projectId: project.id, pageId: "page-2", takeId: "take-2", runId: "run-cross-page-notification", status: "completed" }),
+        `/canvas/${project.id}?pptPage=page-2&pptTake=take-2&pptRun=run-cross-page-notification&pptStatus=completed`,
+    );
+    assert.equal(runSummary(await harness.durable.read(), "run-cross-page-notification").notifiedTerminalStatus, "completed");
+
+    const refreshedModule = createPptGenerationModule(harness.dependencies);
+    const secondRecovery = await refreshedModule.recover({ type: "reconcileProject" });
+    await secondRecovery.settled;
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 1);
+    assert.equal(harness.stats.materializeCalls, 1);
+    assert.equal(harness.notifications.length, 1);
 });
 
 test("明确远端失败在 task 已落盘后收敛为 failed", async () => {
@@ -831,24 +968,36 @@ function generationPlan(count, suffix) {
     };
 }
 
-function projectWithRequest(suffix, { status, remoteTaskId }) {
+function projectWithRequest(suffix, { status, remoteTaskId, pageId = "page-1", takeId = "take-1", pageIndex = 1 }) {
     const project = baseProject(suffix);
     const at = "2026-07-21T00:00:00.000Z";
     const requestId = `request-${suffix}`;
     const runId = `run-${suffix}`;
+    let configNodeId = "config";
+    if (pageId !== "page-1" || takeId !== "take-1") {
+        const anchorNodeId = `anchor-${suffix}`;
+        configNodeId = `config-${suffix}`;
+        project.nodes.push(
+            canvasNode(anchorNodeId, "text", { content: "跨页测试提示词", status: "success", pptPageId: pageId, pptTakeId: takeId, pptPageIndex: pageIndex, pptRole: "outline" }),
+            canvasNode(configNodeId, "config", { prompt: "跨页测试提示词", status: "success", model: "fake-image", count: 1, pptPageId: pageId, pptTakeId: takeId, pptPageIndex: pageIndex }),
+        );
+        project.connections.push({ id: `${anchorNodeId}-${configNodeId}`, fromNodeId: anchorNodeId, toNodeId: configNodeId });
+        project.ppt.pages.push({ pageId, index: pageIndex, title: "跨页", outline: "跨页测试提示词", visualHint: "", takes: [{ takeId, anchorNodeId, configNodeId }] });
+        project.ppt.pageSpecs.push({ ...project.ppt.pageSpecs[0], pageId, message: "跨页" });
+    }
     project.nodes.push(
         canvasNode(`root-${suffix}`, "image", {
             status: status === "submission_unknown" || status === "recoverable_error" ? "error" : "loading",
-            pptPageId: "page-1",
-            pptTakeId: "take-1",
-            pptPageIndex: 1,
-            pptGenerationRun: { runId, batchId: `batch-${suffix}`, pageId: "page-1", takeId: "take-1", requestIds: [requestId], plannedCount: 1, status: "running", createdAt: at, updatedAt: at },
+            pptPageId: pageId,
+            pptTakeId: takeId,
+            pptPageIndex: pageIndex,
+            pptGenerationRun: { runId, batchId: `batch-${suffix}`, pageId, takeId, requestIds: [requestId], plannedCount: 1, status: "running", createdAt: at, updatedAt: at },
             pptGenerationRequest: {
                 requestId,
                 runId,
                 batchId: `batch-${suffix}`,
-                pageId: "page-1",
-                takeId: "take-1",
+                pageId,
+                takeId,
                 slotIndex: 0,
                 requestType: "textToImage",
                 model: "fake-image",
@@ -862,13 +1011,13 @@ function projectWithRequest(suffix, { status, remoteTaskId }) {
             ...(remoteTaskId ? { imageTask: { taskId: remoteTaskId, model: "fake-image" } } : {}),
         }),
     );
-    project.connections.push({ id: `config-root-${suffix}`, fromNodeId: "config", toNodeId: `root-${suffix}` });
+    project.connections.push({ id: `config-root-${suffix}`, fromNodeId: configNodeId, toNodeId: `root-${suffix}` });
     return project;
 }
 
 function createHarness(project, options = {}) {
     const durable = createDurable(project, options.durableOptions);
-    const stats = { submitCalls: 0, resumeCalls: 0, materializeCalls: 0, submittedPrompts: [] };
+    const stats = { submitCalls: 0, resumeCalls: 0, materializeCalls: 0, submittedPrompts: [], resumedTaskIds: [], materializedResultIdentities: [] };
     const notifications = [];
     let materializeAttempts = 0;
     let resumeAttempts = 0;
@@ -897,6 +1046,7 @@ function createHarness(project, options = {}) {
                 },
                 resume: async ({ trace, onEvent }) => {
                     stats.resumeCalls += 1;
+                    stats.resumedTaskIds.push(trace.remoteTaskId);
                     resumeAttempts += 1;
                     if (resumeAttempts <= (options.resumeErrorAttempts || 0)) throw new Error("offline");
                     await onEvent({ type: "running" });
@@ -909,6 +1059,7 @@ function createHarness(project, options = {}) {
                 stats.materializeCalls += 1;
                 materializeAttempts += 1;
                 if (materializeAttempts <= (options.failMaterializeAttempts || 0)) throw new Error("materialize failed");
+                stats.materializedResultIdentities.push(providerResult.resultIdentity);
                 return { content: providerResult.dataUrl, storageKey: `storage-${providerResult.resultIdentity}`, mimeType: "image/png", bytes: 1, naturalWidth: 1, naturalHeight: 1 };
             },
             notify: async (event) => notifications.push(event),
@@ -955,6 +1106,10 @@ function addImageNode(id, metadata, offset = 1) {
 
 function requestTrace(project, requestId) {
     return project.nodes.find((node) => node.metadata?.pptGenerationRequest?.requestId === requestId)?.metadata.pptGenerationRequest;
+}
+
+function runSummary(project, runId) {
+    return project.nodes.find((node) => node.metadata?.pptGenerationRun?.runId === runId)?.metadata.pptGenerationRun;
 }
 
 function fakeProviderIdentity() {
