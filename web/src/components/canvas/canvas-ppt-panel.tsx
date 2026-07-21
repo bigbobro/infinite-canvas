@@ -108,10 +108,9 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     if (!ppt || !currentProject) return null;
 
     const pages = ppt.pages;
-    const styleNodeIds = currentProject.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
-    const hasStyleNode = styleNodeIds.length > 0;
+    const hasVisualDirection = Boolean(ppt.deckBrief.styleContract?.direction?.trim());
     // #18：skipAnchor 改为写回 ppt 数据的持久默认，不再靠面板内勾选框临时覆盖。
-    const skipAnchor = ppt.skipAnchor ?? !hasStyleNode;
+    const skipAnchor = ppt.skipAnchor ?? !hasVisualDirection;
     const confirmedCount = pageWorkspaces.filter((item) => item.confirmationIssues.length === 0).length;
     const generatingCount = pageWorkspaces.filter((item) => item.takes.some((take) => take.generating)).length;
     const firstPageId = pageWorkspaces[0]?.page.pageId ?? pages[0]?.pageId ?? "";
@@ -160,7 +159,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
 
     const openBatchModal = () => {
         if (batchState.kind === "start") {
-            const nextAnchorFirst = hasStyleNode;
+            const nextAnchorFirst = hasVisualDirection;
             const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: nextAnchorFirst }, { project: currentProject, effectiveConfig });
             setAnchorFirst(nextAnchorFirst);
             setPendingBatchPlan(plan);

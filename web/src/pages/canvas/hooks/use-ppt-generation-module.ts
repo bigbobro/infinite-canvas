@@ -102,7 +102,12 @@ export function usePptGenerationModule({ projectId, projectLoaded, effectiveConf
                         try {
                             config = requestConfig(configRef.current, request.providerIdentity, request.settings);
                             references = request.referenceSnapshots
-                                ? await Promise.all(request.referenceSnapshots.map(async (reference) => ({ ...reference, dataUrl: await imageToDataUrl(reference) })))
+                                ? await Promise.all(
+                                      request.referenceSnapshots.map(async (reference) => ({
+                                          ...reference,
+                                          dataUrl: assertReferenceDataUrl(await imageToDataUrl(reference), reference.name),
+                                      })),
+                                  )
                                 : await resolveReferences(
                                       project.nodes,
                                       request.inputRefs.map((input) => input.nodeId),
@@ -193,20 +198,20 @@ async function resolveReferences(nodes: CanvasNodeData[], inputNodeIds: string[]
                 dataUrl: node.metadata.content,
                 storageKey: node.metadata.storageKey,
             };
-            return { ...reference, dataUrl: await imageToDataUrl(reference) };
+            return { ...reference, dataUrl: assertReferenceDataUrl(await imageToDataUrl(reference), reference.name) };
         }),
     );
 }
 
-async function freezeGenerationPlanReferences(plan: GenerationPlan): Promise<GenerationPlan> {
+export async function freezeGenerationPlanReferences(plan: GenerationPlan, resolveReference: (reference: ReferenceImage) => Promise<string> = imageToDataUrl): Promise<GenerationPlan> {
     const cache = new Map<string, Promise<string>>();
     const freezeReference = (reference: ReferenceImage) => {
         const key = reference.storageKey || reference.dataUrl;
         const existing = cache.get(key);
-        if (existing) return existing.then((dataUrl) => ({ ...reference, dataUrl, storageKey: undefined }));
-        const frozen = imageToDataUrl(reference);
+        if (existing) return existing.then((dataUrl) => ({ ...reference, dataUrl }));
+        const frozen = resolveReference(reference).then((dataUrl) => assertReferenceDataUrl(dataUrl, reference.name));
         cache.set(key, frozen);
-        return frozen.then((dataUrl) => ({ ...reference, dataUrl, storageKey: undefined }));
+        return frozen.then((dataUrl) => ({ ...reference, dataUrl }));
     };
     return {
         ...plan,
@@ -222,6 +227,11 @@ async function freezeGenerationPlanReferences(plan: GenerationPlan): Promise<Gen
             })),
         ),
     };
+}
+
+function assertReferenceDataUrl(dataUrl: string, name: string) {
+    if (!/^data:image\/[^;,]+(?:;[^,]+)*,.+$/s.test(dataUrl.trim())) throw new Error(`参考图片 ${name || "（未命名）"} 无法读取`);
+    return dataUrl;
 }
 
 function mergeDurableGenerationNodes(current: CanvasNodeData[], durable: CanvasNodeData[]) {

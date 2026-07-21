@@ -4,7 +4,20 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { assertPptStyleContract, derivePptVisualDirectionRules, isPptLayoutRole, normalizePptStyleContract, samePptStyleContract } from "@/lib/ppt/style-contract";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+
+export type PptVisualDirectionPresetId = "clean-report" | "visual-story" | "brand-led";
+
+export type PptVisualDirectionSource = { kind: "preset"; presetId: PptVisualDirectionPresetId } | { kind: "custom" };
+
+export type CanvasProjectPptStyleContract = {
+    source: PptVisualDirectionSource;
+    direction: string;
+    references: { storageKey: string }[];
+};
+
+export type PptLayoutRole = "cover" | "section" | "content" | "evidence" | "comparison" | "close";
 
 export type CanvasProjectPptTake = {
     takeId: string;
@@ -41,7 +54,7 @@ export type CanvasProjectPptDeckBrief = {
     audience: string;
     goal: string;
     narrative: string;
-    visualLanguage: string;
+    styleContract: CanvasProjectPptStyleContract;
     globalRules: string[];
     forbiddenRules: string[];
     lockedDeckFacts: CanvasProjectPptLockedFact[];
@@ -54,6 +67,7 @@ export type CanvasProjectPptPageSpec = {
     lockedCopy: string[];
     lockedFacts: CanvasProjectPptLockedFact[];
     message: string;
+    layoutRole: PptLayoutRole;
     layoutIntent: string[];
     assetRefs: string[];
     freedom: string;
@@ -76,7 +90,10 @@ export type CanvasProjectPptCompilationIssue = {
         | "point_count_mismatch"
         | "forbidden_conflict"
         | "layout_conflict"
-        | "duplicate_instruction";
+        | "duplicate_instruction"
+        | "invalid_style_contract"
+        | "invalid_layout_role"
+        | "visual_direction_outside_contract";
     message: string;
     pageId?: string;
     takeId?: string;
@@ -98,7 +115,6 @@ export type CanvasProjectPptCompilationTarget = {
     semanticText: string;
     layoutIntent: string[];
     layoutConfirmed?: boolean;
-    styleTexts: string[];
     extraTexts: string[];
     override?: string;
     overrideConfirmed?: boolean;
@@ -120,7 +136,6 @@ export type CanvasProjectPptCompilationSnapshot = {
 export type CanvasProjectPpt = {
     sourceMaterial: string;
     requirements: string;
-    style: { description: string; references: { storageKey: string }[] };
     pages: CanvasProjectPptPage[];
     deckBrief: CanvasProjectPptDeckBrief;
     pageSpecs: CanvasProjectPptPageSpec[];
@@ -156,6 +171,8 @@ type CanvasStore = {
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
     updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "ppt">>) => void;
+    setDeckStyleContract: (projectId: string, expectedDeckBriefVersion: number, nextContract: CanvasProjectPptStyleContract) => void;
+    setPptPageLayoutRole: (projectId: string, pageId: string, expectedPageSpecVersion: number, nextRole: PptLayoutRole) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
@@ -283,6 +300,43 @@ export const useCanvasStore = create<CanvasStore>()(
                 set((state) => ({
                     projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),
                 })),
+            setDeckStyleContract: (projectId, expectedDeckBriefVersion, nextContract) => {
+                assertPptStyleContract(nextContract);
+                const normalized = normalizePptStyleContract(nextContract);
+                set((state) => {
+                    const project = state.projects.find((item) => item.id === projectId);
+                    if (!project?.ppt) throw new Error("当前工程不是 PPT 工作台工程");
+                    if (project.ppt.deckBrief.version !== expectedDeckBriefVersion) throw new Error("PPT 全局规格已变更，请刷新后重试");
+                    if (samePptStyleContract(project.ppt.deckBrief.styleContract, normalized)) return state;
+                    const styleRules = derivePptVisualDirectionRules(project.ppt.requirements, normalized.direction);
+                    const ppt: CanvasProjectPpt = {
+                        ...project.ppt,
+                        anchorConfirmed: false,
+                        deckBrief: {
+                            ...project.ppt.deckBrief,
+                            version: project.ppt.deckBrief.version + 1,
+                            styleContract: normalized,
+                            forbiddenRules: styleRules.forbiddenRules,
+                        },
+                        pages: project.ppt.pages.map((page) => (page.confirmedNodeId ? { ...page, confirmedNodeId: undefined } : page)),
+                    };
+                    return {
+                        projects: state.projects.map((item) => (item.id === projectId ? { ...item, ppt, updatedAt: new Date().toISOString() } : item)),
+                    };
+                });
+            },
+            setPptPageLayoutRole: (projectId, pageId, expectedPageSpecVersion, nextRole) => {
+                if (!isPptLayoutRole(nextRole)) throw new Error("页面职责无效");
+                set((state) => {
+                    const project = state.projects.find((item) => item.id === projectId);
+                    if (!project?.ppt) throw new Error("当前工程不是 PPT 工作台工程");
+                    const ppt = applyPptPageSpecUpdate(project.ppt, pageId, expectedPageSpecVersion, (pageSpec) => ({ ...pageSpec, layoutRole: nextRole }));
+                    if (ppt === project.ppt) return state;
+                    return {
+                        projects: state.projects.map((item) => (item.id === projectId ? { ...item, ppt, updatedAt: new Date().toISOString() } : item)),
+                    };
+                });
+            },
         }),
         {
             name: CANVAS_STORE_KEY,
@@ -297,3 +351,21 @@ export const useCanvasStore = create<CanvasStore>()(
         },
     ),
 );
+
+export function applyPptPageSpecUpdate(ppt: CanvasProjectPpt, pageId: string, expectedPageSpecVersion: number, update: (pageSpec: CanvasProjectPptPageSpec) => CanvasProjectPptPageSpec): CanvasProjectPpt {
+    const current = ppt.pageSpecs.find((pageSpec) => pageSpec.pageId === pageId);
+    if (!current) throw new Error(`页面 ${pageId} 缺少 PageSpec`);
+    if (current.version !== expectedPageSpecVersion) throw new Error(`页面 ${pageId} 的规格已变更，请刷新后重试`);
+    const candidate = update(structuredClone(current));
+    if (candidate.pageId !== current.pageId) throw new Error("PageSpec 更新不能改变页面身份");
+    const comparable = { ...candidate, version: current.version };
+    if (JSON.stringify(comparable) === JSON.stringify(current)) return ppt;
+    const next = { ...candidate, version: current.version + 1 };
+    const firstPageId = [...ppt.pages].sort((left, right) => left.index - right.index)[0]?.pageId;
+    return {
+        ...ppt,
+        ...(pageId === firstPageId ? { anchorConfirmed: false } : {}),
+        pageSpecs: ppt.pageSpecs.map((pageSpec) => (pageSpec.pageId === pageId ? next : pageSpec)),
+        pages: ppt.pages.map((page) => (page.pageId === pageId && page.confirmedNodeId ? { ...page, confirmedNodeId: undefined } : page)),
+    };
+}

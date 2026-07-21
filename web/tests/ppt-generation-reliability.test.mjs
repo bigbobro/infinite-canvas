@@ -105,9 +105,8 @@ test("request.prompt 与 Compiler 快照不一致时 POST 次数为 0", async ()
         title: "Compiler durable gate",
         sourceMaterial: "关键指标\n设备在线率 98.5%",
         requirements: "目标：保留关键事实",
-        style: { description: "专业咨询风" },
+        styleContract: styleContract("专业咨询风"),
         pages: [{ title: "关键指标", outline: "关键指标\n设备在线率 98.5%", visualHint: "" }],
-        uploadedRefs: [],
         mode: "extract",
     });
     const project = {
@@ -182,6 +181,7 @@ test("候选图编辑只能从独立入口启动", async () => {
     });
     project.nodes.push(candidate);
     project.connections.push({ id: "config-candidate", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    attachCandidateLineage(project, candidate);
     page.confirmedNodeId = candidate.id;
     const sourceContent = candidate.metadata.content;
     const candidateEdit = {
@@ -197,7 +197,7 @@ test("候选图编辑只能从独立入口启动", async () => {
         takeId: take.takeId,
         sourceNodeId: candidate.id,
         candidateEdit,
-        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content, storageKey: candidate.metadata.storageKey },
     });
 
     const pageHarness = createHarness(project);
@@ -215,6 +215,84 @@ test("候选图编辑只能从独立入口启动", async () => {
     assert.ok(durable.connections.some((connection) => connection.fromNodeId === candidate.id && connection.toNodeId === resultNode.id));
     assert.equal(durable.ppt.pages[0].confirmedNodeId, candidate.id);
     assert.equal(durableSource.metadata.content, sourceContent);
+});
+
+test("候选改图在计划创建前拒绝缺失 Compiler 快照的基图，且不提交 provider", () => {
+    const project = compilerProject("candidate-missing-lineage");
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const candidate = canvasNode("candidate-missing-lineage-source", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(candidate);
+    project.connections.push({ id: "candidate-missing-lineage-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    attachCandidateLineage(project, candidate);
+    project.ppt.compilationSnapshots = [];
+    const harness = createHarness(project);
+
+    assert.throws(
+        () =>
+            createPptCandidateEditPlan({
+                project,
+                effectiveConfig: defaultConfig,
+                pageId: page.pageId,
+                takeId: take.takeId,
+                sourceNodeId: candidate.id,
+                candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+                reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content, storageKey: candidate.metadata.storageKey },
+            }),
+        /Compiler 快照已丢失/,
+    );
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("候选改图的冻结参考被删除时在启动阶段 0 POST", async () => {
+    const { project, page, take, candidate } = projectWithLineagedCandidate("candidate-reference-tamper");
+    const plan = createPptCandidateEditPlan({
+        project,
+        effectiveConfig: defaultConfig,
+        pageId: page.pageId,
+        takeId: take.takeId,
+        sourceNodeId: candidate.id,
+        candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content, storageKey: candidate.metadata.storageKey },
+    });
+    plan.runs[0].requests[0].referenceSnapshots = [];
+    const harness = createHarness(project);
+
+    await assert.rejects(createPptGenerationModule(harness.dependencies).startCandidateEdit(plan), /结构不合法/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("候选改图的基图血缘在计划落盘后损坏时，pre-POST 重验仍为 0 POST", async () => {
+    const { project, page, take, candidate } = projectWithLineagedCandidate("candidate-prepost-lineage");
+    const plan = createPptCandidateEditPlan({
+        project,
+        effectiveConfig: defaultConfig,
+        pageId: page.pageId,
+        takeId: take.takeId,
+        sourceNodeId: candidate.id,
+        candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content, storageKey: candidate.metadata.storageKey },
+    });
+    const requestId = plan.runs[0].requests[0].requestId;
+    const harness = createHarness(project, {
+        durableOptions: {
+            beforeReads: {
+                5: (current) => ({ ...current, ppt: { ...current.ppt, compilationSnapshots: [] } }),
+            },
+        },
+    });
+
+    const started = await createPptGenerationModule(harness.dependencies).startCandidateEdit(plan);
+    await started.settled;
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(requestTrace(await harness.durable.read(), requestId).status, "failed");
 });
 
 test("再生成一稿和候选修改都固定为单候选且不改配置 count", () => {
@@ -239,6 +317,7 @@ test("再生成一稿和候选修改都固定为单候选且不改配置 count",
     });
     project.nodes.push(candidate);
     project.connections.push({ id: "single-candidate-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    attachCandidateLineage(project, candidate);
 
     const rerunPlan = createGenerationPlan({ kind: "generateOneCandidate", takeId: take.takeId }, { project, effectiveConfig: defaultConfig });
     assert.equal(rerunPlan.runs[0].plannedCount, 1);
@@ -260,7 +339,7 @@ test("再生成一稿和候选修改都固定为单候选且不改配置 count",
         takeId: take.takeId,
         sourceNodeId: candidate.id,
         candidateEdit,
-        reference: { id: `${candidate.id}-marked`, name: "marked.png", type: "image/png", dataUrl: candidate.metadata.content },
+        reference: { id: `${candidate.id}-annotate`, name: "marked.png", type: "image/png", dataUrl: candidate.metadata.content },
     });
     assert.equal(editPlan.runs[0].plannedCount, 1);
     assert.equal(editPlan.runs[0].requests.length, 1);
@@ -355,6 +434,7 @@ test("候选修改在启动前再次拒绝变成 batch root 的基图", async ()
     });
     project.nodes.push(candidate);
     project.connections.push({ id: "candidate-source-recheck-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    attachCandidateLineage(project, candidate);
     const plan = createPptCandidateEditPlan({
         project,
         effectiveConfig: defaultConfig,
@@ -362,7 +442,7 @@ test("候选修改在启动前再次拒绝变成 batch root 的基图", async ()
         takeId: take.takeId,
         sourceNodeId: candidate.id,
         candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
-        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content, storageKey: candidate.metadata.storageKey },
     });
     candidate.metadata.isBatchRoot = true;
     const harness = createHarness(project);
@@ -384,6 +464,7 @@ test("candidateEdit 快照在 POST 前被篡改时为 0 POST", async () => {
     });
     project.nodes.push(candidate);
     project.connections.push({ id: "candidate-lineage-source-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    attachCandidateLineage(project, candidate);
     const plan = createPptCandidateEditPlan({
         project,
         effectiveConfig: defaultConfig,
@@ -391,7 +472,7 @@ test("candidateEdit 快照在 POST 前被篡改时为 0 POST", async () => {
         takeId: take.takeId,
         sourceNodeId: candidate.id,
         candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
-        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content, storageKey: candidate.metadata.storageKey },
     });
     const requestId = plan.runs[0].requests[0].requestId;
     const harness = createHarness(project, {
@@ -444,6 +525,20 @@ test("快照之后 PageSpec 已升版时旧计划 POST 次数为 0", async () =>
     assert.equal(harness.stats.submitCalls, 0);
 });
 
+test("快照之后视觉方向 Contract 已升版时旧计划 POST 次数为 0", async () => {
+    const project = compilerProject("compiler-stale-contract");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    project.ppt.deckBrief = {
+        ...project.ppt.deckBrief,
+        version: project.ppt.deckBrief.version + 1,
+        styleContract: { source: { kind: "custom" }, direction: "新的视觉方向", references: [] },
+    };
+    const harness = createHarness(project);
+
+    await assert.rejects(createPptGenerationModule(harness.dependencies).start(plan), /全局规格已变更/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
 test("启动时冻结计划，后续内存修改不会改变实际 POST prompt", async () => {
     const project = compilerProject("compiler-frozen-plan");
     const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
@@ -480,6 +575,33 @@ test("POST 前 PageSpec 才升版时明确失败且不记为未知提交", async
 
     assert.equal(harness.stats.submitCalls, 0);
     assert.deepEqual(settled.attentionRequestIds, [plan.runs[0].requests[0].requestId]);
+    assert.equal(requestTrace(await harness.durable.read(), plan.runs[0].requests[0].requestId).status, "failed");
+});
+
+test("POST 前视觉方向 Contract 才升版时明确失败且 POST 为 0", async () => {
+    const project = compilerProject("compiler-late-stale-contract");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    const harness = createHarness(project, {
+        durableOptions: {
+            beforeReads: {
+                5: (current) => ({
+                    ...current,
+                    ppt: {
+                        ...current.ppt,
+                        deckBrief: {
+                            ...current.ppt.deckBrief,
+                            version: current.ppt.deckBrief.version + 1,
+                            styleContract: { source: { kind: "custom" }, direction: "迟到的视觉方向", references: [] },
+                        },
+                    },
+                }),
+            },
+        },
+    });
+    const started = await createPptGenerationModule(harness.dependencies).start(plan);
+    await started.settled;
+
+    assert.equal(harness.stats.submitCalls, 0);
     assert.equal(requestTrace(await harness.durable.read(), plan.runs[0].requests[0].requestId).status, "failed");
 });
 
@@ -683,6 +805,23 @@ test("已有 task ID 只 resume 原任务，物化失败后可再次取回且不
     assert.equal(harness.notifications.length, 2);
 });
 
+test("已有 task ID 在 Contract 变化后仍只 resume 原任务", async () => {
+    const project = projectWithRequest("resume-after-contract", { status: "running", remoteTaskId: "task-resume-after-contract" });
+    project.ppt.deckBrief = {
+        ...project.ppt.deckBrief,
+        version: project.ppt.deckBrief.version + 1,
+        styleContract: { source: { kind: "custom" }, direction: "恢复时的新视觉方向", references: [] },
+    };
+    const harness = createHarness(project);
+    const recovered = await createPptGenerationModule(harness.dependencies).recover({ type: "reconcileProject" });
+    await recovered.settled;
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 1);
+    assert.deepEqual(harness.stats.resumedTaskIds, ["task-resume-after-contract"]);
+    assert.equal(requestTrace(await harness.durable.read(), "request-resume-after-contract").status, "completed");
+});
+
 test("无 task ID 的网络失败保守进入 submission_unknown", async () => {
     const harness = createHarness(baseProject("network"), { submitError: new Error("network timeout") });
     const module = createPptGenerationModule(harness.dependencies);
@@ -837,6 +976,10 @@ test("远端成功但结果不可取时持久化重复计费风险", async () =>
     assert.equal(hasPptRepeatBillingRisk([trace]), true);
 });
 
+function styleContract(direction = "清晰专业的报告视觉") {
+    return { source: { kind: "custom" }, direction, references: [] };
+}
+
 function baseProject(suffix) {
     return {
         id: `project-${suffix}`,
@@ -856,9 +999,8 @@ function baseProject(suffix) {
         ppt: {
             sourceMaterial: "测试材料",
             requirements: "",
-            style: { description: "", references: [] },
             pages: [{ pageId: "page-1", index: 1, title: "第一页", outline: "测试提示词", visualHint: "", takes: [{ takeId: "take-1", anchorNodeId: "anchor", configNodeId: "config" }] }],
-            deckBrief: { version: 1, audience: "", goal: "", narrative: "", visualLanguage: "", globalRules: [], forbiddenRules: [], lockedDeckFacts: [] },
+            deckBrief: { version: 1, audience: "", goal: "", narrative: "", styleContract: styleContract(), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] },
             pageSpecs: [
                 {
                     pageId: "page-1",
@@ -867,6 +1009,7 @@ function baseProject(suffix) {
                     lockedCopy: ["测试提示词"],
                     lockedFacts: [],
                     message: "第一页",
+                    layoutRole: "cover",
                     layoutIntent: [],
                     assetRefs: [],
                     freedom: "可在不改变锁定内容的前提下优化视觉组织",
@@ -884,9 +1027,8 @@ function compilerProject(suffix) {
         title: "Compiler durable gate",
         sourceMaterial: "关键指标\n设备在线率 98.5%",
         requirements: "目标：保留关键事实",
-        style: { description: "专业咨询风" },
+        styleContract: styleContract("专业咨询风"),
         pages: [{ title: "关键指标", outline: "关键指标\n设备在线率 98.5%", visualHint: "" }],
-        uploadedRefs: [],
         mode: "extract",
     });
     return {
@@ -901,9 +1043,66 @@ function compilerProject(suffix) {
     };
 }
 
+function projectWithLineagedCandidate(suffix) {
+    const project = compilerProject(suffix);
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const candidate = canvasNode(`${suffix}-source`, "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(candidate);
+    project.connections.push({ id: `${suffix}-source-connection`, fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    attachCandidateLineage(project, candidate);
+    return { project, page, take, candidate };
+}
+
+function attachCandidateLineage(project, candidate) {
+    const page = project.ppt.pages.find((item) => item.pageId === candidate.metadata.pptPageId);
+    const take = page.takes.find((item) => item.takeId === candidate.metadata.pptTakeId);
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: take.takeId }, { project, effectiveConfig: defaultConfig });
+    const run = plan.runs.find((item) => item.pageId === page.pageId && item.takeId === take.takeId);
+    const request = run.requests[0];
+    project.ppt.compilationSnapshots.push(plan.compilation);
+    Object.assign(candidate.metadata, {
+        storageKey: `image:${candidate.id}`,
+        prompt: request.prompt,
+        pptGenerationRequest: {
+            requestId: request.requestId,
+            runId: run.runId,
+            batchId: plan.batchId,
+            pageId: page.pageId,
+            takeId: take.takeId,
+            slotIndex: 0,
+            requestType: request.requestType,
+            model: request.model,
+            providerIdentity: request.providerIdentity,
+            compilationSnapshotId: plan.compilation.snapshotId,
+            status: "completed",
+            createdAt: plan.createdAt,
+            updatedAt: plan.createdAt,
+            recentEvents: [],
+        },
+        pptGenerationRun: {
+            runId: run.runId,
+            batchId: plan.batchId,
+            pageId: page.pageId,
+            takeId: take.takeId,
+            requestIds: [request.requestId],
+            plannedCount: 1,
+            status: "completed",
+            createdAt: plan.createdAt,
+            updatedAt: plan.createdAt,
+        },
+    });
+}
+
 function generationPlan(count, suffix) {
     const createdAt = "2026-07-21T00:00:00.000Z";
-    const deckBrief = { version: 1, audience: "", goal: "", narrative: "", visualLanguage: "", globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
+    const deckBrief = { version: 1, audience: "", goal: "", narrative: "", styleContract: styleContract(), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
     const pageSpec = {
         pageId: "page-1",
         version: 1,
@@ -911,12 +1110,13 @@ function generationPlan(count, suffix) {
         lockedCopy: ["测试提示词"],
         lockedFacts: [],
         message: "第一页",
+        layoutRole: "cover",
         layoutIntent: [],
         assetRefs: [],
         freedom: "可在不改变锁定内容的前提下优化视觉组织",
         requiresReview: false,
     };
-    const target = { pageId: "page-1", takeId: "take-1", semanticText: "测试提示词", layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, styleTexts: [], extraTexts: [], override: undefined, overrideConfirmed: false };
+    const target = { pageId: "page-1", takeId: "take-1", semanticText: "测试提示词", layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, extraTexts: [], override: undefined, overrideConfirmed: false };
     const compilation = compilePptPromptSnapshot({ snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], targets: [target] });
     const prompt = compilation.prompts[0].finalPrompt;
     const rootNodeId = `root-${suffix}`;

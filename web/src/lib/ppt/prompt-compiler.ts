@@ -7,9 +7,20 @@ import type {
     CanvasProjectPptLockedFact,
     CanvasProjectPptPageSpec,
     CanvasProjectPptSourceRef,
+    CanvasProjectPptStyleContract,
 } from "@/stores/canvas/use-canvas-store";
+import {
+    assertPptStyleContract,
+    deriveDefaultPptLayoutRole,
+    derivePptVisualDirectionRules,
+    findPptVisualDirectionInstructions,
+    getPptLayoutRoleInstruction,
+    isPptLayoutRole,
+    normalizePptStyleContract,
+    validatePptStyleContract,
+} from "@/lib/ppt/style-contract";
 
-export const PPT_COMPILER_VERSION = "1.0.0";
+export const PPT_COMPILER_VERSION = "2.0.0";
 
 export type PptCompilerPageInput = {
     pageId: string;
@@ -23,7 +34,7 @@ export type PptCompilerModelInput = {
     mode: "outline" | "extract";
     sourceMaterial: string;
     requirements: string;
-    styleDescription: string;
+    styleContract: CanvasProjectPptStyleContract;
     pages: PptCompilerPageInput[];
 };
 
@@ -48,29 +59,28 @@ const LAYOUT_INTENT_PATTERN = /(?:整页|文字|内容).*(?:左对齐|右对齐|
 
 export function buildPptCompilerModel(input: PptCompilerModelInput): { deckBrief: CanvasProjectPptDeckBrief; pageSpecs: CanvasProjectPptPageSpec[] } {
     const requirementLines = meaningfulLines(input.requirements);
-    const styleRules = derivePptStyleRules(input.requirements, input.styleDescription);
+    const visualRequirements = findPptVisualDirectionInstructions(requirementLines);
+    if (visualRequirements.length) throw new Error(`请把视觉描述移到“视觉方向”：${preview(visualRequirements[0])}`);
+    assertPptStyleContract(input.styleContract);
+    const styleContract = normalizePptStyleContract(input.styleContract);
+    const styleRules = derivePptStyleRules(input.requirements, styleContract.direction);
     const globalRules = unique(requirementLines.filter((line) => !FORBIDDEN_PATTERN.test(line) && !isDeckBriefLabel(line)));
     const deckBrief: CanvasProjectPptDeckBrief = {
         version: 1,
         audience: labeledValue(input.requirements, ["受众", "面向对象", "目标用户"]),
         goal: labeledValue(input.requirements, ["目标", "目的"]),
         narrative: labeledValue(input.requirements, ["叙事", "叙事主线", "主线", "结构"]),
-        visualLanguage: styleRules.visualLanguage,
+        styleContract,
         globalRules,
         forbiddenRules: styleRules.forbiddenRules,
         lockedDeckFacts: extractLockedFacts(requirementLines.filter((line) => !FORBIDDEN_PATTERN.test(line)).join("\n"), "deck").filter((fact) => fact.kind !== "point_count"),
     };
-    const pageSpecs = input.pages.map((page) => buildPptPageSpec({ mode: input.mode, sourceMaterial: input.sourceMaterial, page }));
+    const pageSpecs = input.pages.map((page, pageIndex) => buildPptPageSpec({ mode: input.mode, sourceMaterial: input.sourceMaterial, page, pageIndex, pageCount: input.pages.length }));
     return { deckBrief, pageSpecs };
 }
 
-export function derivePptStyleRules(requirements: string, styleDescription: string) {
-    const requirementLines = meaningfulLines(requirements);
-    const styleLines = meaningfulLines(styleDescription);
-    return {
-        visualLanguage: styleLines.filter((line) => !FORBIDDEN_PATTERN.test(line)).join("\n"),
-        forbiddenRules: unique([...requirementLines, ...styleLines].filter((line) => FORBIDDEN_PATTERN.test(line))),
-    };
+export function derivePptStyleRules(requirements: string, direction: string) {
+    return derivePptVisualDirectionRules(requirements, direction);
 }
 
 export function compilePptPromptSnapshot(input: CompilePptPromptSnapshotInput): CanvasProjectPptCompilationSnapshot {
@@ -83,6 +93,10 @@ export function compilePptPromptSnapshot(input: CompilePptPromptSnapshotInput): 
         const pageSpec = pageSpecById.get(target.pageId);
         if (!pageSpec) addIssue("missing_page_spec", "blocking", `页面 ${target.pageId} 缺少 PageSpec，不能生成`);
         if (pageSpec?.requiresReview && !pageSpec.reviewedAt) addIssue("review_required", "blocking", pageSpec.reviewReason || "该页规格需要人工确认");
+        validatePptStyleContract(input.deckBrief.styleContract).forEach((message) => addIssue("invalid_style_contract", "blocking", message));
+        if (pageSpec && !isPptLayoutRole(pageSpec.layoutRole)) addIssue("invalid_layout_role", "blocking", `页面 ${target.pageId} 的页面职责无效`);
+        findPptVisualDirectionInstructions(input.deckBrief.globalRules).forEach((instruction) => addIssue("visual_direction_outside_contract", "blocking", `全局规则包含 Contract 之外的视觉描述：${preview(instruction)}`));
+        findPptVisualDirectionInstructions([...(pageSpec?.layoutIntent || []), ...target.layoutIntent]).forEach((instruction) => addIssue("visual_direction_outside_contract", "blocking", `页面或方案排版包含视觉方向覆盖：${preview(instruction)}`));
 
         const compiled = buildFinalPrompt(input.deckBrief, pageSpec, target);
         compiled.duplicateInstructions.forEach((instruction) => addIssue("duplicate_instruction", "warning", `重复指令已去重：${instruction}`));
@@ -136,11 +150,27 @@ export function hasBlockingCompilationIssues(snapshot: CanvasProjectPptCompilati
     return snapshot.issues.some((issue) => issue.severity === "blocking");
 }
 
-export function buildPptPageSpec({ mode, sourceMaterial, page, version = 1 }: { mode: PptCompilerModelInput["mode"]; sourceMaterial: string; page: PptCompilerPageInput; version?: number }): CanvasProjectPptPageSpec {
+export function buildPptPageSpec({
+    mode,
+    sourceMaterial,
+    page,
+    version = 1,
+    pageIndex = 0,
+    pageCount = 1,
+}: {
+    mode: PptCompilerModelInput["mode"];
+    sourceMaterial: string;
+    page: PptCompilerPageInput;
+    version?: number;
+    pageIndex?: number;
+    pageCount?: number;
+}): CanvasProjectPptPageSpec {
     const outlineLines = meaningfulLines(page.outline);
     const explicitTitle = labeledValue(page.outline, ["标题"]);
     const contentLines = outlineLines.filter((line) => !/^标题\s*[:：]/.test(line));
     const explicitLayout = contentLines.filter(isLayoutLine);
+    const visualOverride = findPptVisualDirectionInstructions([...explicitLayout, page.visualHint])[0];
+    if (visualOverride) throw new Error(`页面“${clean(page.title) || page.pageId}”包含视觉风格，请移到整套“视觉方向”：${preview(visualOverride)}`);
     const semanticLines = contentLines.filter((line) => !isLayoutLine(line));
     const lockedCopy = unique([mode === "outline" ? explicitTitle || clean(page.title) : "", ...semanticLines]);
     const lockedFacts = extractLockedFacts(lockedCopy.join("\n"), page.pageId);
@@ -164,6 +194,7 @@ export function buildPptPageSpec({ mode, sourceMaterial, page, version = 1 }: { 
         lockedCopy,
         lockedFacts,
         message: explicitTitle || clean(page.title) || semanticLines[0] || page.pageId,
+        layoutRole: deriveDefaultPptLayoutRole(page, pageIndex, pageCount),
         layoutIntent: unique([...explicitLayout, clean(page.visualHint)]),
         assetRefs: extractAssetRefs(page.outline),
         freedom: mode === "extract" ? "只允许补充未锁定的视觉细节，不得改写锁定正文与事实" : "可在不改变锁定事实、术语和点数的前提下优化表达与视觉组织",
@@ -175,23 +206,26 @@ export function buildPptPageSpec({ mode, sourceMaterial, page, version = 1 }: { 
 function buildFinalPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: CanvasProjectPptPageSpec | undefined, target: PptCompilationTarget) {
     const semanticText = withoutLayoutLines(target.semanticText, pageSpec?.layoutIntent || []);
     const contentBlocks = uniqueCovered([semanticText, ...(pageSpec?.lockedCopy || [])]);
-    const layoutInstructions = uniqueCovered([...(pageSpec?.layoutIntent || []), ...target.layoutIntent]);
-    const rawStyleInstructions = (target.styleTexts.length ? target.styleTexts : [clean(deckBrief.visualLanguage)]).flatMap(meaningfulLines);
+    const globalRules = deckBrief.globalRules.filter((instruction) => !findPptVisualDirectionInstructions(instruction).length);
+    const layoutInstructions = uniqueCovered([...(pageSpec?.layoutIntent || []), ...target.layoutIntent].filter((instruction) => !findPptVisualDirectionInstructions(instruction).length));
+    const rawStyleInstructions = meaningfulLines(deckBrief.styleContract?.direction || "");
     const forbiddenStyleInstructions = new Set(deckBrief.forbiddenRules.flatMap(meaningfulLines).map(normalize));
-    const styleInstructions = unique(rawStyleInstructions.filter((instruction) => !forbiddenStyleInstructions.has(normalize(instruction))));
+    const styleInstructions = unique(rawStyleInstructions.filter((instruction) => !forbiddenStyleInstructions.has(normalize(instruction)) && !FORBIDDEN_PATTERN.test(instruction)));
+    const roleInstruction = pageSpec && isPptLayoutRole(pageSpec.layoutRole) ? getPptLayoutRoleInstruction(pageSpec.layoutRole) : "";
     const extraInstructions = unique(target.extraTexts);
-    const visibleDeckBlocks = [deckBrief.audience, deckBrief.goal, deckBrief.narrative, ...deckBrief.globalRules];
+    const visibleDeckBlocks = [deckBrief.audience, deckBrief.goal, deckBrief.narrative, ...globalRules];
     const globalFactLines = unique(deckBrief.lockedDeckFacts.filter((fact) => !visibleDeckBlocks.some((block) => containsFragment(block, fact.value))).map((fact) => fact.sourceExcerpt || fact.value));
     const sections: Array<[string, string[]]> = [
         ["受众", [deckBrief.audience]],
         ["整套目标", [deckBrief.goal]],
         ["叙事主线", [deckBrief.narrative]],
-        ["全局规则", deckBrief.globalRules],
+        ["全局规则", globalRules],
         ["全局锁定事实", globalFactLines],
         ["禁止项", deckBrief.forbiddenRules],
         ["本页内容", contentBlocks],
+        ["页面职责", [roleInstruction]],
         ["本页布局", layoutInstructions],
-        ["视觉语言", styleInstructions],
+        ["视觉方向", styleInstructions],
         ["其他受控输入", extraInstructions],
         ["允许自由发挥", [pageSpec?.freedom || ""]],
     ];
@@ -202,13 +236,13 @@ function buildFinalPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: Canvas
         })
         .join("\n\n")
         .trim();
-    const duplicateInstructions = findDuplicateInstructions([...deckBrief.globalRules, ...deckBrief.forbiddenRules, ...(pageSpec?.layoutIntent || []), ...target.layoutIntent, ...styleInstructions, ...target.extraTexts]);
-    const layoutConflict = findLayoutConflict([...deckBrief.globalRules, ...(pageSpec?.layoutIntent || []), ...target.layoutIntent]);
-    const requiredInstructions = unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, ...layoutInstructions, ...styleInstructions, ...extraInstructions]);
+    const duplicateInstructions = findDuplicateInstructions([...globalRules, ...deckBrief.forbiddenRules, roleInstruction, ...layoutInstructions, ...styleInstructions, ...target.extraTexts]);
+    const layoutConflict = findLayoutConflict([...globalRules, ...layoutInstructions]);
+    const requiredInstructions = unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, roleInstruction, ...layoutInstructions, ...styleInstructions, ...extraInstructions]);
     return {
         finalPrompt,
         pageContent: contentBlocks.join("\n"),
-        userInstructions: [target.semanticText, ...(pageSpec?.layoutIntent || []), ...target.layoutIntent, ...target.styleTexts, ...target.extraTexts].join("\n"),
+        userInstructions: [target.semanticText, ...(pageSpec?.layoutIntent || []), ...target.layoutIntent, deckBrief.styleContract?.direction || "", ...target.extraTexts].join("\n"),
         requiredInstructions,
         duplicateInstructions,
         layoutConflict,
@@ -256,7 +290,7 @@ function validateTargetStatements(pageSpec: CanvasProjectPptPageSpec, semanticTe
 }
 
 function validateControlledInputs(
-    deckBrief: CanvasProjectPptDeckBrief,
+    _deckBrief: CanvasProjectPptDeckBrief,
     pageSpec: CanvasProjectPptPageSpec,
     target: PptCompilationTarget,
     addIssue: (code: CanvasProjectPptCompilationIssue["code"], severity: CanvasProjectPptCompilationIssue["severity"], message: string) => void,
@@ -265,11 +299,6 @@ function validateControlledInputs(
     for (const layout of target.layoutIntent.flatMap(meaningfulLines)) {
         if (reviewedLayouts.has(normalize(layout)) || target.layoutConfirmed) continue;
         addIssue("review_required", "blocking", `排版要求未经显式确认：${preview(layout)}`);
-    }
-    const reviewedStyle = new Set([...meaningfulLines(deckBrief.visualLanguage), ...deckBrief.forbiddenRules.flatMap(meaningfulLines)].map(normalize));
-    for (const style of target.styleTexts.flatMap(meaningfulLines)) {
-        if (reviewedStyle.has(normalize(style))) continue;
-        addIssue("review_required", "blocking", `风格文本与 DeckBrief 不一致：${preview(style)}`);
     }
 }
 
@@ -413,7 +442,11 @@ function uniqueTargetPageSpecs(targets: PptCompilationTarget[], pageSpecs: Canva
 
 function cloneDeckBrief(deckBrief: CanvasProjectPptDeckBrief): CanvasProjectPptDeckBrief {
     return {
-        ...deckBrief,
+        version: deckBrief.version,
+        audience: deckBrief.audience,
+        goal: deckBrief.goal,
+        narrative: deckBrief.narrative,
+        styleContract: structuredClone(deckBrief.styleContract),
         globalRules: [...deckBrief.globalRules],
         forbiddenRules: [...deckBrief.forbiddenRules],
         lockedDeckFacts: deckBrief.lockedDeckFacts.map((fact) => ({ ...fact })),
@@ -433,10 +466,14 @@ function clonePageSpec(pageSpec: CanvasProjectPptPageSpec): CanvasProjectPptPage
 
 function cloneTarget(target: PptCompilationTarget): PptCompilationTarget {
     return {
-        ...target,
+        pageId: target.pageId,
+        takeId: target.takeId,
+        semanticText: target.semanticText,
         layoutIntent: [...target.layoutIntent],
-        styleTexts: [...target.styleTexts],
+        ...(target.layoutConfirmed === undefined ? {} : { layoutConfirmed: target.layoutConfirmed }),
         extraTexts: [...target.extraTexts],
+        ...(target.override === undefined ? {} : { override: target.override }),
+        ...(target.overrideConfirmed === undefined ? {} : { overrideConfirmed: target.overrideConfirmed }),
     };
 }
 

@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Alert, App, Button, Dropdown, Input, InputNumber, Modal, Popover, Select, Tooltip, theme as antdTheme } from "antd";
-import { ArrowRight, CheckCircle2, ChevronDown, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Trash2, Video, WandSparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronDown, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Palette, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Trash2, Video, WandSparkles } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
 import { planHasBlockingCompilationIssues, PptGenerationPlanSummary } from "@/components/canvas/canvas-ppt-generation-confirm";
 import { CanvasPptPromptEditor } from "@/components/canvas/canvas-ppt-prompt-editor";
+import { CanvasPptVisualDirectionDialog } from "@/components/canvas/canvas-ppt-visual-direction-dialog";
 import { imageAspectOptions, imageSizeLabel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -16,11 +17,12 @@ import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
-import { buildPptPageSpec, derivePptStyleRules } from "@/lib/ppt/prompt-compiler";
+import { buildPptPageSpec } from "@/lib/ppt/prompt-compiler";
+import { getPptVisualDirectionLabel, PPT_LAYOUT_ROLES } from "@/lib/ppt/style-contract";
 import { canEnablePptWorkspaceSplitter, clampPptWorkspaceUpperHeight, PPT_WORKSPACE_LOWER_MIN_HEIGHT, PPT_WORKSPACE_SPLITTER_SIZE, PPT_WORKSPACE_UPPER_MIN_HEIGHT, resizePptWorkspaceByDrag, resizePptWorkspaceByKey } from "@/lib/ppt/workspace-layout";
 import { cn } from "@/lib/utils";
 import { useCopyText } from "@/hooks/use-copy-text";
-import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { applyPptPageSpecUpdate, flushCanvasStore, useCanvasStore, type PptLayoutRole } from "@/stores/canvas/use-canvas-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -118,6 +120,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     const canvasTheme = canvasThemes[useThemeStore((state) => state.theme)];
     const project = useCanvasStore((state) => state.projects.find((item) => item.id === projectId));
     const updateProject = useCanvasStore((state) => state.updateProject);
+    const setPptPageLayoutRole = useCanvasStore((state) => state.setPptPageLayoutRole);
     const canvasContext = useAgentStore((state) => state.canvasContext);
     const openAnnotate = useAnnotateStore((state) => state.open);
     const effectiveConfig = useEffectiveConfig();
@@ -133,6 +136,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     const [configPopoverOpen, setConfigPopoverOpen] = useState(false);
     const [configDraft, setConfigDraft] = useState<GenerationConfigDraft>();
     const [configBaseline, setConfigBaseline] = useState<GenerationConfigDraft>();
+    const [visualDirectionOpen, setVisualDirectionOpen] = useState(false);
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
     const [workspaceColumnHeight, setWorkspaceColumnHeight] = useState(0);
     const [upperPaneHeight, setUpperPaneHeight] = useState<number>();
@@ -224,6 +228,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     useEffect(() => {
         if (open) return;
+        setVisualDirectionOpen(false);
         setPromptEditorOpen(false);
         setCompiledOverrideOpen(false);
         setConfigPopoverOpen(false);
@@ -346,22 +351,23 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     };
 
     const pageSpecForPrompt = (value: string) => {
+        if (!pageSpec) return undefined;
         const next = buildPptPageSpec({
             mode: ppt.mode || "outline",
             sourceMaterial: ppt.sourceMaterial,
             page: { pageId: page.pageId, title: page.title, outline: value, visualHint: page.visualHint },
-            version: (pageSpec?.version || 0) + 1,
+            version: pageSpec.version,
         });
+        next.layoutRole = pageSpec.layoutRole;
         if (
-            pageSpec &&
             JSON.stringify({ lockedCopy: next.lockedCopy, lockedFacts: next.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })), layoutIntent: next.layoutIntent, assetRefs: next.assetRefs, message: next.message }) ===
-                JSON.stringify({
-                    lockedCopy: pageSpec.lockedCopy,
-                    lockedFacts: pageSpec.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })),
-                    layoutIntent: pageSpec.layoutIntent,
-                    assetRefs: pageSpec.assetRefs,
-                    message: pageSpec.message,
-                })
+            JSON.stringify({
+                lockedCopy: pageSpec.lockedCopy,
+                lockedFacts: pageSpec.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })),
+                layoutIntent: pageSpec.layoutIntent,
+                assetRefs: pageSpec.assetRefs,
+                message: pageSpec.message,
+            })
         ) {
             return pageSpec;
         }
@@ -558,37 +564,15 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             return;
         }
         const nextPageSpec = pageSpecForPrompt(value);
+        if (!pageSpec || !nextPageSpec) {
+            message.error(`第 ${page.index} 页缺少页面规格，无法保存`);
+            return;
+        }
         const next = canvasContext.applyTrustedOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: value, status: "success" } }]);
-        if (!(await persistProject({ nodes: next.nodes, connections: next.connections, ppt: nextPageSpec === pageSpec ? ppt : { ...ppt, pageSpecs: [...ppt.pageSpecs.filter((spec) => spec.pageId !== page.pageId), nextPageSpec] } }))) return;
+        const nextPpt = nextPageSpec === pageSpec ? ppt : applyPptPageSpecUpdate(ppt, page.pageId, pageSpec.version, () => nextPageSpec);
+        if (!(await persistProject({ nodes: next.nodes, connections: next.connections, ppt: nextPpt }))) return;
         setPromptEditorOpen(false);
         message.success(`方案 ${activeTake.index + 1} 的提示词已保存`);
-    };
-
-    // #30：风格基调节点为全部页面共用，保存直接写回该节点，影响全部方案分支。
-    const saveStyleNode = async (nodeId: string, content: string) => {
-        if (!canvasContext) {
-            message.warning("画布尚未就绪，请稍后再试");
-            return;
-        }
-        if (!content.trim()) {
-            message.warning("风格基调不能为空");
-            return;
-        }
-        const styleRules = derivePptStyleRules(ppt.requirements, content);
-        const next = canvasContext.applyTrustedOps([{ type: "update_node", id: nodeId, metadata: { content, status: "success" } }]);
-        if (
-            !(await persistProject({
-                nodes: next.nodes,
-                connections: next.connections,
-                ppt: {
-                    ...ppt,
-                    style: { ...ppt.style, description: content },
-                    deckBrief: { ...ppt.deckBrief, ...styleRules, version: ppt.deckBrief.version + 1 },
-                },
-            }))
-        )
-            return;
-        message.success("风格基调已更新，将影响全部页面");
     };
 
     // #31：排版要求只作用于当前方案分支，存在专用字段 pptLayoutPrompt。
@@ -628,6 +612,22 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             });
         }
         return persistLayout(alreadyReviewed);
+    };
+
+    const changePageLayoutRole = async (nextRole: PptLayoutRole) => {
+        if (!pageSpec) {
+            message.error(`第 ${page.index} 页缺少页面规格，无法保存职责`);
+            return;
+        }
+        if (nextRole === pageSpec.layoutRole) return;
+        const wasConfirmed = Boolean(page.confirmedNodeId);
+        try {
+            setPptPageLayoutRole(projectId, page.pageId, pageSpec.version, nextRole);
+            await flushCanvasStore();
+            message.success(wasConfirmed ? "页面职责已更新，本页需要重新确认" : "页面职责已更新");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "页面职责保存失败");
+        }
     };
 
     const saveCompiledPromptOverride = async () => {
@@ -676,7 +676,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     };
 
     const setConfirmed = async (confirmedNodeId?: string) => {
-        await persistProject({ ppt: setPptPageConfirmedNode(ppt, page.pageId, confirmedNodeId) });
+        try {
+            await persistProject({ ppt: setPptPageConfirmedNode(project, page.pageId, confirmedNodeId) });
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "该候选稿无法确认");
+        }
     };
 
     // #20：确认后自动前进到下一个未确认页；全部确认完则跳最终检视。
@@ -697,14 +701,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("方案提示词不能为空");
             return;
         }
-        const nextPageSpec = pageSpecForPrompt(prompt);
-        const projectWithSpec =
-            nextPageSpec === pageSpec
-                ? project
-                : {
-                      ...project,
-                      ppt: { ...ppt, pageSpecs: [...ppt.pageSpecs.filter((spec) => spec.pageId !== page.pageId), nextPageSpec] },
-                  };
+        if (!pageSpec) {
+            message.error(`第 ${page.index} 页缺少页面规格，无法创建方案`);
+            return;
+        }
+        const proposedPageSpec = pageSpecForPrompt(prompt)!;
+        const pptWithPageSpec = proposedPageSpec === pageSpec ? ppt : applyPptPageSpecUpdate(ppt, page.pageId, pageSpec.version, () => proposedPageSpec);
+        const nextPageSpec = pptWithPageSpec.pageSpecs.find((spec) => spec.pageId === page.pageId)!;
+        const projectWithSpec = pptWithPageSpec === ppt ? project : { ...project, ppt: pptWithPageSpec };
 
         const takeId = nanoid();
         const outlineId = nanoid();
@@ -732,8 +736,15 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         const outlinePosition = sourceTake?.anchorNode && newRowY != null ? { x: sourceTake.anchorNode.position.x, y: newRowY } : undefined;
         const configPosition = sourceTake?.configNode && newRowY != null ? { x: sourceTake.configNode.position.x, y: newRowY } : undefined;
         const inheritedInputNodeIds = sourceTake?.configNode
-            ? [...new Set(project.connections.filter((connection) => connection.toNodeId === sourceTake.configNode?.id && connection.fromNodeId !== sourceTake.anchorNode?.id).map((connection) => connection.fromNodeId))]
-            : project.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
+            ? [
+                  ...new Set(
+                      project.connections
+                          .filter((connection) => connection.toNodeId === sourceTake.configNode?.id && connection.fromNodeId !== sourceTake.anchorNode?.id)
+                          .map((connection) => connection.fromNodeId)
+                          .filter((nodeId) => project.nodes.find((node) => node.id === nodeId)?.metadata?.pptRole !== "style"),
+                  ),
+              ]
+            : [];
         const nextTakeIndex = page.takes.length + 1;
         if (autoGenerate) {
             const plan = createGenerationPlan(
@@ -746,7 +757,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     configMetadata,
                     anchorContent: prompt,
                     inheritedInputNodeIds,
-                    pageSpec: nextPageSpec === pageSpec ? undefined : nextPageSpec,
+                    pageSpec: pptWithPageSpec === ppt ? undefined : nextPageSpec,
                     positions: { anchor: outlinePosition, config: configPosition },
                 },
                 { project: projectWithSpec, effectiveConfig },
@@ -795,9 +806,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                 nodes: next.nodes,
                 connections: next.connections,
                 ppt: {
-                    ...ppt,
-                    pages: ppt.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)),
-                    pageSpecs: nextPageSpec === pageSpec ? ppt.pageSpecs : [...ppt.pageSpecs.filter((spec) => spec.pageId !== page.pageId), nextPageSpec],
+                    ...pptWithPageSpec,
+                    pages: pptWithPageSpec.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)),
                 },
             }))
         )
@@ -833,7 +843,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("PPT 工程已变化，请刷新后重试");
             return;
         }
-        const pptAfterUnconfirm = willUnconfirm ? setPptPageConfirmedNode(latestPpt, page.pageId, undefined) : latestPpt;
+        const pptAfterUnconfirm = willUnconfirm ? setPptPageConfirmedNode(latestProject, page.pageId, undefined) : latestPpt;
         const nextTakes = latestPage.takes.filter((item) => item.takeId !== take.takeId);
         const remainingWorkspaceTakes = workspace.takes.filter((item) => item.takeId !== take.takeId);
         const deletingActive = activeTake?.takeId === take.takeId;
@@ -987,6 +997,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                 {workspace.takes.length} 个方案 · {candidateCount} 个候选稿
                             </span>
                         </h2>
+                        <Button type="text" size="small" icon={<Palette className="size-3.5" />} className="shrink-0" onClick={() => setVisualDirectionOpen(true)}>
+                            视觉方向：{getPptVisualDirectionLabel(ppt.deckBrief.styleContract)}
+                        </Button>
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-1">
                         {generationBatches.length ? (
@@ -1260,10 +1273,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                         </div>
                                         <UpstreamInputsPanel
                                             take={activeTake}
+                                            layoutRole={pageSpec?.layoutRole}
                                             canvasTheme={canvasTheme}
                                             muted={canvasTheme.node.muted}
                                             canEdit={Boolean(canvasContext) && !activeTake.unresolvedGeneration}
-                                            onSaveStyle={saveStyleNode}
+                                            onSaveLayoutRole={changePageLayoutRole}
                                             onSaveLayout={saveLayoutPrompt}
                                         />
                                         {pageSpec?.requiresReview && !pageSpec.reviewedAt ? (
@@ -1753,6 +1767,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     </Button>
                 </div>
             </Modal>
+            <CanvasPptVisualDirectionDialog open={visualDirectionOpen} projectId={projectId} onClose={() => setVisualDirectionOpen(false)} />
             <CanvasImageLightbox src={lightboxSrc} alt={`第 ${page.index} 页候选稿`} onClose={() => setLightboxSrc(null)} />
         </Modal>
     );
@@ -1810,50 +1825,33 @@ function GenerationConfigEditor({
     );
 }
 
-/**
- * #16：所见即所生成——除锚点提示词外，实际会拼进生成 prompt 的其余输入，展示逻辑与生成路径同源。
- * #29：整体默认收起为一行摘要，把视觉重心让给上方的方案提示词。
- * #30/#31：风格基调（写回风格节点，全局共用）与排版要求（写回本分支配置节点）均支持行内编辑。
- */
+/** 页面职责属于 PageSpec，方案排版属于当前 take；视觉方向只在 deck header 编辑。 */
 function UpstreamInputsPanel({
     take,
+    layoutRole,
     canvasTheme,
     muted,
     canEdit,
-    onSaveStyle,
+    onSaveLayoutRole,
     onSaveLayout,
 }: {
     take: PptPageWorkspaceTake;
+    layoutRole?: PptLayoutRole;
     canvasTheme: (typeof canvasThemes)[keyof typeof canvasThemes];
     muted: string;
     canEdit: boolean;
-    onSaveStyle: (nodeId: string, content: string) => void;
+    onSaveLayoutRole: (role: PptLayoutRole) => Promise<void>;
     onSaveLayout: (content: string) => Promise<boolean>;
 }) {
     const [collapsed, setCollapsed] = useState(true);
-    const [editingStyleNodeId, setEditingStyleNodeId] = useState<string | null>(null);
-    const [styleDraft, setStyleDraft] = useState("");
     const [editingLayout, setEditingLayout] = useState(false);
     const [layoutDraft, setLayoutDraft] = useState(take.layoutPrompt);
+    const visibleInputs = take.upstreamInputs.filter((input) => input.pptRole !== "style");
 
     useEffect(() => {
-        setEditingStyleNodeId(null);
         setEditingLayout(false);
         setLayoutDraft(take.layoutPrompt);
     }, [take.takeId, take.layoutPrompt]);
-
-    if (take.composerContent) {
-        return (
-            <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: canvasTheme.node.stroke, background: canvasTheme.node.fill }}>
-                <div className="font-medium" style={{ color: canvasTheme.node.text }}>
-                    本分支已启用组装提示词，生成以组装内容为准
-                </div>
-                <div className="mt-1 line-clamp-3 whitespace-pre-wrap" style={{ color: muted }}>
-                    {take.composerContent}
-                </div>
-            </div>
-        );
-    }
 
     if (collapsed) {
         return (
@@ -1863,7 +1861,7 @@ function UpstreamInputsPanel({
                 style={{ borderColor: canvasTheme.node.faint, color: muted, outlineColor: canvasTheme.node.activeStroke }}
                 onClick={() => setCollapsed(false)}
             >
-                <span>其他生成输入：风格基调 + 排版要求</span>
+                <span>页面职责 + 方案排版</span>
                 <span className="shrink-0 underline underline-offset-2">展开</span>
             </button>
         );
@@ -1873,19 +1871,51 @@ function UpstreamInputsPanel({
         <div className="mt-2.5 space-y-2 rounded-lg border border-dashed p-2.5" style={{ borderColor: canvasTheme.node.faint }}>
             <div className="flex items-center justify-between">
                 <span className="text-[11px] font-medium uppercase tracking-wide" style={{ color: muted }}>
-                    其他生成输入
+                    页面与方案设置
                 </span>
                 <button type="button" className="text-[11px] underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2" style={{ color: muted, outlineColor: canvasTheme.node.activeStroke }} onClick={() => setCollapsed(true)}>
                     收起
                 </button>
             </div>
 
-            {take.upstreamInputs.length ? (
-                <ul className="space-y-1.5">
-                    {take.upstreamInputs.map((input) => {
-                        const isStyle = input.pptRole === "style" && input.type === "text";
-                        const isEditingThis = editingStyleNodeId === input.nodeId;
-                        return (
+            <div className="rounded-lg border px-2.5 py-2 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
+                <div className="flex items-center justify-between gap-3">
+                    <div>
+                        <div className="font-medium" style={{ color: canvasTheme.node.text }}>
+                            页面职责
+                        </div>
+                        <div className="mt-0.5" style={{ color: muted }}>
+                            只作用于本页，修改后本页需要重新确认
+                        </div>
+                    </div>
+                    <Select
+                        className="w-28 shrink-0"
+                        size="small"
+                        value={layoutRole}
+                        placeholder="未设置"
+                        disabled={!canEdit || take.generating}
+                        options={PPT_LAYOUT_ROLES.map((role) => ({ value: role.id, label: role.label }))}
+                        onChange={(role) => void onSaveLayoutRole(role)}
+                    />
+                </div>
+            </div>
+
+            {take.composerContent ? (
+                <div className="rounded-lg border px-2.5 py-2 text-xs" style={{ borderColor: canvasTheme.node.stroke, background: canvasTheme.node.fill }}>
+                    <div className="font-medium" style={{ color: canvasTheme.node.text }}>
+                        本方案已启用组装提示词
+                    </div>
+                    <div className="mt-1 line-clamp-3 whitespace-pre-wrap" style={{ color: muted }}>
+                        {take.composerContent}
+                    </div>
+                </div>
+            ) : visibleInputs.length ? (
+                <div>
+                    <div className="mb-1.5 text-[11px] font-medium" style={{ color: muted }}>
+                        其他上游输入
+                    </div>
+                    <ul className="space-y-1.5">
+                        {visibleInputs.map((input) => (
                             <li key={input.nodeId} className="flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
                                 {input.type === "image" ? (
                                     input.image?.dataUrl ? (
@@ -1901,68 +1931,25 @@ function UpstreamInputsPanel({
                                     <FileText className="size-4 shrink-0" style={{ color: muted }} aria-hidden="true" />
                                 )}
                                 <div className="min-w-0 flex-1">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <span className="font-medium" style={{ color: canvasTheme.node.text }}>
-                                            {input.pptRole === "style" ? "风格基调" : input.title}
-                                        </span>
-                                        {isStyle && canEdit && !take.generating && !isEditingThis ? (
-                                            <button
-                                                type="button"
-                                                className="shrink-0 text-[11px] underline underline-offset-2"
-                                                style={{ color: muted }}
-                                                onClick={() => {
-                                                    setEditingStyleNodeId(input.nodeId);
-                                                    setStyleDraft(input.text ?? "");
-                                                }}
-                                            >
-                                                编辑
-                                            </button>
-                                        ) : null}
+                                    <div className="font-medium" style={{ color: canvasTheme.node.text }}>
+                                        {input.title}
                                     </div>
-                                    {isEditingThis && !take.generating ? (
-                                        <>
-                                            <Input.TextArea className="mt-1.5" value={styleDraft} autoSize={{ minRows: 3, maxRows: 12 }} variant="filled" onChange={(event) => setStyleDraft(event.target.value)} />
-                                            <div className="mt-1 text-[11px]" style={{ color: muted }}>
-                                                全部页面共用，修改将影响所有页面
-                                            </div>
-                                            <div className="mt-1.5 flex justify-end gap-2">
-                                                <Button size="small" onClick={() => setEditingStyleNodeId(null)}>
-                                                    取消
-                                                </Button>
-                                                <Button
-                                                    size="small"
-                                                    type="primary"
-                                                    icon={<Save className="size-3" />}
-                                                    disabled={!styleDraft.trim()}
-                                                    onClick={() => {
-                                                        onSaveStyle(input.nodeId, styleDraft);
-                                                        setEditingStyleNodeId(null);
-                                                    }}
-                                                >
-                                                    保存
-                                                </Button>
-                                            </div>
-                                        </>
-                                    ) : input.text ? (
+                                    {input.text ? (
                                         <div className="mt-0.5 whitespace-pre-wrap" style={{ color: muted }}>
                                             {input.text}
                                         </div>
                                     ) : null}
                                 </div>
                             </li>
-                        );
-                    })}
-                </ul>
-            ) : (
-                <div className="text-xs" style={{ color: muted }}>
-                    无其他上游输入
+                        ))}
+                    </ul>
                 </div>
-            )}
+            ) : null}
 
             <div className="rounded-lg border px-2.5 py-1.5 text-xs" style={{ borderColor: canvasTheme.node.stroke }}>
                 <div className="flex items-center justify-between gap-2">
                     <span className="font-medium" style={{ color: canvasTheme.node.text }}>
-                        排版要求
+                        方案排版
                     </span>
                     {canEdit && !take.generating && !editingLayout ? (
                         <button
@@ -1982,7 +1969,7 @@ function UpstreamInputsPanel({
                     <>
                         <Input.TextArea className="mt-1.5" value={layoutDraft} autoSize={{ minRows: 3, maxRows: 12 }} variant="filled" onChange={(event) => setLayoutDraft(event.target.value)} />
                         <div className="mt-1 text-[11px]" style={{ color: muted }}>
-                            仅作用于本方案
+                            仅作用于当前方案，不改变整套视觉方向或页面职责
                         </div>
                         <div className="mt-1.5 flex justify-end gap-2">
                             <Button

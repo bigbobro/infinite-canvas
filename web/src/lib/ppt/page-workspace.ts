@@ -1,10 +1,11 @@
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { hasPptRepeatBillingRisk } from "@/lib/ppt/generation-ledger";
+import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
 import type { CanvasProject, CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type PptGenerationRequestTrace, type PptGenerationRunSummary } from "@/types/canvas";
 
-/** 其余生成输入项：与 buildNodeGenerationInputs 同源，附带 pptRole 用于「风格基调」等展示标签（#16 所见即所生成）。 */
+/** 其余生成输入项：与 buildNodeGenerationInputs 同源，附带 pptRole 用于非视觉方向的上游输入展示。 */
 export type PptPageUpstreamInput = NodeGenerationInput & { pptRole?: CanvasNodeMetadata["pptRole"] };
 
 export type PptPageWorkspaceTake = {
@@ -40,7 +41,7 @@ export type PptPageWorkspace = {
     page: CanvasProjectPptPage;
     takes: PptPageWorkspaceTake[];
     confirmedNode?: CanvasNodeData;
-    /** 历史 batch root 确认只读解析到 primary child；不回写存储。 */
+    /** 通过 Compiler 快照血缘门禁的最终候选稿 ID。 */
     resolvedConfirmedNodeId?: string;
     confirmationIssues: string[];
 };
@@ -141,19 +142,21 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
     });
 
     const storedConfirmedNode = page.confirmedNodeId ? nodeById.get(page.confirmedNodeId) : undefined;
-    const resolvedConfirmedNodeId = storedConfirmedNode?.metadata?.batchChildIds?.length
-        ? storedConfirmedNode.metadata.primaryImageId && storedConfirmedNode.metadata.batchChildIds.includes(storedConfirmedNode.metadata.primaryImageId) && nodeById.has(storedConfirmedNode.metadata.primaryImageId)
-            ? storedConfirmedNode.metadata.primaryImageId
-            : undefined
-        : storedConfirmedNode?.id;
-    const confirmedNode = resolvedConfirmedNodeId ? nodeById.get(resolvedConfirmedNodeId) : undefined;
     const candidateIds = new Set(takes.flatMap((take) => take.candidates.map((node) => node.id)));
-    // #7：确认状态只归并为两类用户语言问题，避免「节点不存在/类型异常/不属于本页」等技术分支重复表述。
+    // 把节点损坏和血缘损坏归并成稳定的用户语言，技术细节只在确认写入时报出。
     const confirmationIssues: string[] = [];
     if (!page.confirmedNodeId) confirmationIssues.push("尚未确认最终版");
-    else if (!confirmedNode || confirmedNode.type !== CanvasNodeType.Image || confirmedNode.metadata?.status !== "success" || !confirmedNode.metadata?.storageKey || !candidateIds.has(confirmedNode.id)) {
-        confirmationIssues.push("已确认的最终版已失效，请重新确认");
+    else if (!storedConfirmedNode || !candidateIds.has(storedConfirmedNode.id)) confirmationIssues.push("已确认的最终版已失效，请重新确认");
+    else {
+        try {
+            assertPptPageCandidateCanBeConfirmed(project, page, storedConfirmedNode.id);
+        } catch {
+            confirmationIssues.push("已确认的最终版缺少可追溯的编译快照，请重新生成后确认");
+        }
     }
+
+    const confirmedNode = confirmationIssues.length ? undefined : storedConfirmedNode;
+    const resolvedConfirmedNodeId = confirmedNode?.id;
 
     return { page, takes, confirmedNode, resolvedConfirmedNodeId, confirmationIssues };
 }

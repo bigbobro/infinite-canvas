@@ -4,13 +4,18 @@ import { buildNodeGenerationInputs } from "@/components/canvas/canvas-node-gener
 import { getNodeSpec } from "@/constant/canvas";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
+import { isPptCandidateEditReferenceSnapshot, isPptCandidateEditSnapshot } from "@/lib/ppt/candidate-edit";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
+import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace, type PptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { compilePptPromptSnapshot, type PptCompilationTarget } from "@/lib/ppt/prompt-compiler";
-import type { CanvasProject, CanvasProjectPpt, CanvasProjectPptCompilationSnapshot, CanvasProjectPptPageSpec, CanvasProjectPptTake } from "@/stores/canvas/use-canvas-store";
+import { isPptStyleContractValid } from "@/lib/ppt/style-contract";
+import { applyPptPageSpecUpdate, type CanvasProject, type CanvasProjectPpt, type CanvasProjectPptCompilationSnapshot, type CanvasProjectPptPageSpec, type CanvasProjectPptTake } from "@/stores/canvas/use-canvas-store";
 import { modelOptionName, resolveModelChannel, type AiConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type Position, type PptCandidateEditSnapshot, type PptGenerationProviderIdentity } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
+
+export { isPptCandidateEditSnapshot } from "@/lib/ppt/candidate-edit";
 
 export type GenerationIntent =
     | { kind: "startBatch"; anchorFirst: boolean }
@@ -154,8 +159,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
 
     if (intent.kind === "generateRest") {
         const firstWorkspace = workspaces[0];
-        const hasStyleNode = project.nodes.some((node) => node.metadata?.pptRole === "style");
-        const skipAnchor = project.ppt.skipAnchor ?? !hasStyleNode;
+        const skipAnchor = project.ppt.skipAnchor ?? !isPptStyleContractValid(project.ppt.deckBrief.styleContract);
         const selected = workspaces.filter((workspace) => (skipAnchor || workspace.page.pageId !== firstWorkspace?.page.pageId) && isPageUntouched(workspace));
         targets.push(...selected.map((workspace): ExistingTarget => ({ kind: "existing", pageId: workspace.page.pageId, pageIndex: workspace.page.index, take: workspace.takes.at(-1) })));
         // anchorConfirmed 只是流程摘要；每个后来修复/新建的目标仍需幂等确保首页参考图连线。
@@ -243,9 +247,8 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
         const nodes = target.extraNodes ? [...project.nodes.filter((node) => !target.extraNodes!.some((extra) => extra.id === node.id)), ...target.extraNodes] : project.nodes;
         const connections = [...project.connections, ...plannedConnections, ...(target.extraConnections || [])];
         const nodeById = new Map(nodes.map((node) => [node.id, node]));
-        const inputs = buildNodeGenerationInputs(target.configNode.id, nodes, connections);
-        const styleTexts = inputs.filter((input) => input.type === "text" && nodeById.get(input.nodeId)?.metadata?.pptRole === "style").map((input) => input.text || "");
-        const extraTexts = inputs.filter((input) => input.type === "text" && input.nodeId !== target.anchorNode.id && nodeById.get(input.nodeId)?.metadata?.pptRole !== "style").map((input) => input.text || "");
+        const inputs = buildNodeGenerationInputs(target.configNode.id, nodes, connections).filter((input) => nodeById.get(input.nodeId)?.metadata?.pptRole !== "style");
+        const extraTexts = inputs.filter((input) => input.type === "text" && input.nodeId !== target.anchorNode.id).map((input) => input.text || "");
         const promptDraft = intent.kind === "generateSingle" && intent.takeId === target.takeId ? intent.promptDraft : undefined;
         const layoutPrompt = generationPrompt(project, target.configNode);
         const override = target.configNode.metadata?.pptCompiledPromptOverride?.trim() || undefined;
@@ -258,7 +261,6 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
                 semanticText: promptDraft ?? String(target.anchorNode.metadata?.content || ""),
                 layoutIntent: [layoutPrompt].filter(Boolean),
                 layoutConfirmed: !layoutPrompt || layoutPrompt === PPT_PAGE_PROMPT || target.configNode.metadata?.pptLayoutPromptReviewed === layoutPrompt,
-                styleTexts,
                 extraTexts,
                 override,
                 overrideConfirmed: Boolean(override && target.configNode.metadata?.pptCompiledPromptReviewedOverride === override),
@@ -280,9 +282,13 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
         const compiledPrompt = compiledPromptByTarget.get(`${target.pageId}:${target.takeId}`);
         const effectivePrompt = compiledPrompt?.finalPrompt.trim() || "";
         const config = resolveGenerationConfig(effectiveConfig, target.configNode, "image");
-        const referenceImages = inputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
+        const inputImages = mergeReferenceImages(
+            inputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image)),
+            [],
+        );
+        const referenceImages = mergeReferenceImages(inputImages, contractReferenceImages(project.ppt!.deckBrief.styleContract?.references || []));
         const requestType: GenerationRequestType = referenceImages.length ? "imageToImage" : "textToImage";
-        const inputRefs = referenceImages.map<GenerationInputRef>((image) => ({ nodeId: image.id, type: "image" }));
+        const inputRefs = inputImages.map<GenerationInputRef>((image) => ({ nodeId: image.id, type: "image" }));
         const plannedCount = target.plannedCount ?? getGenerationCount(config.count);
         const runId = nanoid();
         const rootNodeId = nanoid();
@@ -352,6 +358,8 @@ export function createPptCandidateEditPlan({
     const sourceNode = take?.candidates.find((candidate) => candidate.id === sourceNodeId);
     if (!page || !sourceNode || sourceNode.metadata?.isBatchRoot) throw new Error("修改基图不是当前 PPT 方案的成功候选");
     if (!isPptCandidateEditSnapshot(candidateEdit, sourceNodeId)) throw new Error("候选修改快照与基图不一致或内容无效");
+    assertPptPageCandidateCanBeConfirmed(project, page, sourceNodeId);
+    if (!isPptCandidateEditReferenceSnapshot(candidateEdit, sourceNodeId, sourceNode.metadata?.storageKey, [reference])) throw new Error("候选修改的冻结参考图与基图不一致");
 
     const batchId = nanoid();
     const createdAt = new Date().toISOString();
@@ -386,37 +394,6 @@ export function createPptCandidateEditPlan({
     };
 }
 
-export function isPptCandidateEditSnapshot(snapshot: PptCandidateEditSnapshot | undefined, sourceNodeId: string): snapshot is PptCandidateEditSnapshot {
-    if (
-        !snapshot ||
-        typeof snapshot.baseNodeId !== "string" ||
-        snapshot.baseNodeId !== sourceNodeId ||
-        typeof snapshot.globalInstruction !== "string" ||
-        !Array.isArray(snapshot.annotations) ||
-        typeof snapshot.finalPrompt !== "string" ||
-        !snapshot.finalPrompt.trim()
-    )
-        return false;
-    if (!snapshot.globalInstruction.trim() && !snapshot.annotations.length) return false;
-    if (snapshot.globalInstruction.trim() && !snapshot.finalPrompt.includes(snapshot.globalInstruction.trim())) return false;
-    return snapshot.annotations.every(
-        (annotation, index) =>
-            annotation !== null &&
-            typeof annotation === "object" &&
-            Number.isInteger(annotation.index) &&
-            annotation.index === index + 1 &&
-            Number.isFinite(annotation.x) &&
-            annotation.x >= 0 &&
-            annotation.x <= 1 &&
-            Number.isFinite(annotation.y) &&
-            annotation.y >= 0 &&
-            annotation.y <= 1 &&
-            typeof annotation.instruction === "string" &&
-            Boolean(annotation.instruction.trim()) &&
-            snapshot.finalPrompt.includes(annotation.instruction.trim()),
-    );
-}
-
 export function applyGenerationPlanPptOps(ppt: CanvasProjectPpt, ops: readonly GenerationPlanPptOp[]): CanvasProjectPpt {
     return ops.reduce<CanvasProjectPpt>((current, op) => {
         if (op.type === "setFlags") return { ...current, ...op.flags };
@@ -432,7 +409,8 @@ export function applyGenerationPlanPptOps(ppt: CanvasProjectPpt, ops: readonly G
             const existing = current.pageSpecs.find((pageSpec) => pageSpec.pageId === op.pageSpec.pageId);
             if (existing && samePageSpec(existing, op.pageSpec)) return current;
             if (existing && existing.version >= op.pageSpec.version) throw new Error(`第 ${current.pages.find((page) => page.pageId === op.pageSpec.pageId)?.index ?? "-"} 页规格已变更，请重新确认生成计划`);
-            return { ...current, pageSpecs: [...current.pageSpecs.filter((pageSpec) => pageSpec.pageId !== op.pageSpec.pageId), structuredClone(op.pageSpec)] };
+            if (!existing || op.pageSpec.version !== existing.version + 1) throw new Error(`第 ${current.pages.find((page) => page.pageId === op.pageSpec.pageId)?.index ?? "-"} 页规格版本不连续`);
+            return applyPptPageSpecUpdate(current, existing.pageId, existing.version, () => structuredClone(op.pageSpec));
         }
         return {
             ...current,
@@ -460,11 +438,22 @@ export function assertGenerationPlanCompilation(plan: GenerationPlan, expectedKi
     });
     if (!sameCompilationSnapshot(rebuilt, plan.compilation)) throw new Error("Compiler 快照不是由当前编译输入确定性生成");
     const compiledPromptByTarget = new Map(plan.compilation.prompts.map((prompt) => [`${prompt.pageId}:${prompt.takeId}`, prompt]));
+    const contractReferenceKeys = (plan.compilation.deckBrief.styleContract?.references || []).flatMap((reference) => (typeof reference?.storageKey === "string" && reference.storageKey.trim() ? [reference.storageKey.trim()] : []));
     for (const run of plan.runs) {
         for (const request of run.requests) {
             if (!request.compilationSnapshotId || request.compilationSnapshotId !== plan.compilation.snapshotId) throw new Error(`请求槽 ${request.requestId} 的编译快照绑定不一致`);
             const compiledPrompt = compiledPromptByTarget.get(`${run.pageId}:${run.takeId}`);
             if (!compiledPrompt || compiledPrompt.finalPrompt !== request.prompt) throw new Error(`请求槽 ${request.requestId} 的实际提示词与编译快照不一致`);
+            const referenceSnapshots = request.referenceSnapshots || [];
+            if (request.inputRefs.some((input) => input.nodeId.startsWith("ppt-style-contract:"))) throw new Error(`请求槽 ${request.requestId} 把 Contract 参考图伪造成了画布输入引用`);
+            if (request.inputRefs.some((input) => !referenceSnapshots.some((reference) => reference.id === input.nodeId))) throw new Error(`请求槽 ${request.requestId} 的画布参考图快照缺失`);
+            if (referenceSnapshots.some((reference) => !contractReferenceKeys.includes(reference.storageKey || "") && !request.inputRefs.some((input) => input.nodeId === reference.id))) {
+                throw new Error(`请求槽 ${request.requestId} 含有未冻结在 Compiler 或画布输入中的参考图`);
+            }
+            for (const storageKey of contractReferenceKeys) {
+                if (referenceSnapshots.filter((reference) => reference.storageKey === storageKey).length !== 1) throw new Error(`请求槽 ${request.requestId} 的 Contract 参考图绑定不一致`);
+            }
+            if (referenceSnapshots.length > 0 !== (request.requestType === "imageToImage")) throw new Error(`请求槽 ${request.requestId} 的调用类型与参考图快照不一致`);
         }
     }
 }
@@ -488,7 +477,6 @@ export function assertGenerationPlanCurrentTargets(project: CanvasProject, plan:
             semanticText: String(take.anchorNode.metadata?.content || ""),
             layoutIntent: [layoutPrompt].filter(Boolean),
             layoutConfirmed: !layoutPrompt || layoutPrompt === PPT_PAGE_PROMPT || take.configNode.metadata?.pptLayoutPromptReviewed === layoutPrompt,
-            styleTexts: inputs.filter((input) => input.type === "text" && nodeById.get(input.nodeId)?.metadata?.pptRole === "style").map((input) => input.text || ""),
             extraTexts: inputs.filter((input) => input.type === "text" && input.nodeId !== take.anchorNode!.id && nodeById.get(input.nodeId)?.metadata?.pptRole !== "style").map((input) => input.text || ""),
             override,
             overrideConfirmed: Boolean(override && take.configNode.metadata?.pptCompiledPromptReviewedOverride === override),
@@ -559,6 +547,23 @@ function isPageUntouched(workspace: PptPageWorkspace) {
 
 function generationPrompt(project: CanvasProject, configNode: CanvasNodeData) {
     return (configNode.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.mode === "extract" ? "" : PPT_PAGE_PROMPT);
+}
+
+function contractReferenceImages(references: readonly { storageKey: string }[]): ReferenceImage[] {
+    return references.flatMap((reference) => {
+        const storageKey = typeof reference?.storageKey === "string" ? reference.storageKey.trim() : "";
+        return storageKey ? [{ id: `ppt-style-contract:${storageKey}`, name: "视觉方向参考图", type: "image/png", dataUrl: "", storageKey }] : [];
+    });
+}
+
+function mergeReferenceImages(inputs: readonly ReferenceImage[], contractReferences: readonly ReferenceImage[]) {
+    const seen = new Set<string>();
+    return [...inputs, ...contractReferences].filter((reference) => {
+        const key = reference.storageKey || reference.id;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 function pendingNode(id: string, type: CanvasNodeData["type"], title: string, position: Position | undefined, metadata: CanvasNodeMetadata): CanvasNodeData {

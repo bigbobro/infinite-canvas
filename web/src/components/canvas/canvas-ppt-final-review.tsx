@@ -108,11 +108,11 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
 
     const selectCandidate = async (pageId: string, nodeId: string) => {
         if (!project?.ppt) return;
-        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageId, nodeId) });
         try {
+            updateProject(project.id, { ppt: setPptPageConfirmedNode(project, pageId, nodeId) });
             await flushCanvasStore();
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "确认状态保存失败");
+            message.error(error instanceof Error ? error.message : "该候选稿无法确认");
             return;
         }
         advanceToNextUnconfirmed(pageId);
@@ -120,8 +120,8 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
 
     const cancelConfirm = async (pageId: string) => {
         if (!project?.ppt) return;
-        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageId, undefined) });
         try {
+            updateProject(project.id, { ppt: setPptPageConfirmedNode(project, pageId, undefined) });
             await flushCanvasStore();
         } catch (error) {
             message.error(error instanceof Error ? error.message : "确认状态保存失败");

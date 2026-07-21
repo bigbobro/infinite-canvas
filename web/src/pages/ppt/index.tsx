@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { App, Button, Empty, Input, Modal, Popconfirm, Progress, Segmented, Steps } from "antd";
-import { ArrowLeft, ArrowRight, FolderOpen, Pencil, Plus, Sparkles, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, FolderOpen, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 
+import { PptVisualDirectionEditor } from "@/components/ppt-visual-direction-editor";
 import { useEffectiveConfig } from "@/stores/use-config-store";
-import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { useCanvasStore, type CanvasProject, type CanvasProjectPptStyleContract } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { hasUnresolvedPptGeneration } from "@/lib/ppt/generation-ledger";
-import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
+import { resolveImageUrl } from "@/services/image-storage";
 import { extractPptPages, generatePptOutline, previewExtractPages, previewOutlinePages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
 import { buildPptDeckProject, type BuildPptDeckParams } from "@/lib/ppt/deck-builder";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
+import { createPptVisualDirectionPresetContract, findPptVisualDirectionInstructions } from "@/lib/ppt/style-contract";
 import type { CanvasNodeData } from "@/types/canvas";
 
 type PptWizardMode = NonNullable<BuildPptDeckParams["mode"]>;
@@ -116,7 +118,7 @@ export default function PptPage() {
                     <div>
                         <p className="text-xs text-stone-500">PPT 工作台</p>
                         <h1 className="mt-3 text-3xl font-semibold">我的 PPT</h1>
-                        <p className="mt-2 text-sm text-stone-500">材料生成分页大纲，配置风格后批量出图，交付按页命名的图片压缩包。</p>
+                        <p className="mt-2 text-sm text-stone-500">材料生成分页大纲，确定视觉方向后批量出图，交付页面图片或图片版 PPT。</p>
                     </div>
                     <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setWizardOpen(true)}>
                         新建 PPT
@@ -218,10 +220,9 @@ function PptWizard({
     const [outlineRaw, setOutlineRaw] = useState("");
     const [outlineLoading, setOutlineLoading] = useState(false);
     const [pages, setPages] = useState<PptOutlinePage[]>([]);
-    const [styleDescription, setStyleDescription] = useState("");
-    const [styleRefs, setStyleRefs] = useState<UploadedImage[]>([]);
+    const [styleContract, setStyleContract] = useState<CanvasProjectPptStyleContract>(() => createPptVisualDirectionPresetContract());
+    const [extractedDirectionHint, setExtractedDirectionHint] = useState("");
     const [building, setBuilding] = useState(false);
-    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const runOutline = async () => {
         if (!material.trim()) {
@@ -238,7 +239,9 @@ function PptWizard({
                     setPages(previewExtractPages(text, material));
                 });
                 setPages(result.pages);
-                setStyleDescription(result.globalStyle);
+                const extractedDirection = result.globalStyle.trim();
+                setExtractedDirectionHint(extractedDirection);
+                setStyleContract(extractedDirection ? { source: { kind: "custom" }, direction: extractedDirection, references: [] } : createPptVisualDirectionPresetContract());
                 if (result.droppedCount > 0) {
                     const shown = result.droppedTitles.slice(0, 3).join("、");
                     const suffix = result.droppedTitles.length > 3 ? ` 等 ${result.droppedTitles.length} 页` : "";
@@ -265,22 +268,22 @@ function PptWizard({
     const removePage = (index: number) => setPages((prev) => prev.filter((_, i) => i !== index));
     const addPage = () => setPages((prev) => [...prev, { title: `第${prev.length + 1}页`, outline: "", visualHint: "" }]);
 
-    const addStyleRefs = async (files: FileList | null) => {
-        const images = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
-        if (!images.length) return;
-        const results = await Promise.allSettled(images.map((file) => uploadImage(file)));
-        const uploaded: UploadedImage[] = [];
-        const failedNames: string[] = [];
-        results.forEach((result, index) => {
-            if (result.status === "fulfilled") uploaded.push(result.value);
-            else failedNames.push(images[index].name);
-        });
-        if (uploaded.length) setStyleRefs((prev) => [...prev, ...uploaded]);
-        if (failedNames.length && uploaded.length) {
-            message.warning(`${failedNames.length} 张上传失败：${failedNames.join("、")}`);
-        } else if (failedNames.length) {
-            message.error(`参考图上传失败：${failedNames.join("、")}`);
+    const continueToOutline = () => {
+        const visualRequirement = mode === "outline" ? findPptVisualDirectionInstructions(requirements)[0] : undefined;
+        if (visualRequirement) {
+            message.warning(`请把视觉描述移到第三步“视觉方向”：${visualRequirement}`);
+            return;
         }
+        setStep(1);
+    };
+
+    const continueToVisualDirection = () => {
+        const pageWithVisualOverride = pages.find((page) => findPptVisualDirectionInstructions(page.visualHint)[0]);
+        if (pageWithVisualOverride) {
+            message.warning(`“${pageWithVisualOverride.title}”的构图建议包含视觉风格，请移到整套“视觉方向”`);
+            return;
+        }
+        setStep(2);
     };
 
     const confirmBuild = async () => {
@@ -299,9 +302,8 @@ function PptWizard({
                 title,
                 sourceMaterial: material,
                 requirements,
-                style: { description: styleDescription.trim() },
+                styleContract,
                 pages,
-                uploadedRefs: styleRefs,
                 mode,
             });
             const id = importProject(deck);
@@ -324,7 +326,7 @@ function PptWizard({
                     <h1 className="text-xl font-semibold">新建 PPT</h1>
                 </header>
 
-                <Steps current={step} size="small" className="[&_.ant-steps-item-icon-number]:font-mono [&_.ant-steps-item-icon-number]:tabular-nums" items={[{ title: "材料与要求" }, { title: "大纲编辑" }, { title: "风格配置" }]} />
+                <Steps current={step} size="small" className="[&_.ant-steps-item-icon-number]:font-mono [&_.ant-steps-item-icon-number]:tabular-nums" items={[{ title: "材料与要求" }, { title: "大纲编辑" }, { title: "视觉方向" }]} />
 
                 {step === 0 ? (
                     <div className="flex flex-col gap-4">
@@ -372,11 +374,11 @@ function PptWizard({
                         {mode === "outline" ? (
                             <label className="grid gap-1.5">
                                 <span className="text-sm font-medium">PPT 要求（可选）</span>
-                                <TextArea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="例如：9 页以内，专业咨询报告风格" autoSize={{ minRows: 2, maxRows: 6 }} />
+                                <TextArea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="例如：9 页以内，保留全部数据，禁止二维码" autoSize={{ minRows: 2, maxRows: 6 }} />
                             </label>
                         ) : null}
                         <div className="flex justify-end">
-                            <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" onClick={() => setStep(1)}>
+                            <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" onClick={continueToOutline}>
                                 下一步
                             </Button>
                         </div>
@@ -427,7 +429,7 @@ function PptWizard({
                                                 placeholder={mode === "extract" ? "该页完整提示词" : "该页要点"}
                                                 autoSize={mode === "extract" ? { minRows: 4, maxRows: 12 } : { minRows: 2, maxRows: 4 }}
                                             />
-                                            {mode === "outline" ? <Input value={page.visualHint} onChange={(event) => updatePage(index, { visualHint: event.target.value })} placeholder="视觉建议（可选）" /> : null}
+                                            {mode === "outline" ? <Input value={page.visualHint} onChange={(event) => updatePage(index, { visualHint: event.target.value })} placeholder="页面构图或素材建议（可选）" /> : null}
                                         </div>
                                     </div>
                                 ))}
@@ -452,7 +454,7 @@ function PptWizard({
                             <Button icon={<ArrowLeft className="size-4" />} onClick={() => setStep(0)}>
                                 上一步
                             </Button>
-                            <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" disabled={!pages.length} onClick={() => setStep(2)}>
+                            <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" disabled={!pages.length} onClick={continueToVisualDirection}>
                                 下一步
                             </Button>
                         </div>
@@ -461,59 +463,11 @@ function PptWizard({
 
                 {step === 2 ? (
                     <div className="flex flex-col gap-4">
-                        <label className="grid gap-1.5">
-                            <span className="text-sm font-medium">风格描述</span>
-                            {mode === "extract" ? (
-                                <p className="text-xs text-stone-500">以下内容是从原文中未被任何一页占用的部分自动摘录（可能混有与风格无关的说明文字），仅供参考。若每页已自带风格，删空即可；否则请自行删减到只剩全局视觉风格（配色、背景、字体等）。</p>
-                            ) : null}
-                            <TextArea
-                                value={styleDescription}
-                                onChange={(event) => setStyleDescription(event.target.value)}
-                                placeholder="例如：专业咨询报告风，深蓝配色，扁平化图标"
-                                autoSize={mode === "extract" ? { minRows: 6, maxRows: 20 } : { minRows: 3, maxRows: 6 }}
-                            />
-                        </label>
-
                         <div>
-                            <div className="mb-1.5 flex items-center justify-between">
-                                <span className="text-sm font-medium">风格参考图（可选）</span>
-                                <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                    上传
-                                </Button>
-                            </div>
-                            <div className="rounded-lg border border-dashed border-stone-300 p-2 dark:border-stone-700">
-                                {styleRefs.length ? (
-                                    <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
-                                        {styleRefs.map((ref, index) => (
-                                            <div key={ref.storageKey} className="group relative aspect-square overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                                <img src={ref.url} alt={`风格参考图${index + 1}`} className="size-full object-cover" />
-                                                <button
-                                                    type="button"
-                                                    className="absolute right-1 top-1 flex size-6 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white/70"
-                                                    onClick={() => setStyleRefs((prev) => prev.filter((item) => item.storageKey !== ref.storageKey))}
-                                                    aria-label="移除参考图"
-                                                >
-                                                    <Trash2 className="size-3.5" />
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <div className="flex min-h-24 items-center justify-center text-sm text-stone-500">暂无参考图</div>
-                                )}
-                            </div>
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                className="hidden"
-                                onChange={(event) => {
-                                    void addStyleRefs(event.target.files);
-                                    event.target.value = "";
-                                }}
-                            />
+                            <h2 className="text-base font-semibold">选择整套 PPT 的视觉方向</h2>
+                            <p className="mt-1 text-sm text-stone-500">先从一个清晰方向开始，之后仍可在工作台调整。</p>
                         </div>
+                        <PptVisualDirectionEditor value={styleContract} onChange={setStyleContract} extractedDirectionHint={mode === "extract" ? extractedDirectionHint : undefined} />
 
                         <div className="flex justify-between">
                             <Button icon={<ArrowLeft className="size-4" />} onClick={() => setStep(1)}>

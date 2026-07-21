@@ -100,13 +100,20 @@ export async function exportPptDeckPptx(project: CanvasProject, options: ExportO
 
 async function resolveInspectionPages(project: CanvasProject, { inspectPptx = false, onProgress }: ExportOptions & { inspectPptx?: boolean } = {}, dependencies = DEFAULT_EXPORT_DEPENDENCIES): Promise<ResolvedInspectionPage[]> {
     const pages = [...(project.ppt?.pages || [])].sort((a, b) => a.index - b.index);
-    const resolved: ResolvedInspectionPage[] = [];
-    for (let index = 0; index < pages.length; index += 1) {
-        const page = pages[index];
+    const resolved = pages.map<ResolvedInspectionPage>((page) => {
         const workspace = buildPptPageWorkspace(project, page);
-        const node = workspace.confirmedNode;
-        const issues = [...workspace.confirmationIssues];
-        const result: ResolvedInspectionPage = { page, node, issues, pptxIssues: [] };
+        return { page, node: workspace.confirmedNode, issues: [...workspace.confirmationIssues], pptxIssues: [] };
+    });
+
+    // 先完成全 deck 的确认/血缘预检；任一已确认页损坏时，不先读其他页 Blob 造成部分导出副作用。
+    if (resolved.some((item) => item.page.confirmedNodeId && item.issues.length)) {
+        resolved.forEach((_, index) => onProgress?.({ current: index + 1, total: pages.length, message: `正在检查页面 ${index + 1}/${pages.length}` }));
+        return resolved;
+    }
+
+    for (let index = 0; index < pages.length; index += 1) {
+        const result = resolved[index];
+        const { page, node, issues } = result;
         const storageKey = node?.metadata?.storageKey;
 
         if (storageKey && !issues.length) {
@@ -131,8 +138,6 @@ async function resolveInspectionPages(project: CanvasProject, { inspectPptx = fa
                 result.issues.push("已确认的图片本地文件读取失败");
             }
         }
-
-        resolved.push(result);
         onProgress?.({ current: index + 1, total: pages.length, message: `正在读取页面 ${index + 1}/${pages.length}` });
     }
 

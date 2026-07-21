@@ -1,5 +1,7 @@
 import { applyCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
+import { isPptCandidateEditReferenceSnapshot } from "@/lib/ppt/candidate-edit";
 import { applyGenerationPlanPptOps, assertGenerationPlanCompilation, assertGenerationPlanCurrentTargets, isPptCandidateEditSnapshot, type GenerationPlan, type GenerationPlanRequest, type GenerationPlanRun } from "@/lib/ppt/generation-plan";
+import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasNodeData, CanvasNodeMetadata, PptGenerationRequestStatus, PptGenerationRequestTrace, PptGenerationRunStatus, PptGenerationRunSummary } from "@/types/canvas";
@@ -475,6 +477,15 @@ function assertGenerationPlanKind(project: CanvasProject, plan: GenerationPlan, 
         buildPptPageWorkspace(project, page)
             .takes.find((take) => take.takeId === run?.takeId)
             ?.candidates.find((candidate) => candidate.id === sourceNode?.id);
+    let sourceLineageValid = false;
+    if (page && sourceCandidate) {
+        try {
+            assertPptPageCandidateCanBeConfirmed(project, page, sourceCandidate.id);
+            sourceLineageValid = true;
+        } catch {
+            // 与其他结构异常一样在下方统一阻断，不泄露未冻结的计划细节。
+        }
+    }
     const validCandidateEdit =
         plan.kind === "candidateEdit" &&
         !plan.compilation &&
@@ -486,10 +497,12 @@ function assertGenerationPlanKind(project: CanvasProject, plan: GenerationPlan, 
         sourceNode !== undefined &&
         !sourceNode.metadata?.isBatchRoot &&
         sourceCandidate === sourceNode &&
+        sourceLineageValid &&
         isPptCandidateEditSnapshot(request.candidateEdit, sourceNode.id) &&
         request.prompt === request.candidateEdit.finalPrompt &&
         request.inputRefs.length === 1 &&
-        request.inputRefs[0].nodeId === sourceNode.id;
+        request.inputRefs[0].nodeId === sourceNode.id &&
+        isPptCandidateEditReferenceSnapshot(request.candidateEdit, sourceNode.id, sourceNode.metadata?.storageKey, request.referenceSnapshots);
     if (!validCandidateEdit) throw new Error("候选图编辑计划的结构不合法，不能降级绕过 PPT Compiler");
 }
 
