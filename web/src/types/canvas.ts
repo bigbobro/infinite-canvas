@@ -50,6 +50,7 @@ export type PptGenerationRequestTrace = {
     requestType: "textToImage" | "imageToImage";
     model: string;
     providerIdentity: PptGenerationProviderIdentity;
+    compilationSnapshotId?: string;
     status: PptGenerationRequestStatus;
     remoteTaskId?: string;
     remoteTaskExpiresAt?: number;
@@ -81,6 +82,12 @@ export type CanvasNodeMetadata = {
     prompt?: string;
     /** PPT 配置节点的用户可编辑排版要求。回写机制会污染 prompt 字段,可编辑指令必须存这里。 */
     pptLayoutPrompt?: string;
+    /** 用户已明确确认的排版要求完整文本；文本一变更即失效。 */
+    pptLayoutPromptReviewed?: string;
+    /** 显式覆盖真正发送的最终提示词；仍需通过锁定事实校验。 */
+    pptCompiledPromptOverride?: string;
+    /** 用户已明确确认的 override 完整文本；文本一变更即失效。 */
+    pptCompiledPromptReviewedOverride?: string;
     status?: CanvasNodeStatus;
     errorDetails?: string;
     fontSize?: number;

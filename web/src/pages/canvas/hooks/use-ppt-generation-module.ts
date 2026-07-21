@@ -147,6 +147,14 @@ export function usePptGenerationModule({ projectId, projectLoaded, effectiveConf
                 }
                 return coreModule.start(await freezeGenerationPlanReferences(plan));
             },
+            startCandidateEdit: async (plan: GenerationPlan) => {
+                const missingModel = plan.runs.flatMap((run) => run.requests).find((request) => !readyRef.current(configRef.current, request.model));
+                if (missingModel) {
+                    openConfigRef.current(true);
+                    throw new Error(`模型 ${missingModel.model} 尚未配置`);
+                }
+                return coreModule.startCandidateEdit(await freezeGenerationPlanReferences(plan));
+            },
             recover: coreModule.recover,
         }),
         [coreModule],

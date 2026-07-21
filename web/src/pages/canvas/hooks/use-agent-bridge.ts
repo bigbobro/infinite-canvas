@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 
 import { useAgentStore } from "@/stores/use-agent-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
-import { agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptGenerationLedger } from "@/lib/ppt/generation-ledger";
+import { agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, nodeIdsTouchPptGenerationLedger } from "@/lib/ppt/generation-ledger";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@/types/canvas";
 
@@ -65,7 +65,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
     onBlockedPptMutationRef.current = onBlockedPptMutation;
     const deleteCanvasNodes = useCallback(
         (ids: string[]) => {
-            if (nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set(ids))) {
+            if (nodeIdsTouchPptControlledNodes(nodesRef.current, new Set(ids)) || nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set(ids))) {
                 onBlockedPptMutationRef.current();
                 return;
             }
@@ -75,11 +75,11 @@ export function useAgentBridge(params: AgentBridgeParams) {
     );
 
     const agentSnapshot = useMemo<CanvasAgentSnapshot>(() => ({ projectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport }), [connections, projectTitle, nodes, projectId, selectedNodeIds, viewport]);
-    const applyAgentOps = useCallback(
-        (ops?: CanvasAgentOp[]) => {
+    const applyCanvasOps = useCallback(
+        (ops: CanvasAgentOp[] | undefined, protectPptInputs: boolean) => {
             const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
             const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
-            if (agentOpsTouchPptGenerationLedger(safeOps, before.nodes, before.connections)) {
+            if (protectPptInputs && agentOpsTouchPptGenerationLedger(safeOps, before.nodes, before.connections)) {
                 onBlockedPptMutationRef.current();
                 return before;
             }
@@ -92,7 +92,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
             connectionsRef.current = next.connections;
             selectedNodeIdsRef.current = new Set(next.selectedNodeIds);
             viewportRef.current = next.viewport;
-            setAgentUndoSnapshot(before);
+            if (protectPptInputs) setAgentUndoSnapshot(before);
             setNodes(next.nodes);
             setConnections(next.connections);
             setSelectedNodeIds(new Set(next.selectedNodeIds));
@@ -112,6 +112,8 @@ export function useAgentBridge(params: AgentBridgeParams) {
         },
         [projectTitle, projectId],
     );
+    const applyAgentOps = useCallback((ops?: CanvasAgentOp[]) => applyCanvasOps(ops, true), [applyCanvasOps]);
+    const applyTrustedOps = useCallback((ops?: CanvasAgentOp[]) => applyCanvasOps(ops, false), [applyCanvasOps]);
     const undoAgentOps = useCallback(() => {
         if (!agentUndoSnapshot) return null;
         if (historyEntryTouchesPptGenerationLedger(nodesRef.current, agentUndoSnapshot.nodes, connectionsRef.current, agentUndoSnapshot.connections)) {
@@ -136,13 +138,14 @@ export function useAgentBridge(params: AgentBridgeParams) {
         setAgentCanvasContext({
             snapshot: agentSnapshot,
             applyOps: applyAgentOps,
+            applyTrustedOps,
             deleteCanvasNodesWithEffects: deleteCanvasNodes,
             deletePptCanvasNodesWithEffects: deleteCanvasNodesWithEffects,
             undoOps: undoAgentOps,
             canUndo: Boolean(agentUndoSnapshot),
         });
         return () => setAgentCanvasContext(null);
-    }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, deleteCanvasNodes, setAgentCanvasContext, undoAgentOps]);
+    }, [agentSnapshot, applyAgentOps, applyTrustedOps, agentUndoSnapshot, deleteCanvasNodes, setAgentCanvasContext, undoAgentOps]);
 
     return { applyAgentOps };
 }

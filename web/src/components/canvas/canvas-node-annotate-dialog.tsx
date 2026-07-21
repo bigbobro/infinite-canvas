@@ -9,6 +9,7 @@ import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { buildAnnotatePrompt, type AnnotatePin } from "@/lib/canvas/annotate-prompt";
 import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createPptCandidateEditPlan } from "@/lib/ppt/generation-plan";
+import { isPptControlledNode } from "@/lib/ppt/generation-ledger";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
@@ -138,7 +139,7 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
                     return;
                 }
                 try {
-                    const result = await pptGenerationModule.start(createPptCandidateEditPlan({ project, effectiveConfig, pageId, takeId, sourceNodeId: node.id, prompt, reference: markedReference }));
+                    const result = await pptGenerationModule.startCandidateEdit(createPptCandidateEditPlan({ project, effectiveConfig, pageId, takeId, sourceNodeId: node.id, prompt, reference: markedReference }));
                     void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "标注改图状态保存失败"));
                     close();
                     if (skipped > 0) message.info(`已忽略 ${skipped} 个未填写的标记`);
@@ -146,6 +147,10 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
                 } catch (error) {
                     message.error(error instanceof Error ? error.message : "标注改图启动失败");
                 }
+                return;
+            }
+            if (isPptControlledNode(node)) {
+                message.warning("PPT 共享素材请在 PPT 工作台中调整，不能从结构画布直接改图");
                 return;
             }
             const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
@@ -211,6 +216,10 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
     const confirmSubmit = () => {
         if (!pins.some((pin) => pin.text.trim())) {
             message.warning("请至少填写一个标记的修改内容");
+            return;
+        }
+        if (node && isPptControlledNode(node) && !node.metadata?.pptGenerationRequest && !node.metadata?.pptGenerationRun) {
+            message.warning("PPT 共享素材请在 PPT 工作台中调整，不能从结构画布直接改图");
             return;
         }
         const project = useCanvasStore.getState().projects.find((item) => item.id === canvasContext?.snapshot.projectId);

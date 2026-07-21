@@ -10,6 +10,7 @@ export type AgentPendingToolCall = { requestId: string; name: string; input?: { 
 export type AgentCanvasContext = {
     snapshot: CanvasAgentSnapshot;
     applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot;
+    applyTrustedOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot;
     deleteCanvasNodesWithEffects: (ids: string[]) => void;
     deletePptCanvasNodesWithEffects: (ids: string[]) => void;
     undoOps: () => CanvasAgentSnapshot | null;

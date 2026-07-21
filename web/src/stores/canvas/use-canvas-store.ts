@@ -22,11 +22,109 @@ export type CanvasProjectPptPage = {
     takes: CanvasProjectPptTake[];
 };
 
+export type CanvasProjectPptSourceRef = {
+    source: "material" | "imported_spec";
+    excerpt: string;
+    startLine?: number;
+    endLine?: number;
+};
+
+export type CanvasProjectPptLockedFact = {
+    id: string;
+    kind: "number" | "term" | "point_count" | "table";
+    value: string;
+    sourceExcerpt: string;
+};
+
+export type CanvasProjectPptDeckBrief = {
+    version: number;
+    audience: string;
+    goal: string;
+    narrative: string;
+    visualLanguage: string;
+    globalRules: string[];
+    forbiddenRules: string[];
+    lockedDeckFacts: CanvasProjectPptLockedFact[];
+};
+
+export type CanvasProjectPptPageSpec = {
+    pageId: string;
+    version: number;
+    sourceRefs: CanvasProjectPptSourceRef[];
+    lockedCopy: string[];
+    lockedFacts: CanvasProjectPptLockedFact[];
+    message: string;
+    layoutIntent: string[];
+    assetRefs: string[];
+    freedom: string;
+    requiresReview: boolean;
+    reviewReason?: string;
+    reviewedAt?: string;
+};
+
+export type CanvasProjectPptCompilationIssue = {
+    id: string;
+    severity: "blocking" | "warning";
+    code:
+        | "missing_page_spec"
+        | "review_required"
+        | "override_review_required"
+        | "missing_locked_copy"
+        | "missing_locked_fact"
+        | "unreviewed_fact"
+        | "missing_required_instruction"
+        | "point_count_mismatch"
+        | "forbidden_conflict"
+        | "layout_conflict"
+        | "duplicate_instruction";
+    message: string;
+    pageId?: string;
+    takeId?: string;
+};
+
+export type CanvasProjectPptCompiledPrompt = {
+    promptId: string;
+    pageId: string;
+    takeId: string;
+    finalPrompt: string;
+    sourceRefs: CanvasProjectPptSourceRef[];
+    override?: string;
+    issueIds: string[];
+};
+
+export type CanvasProjectPptCompilationTarget = {
+    pageId: string;
+    takeId: string;
+    semanticText: string;
+    layoutIntent: string[];
+    layoutConfirmed?: boolean;
+    styleTexts: string[];
+    extraTexts: string[];
+    override?: string;
+    overrideConfirmed?: boolean;
+};
+
+export type CanvasProjectPptCompilationSnapshot = {
+    snapshotId: string;
+    compilerVersion: string;
+    createdAt: string;
+    deckBriefVersion: number;
+    pageSpecsVersion: number;
+    deckBrief: CanvasProjectPptDeckBrief;
+    pageSpecs: CanvasProjectPptPageSpec[];
+    targets: CanvasProjectPptCompilationTarget[];
+    prompts: CanvasProjectPptCompiledPrompt[];
+    issues: CanvasProjectPptCompilationIssue[];
+};
+
 export type CanvasProjectPpt = {
     sourceMaterial: string;
     requirements: string;
     style: { description: string; references: { storageKey: string }[] };
     pages: CanvasProjectPptPage[];
+    deckBrief: CanvasProjectPptDeckBrief;
+    pageSpecs: CanvasProjectPptPageSpec[];
+    compilationSnapshots: CanvasProjectPptCompilationSnapshot[];
     anchorConfirmed?: boolean;
     mode?: "outline" | "extract";
     /** 批量生成确认弹窗记住的选择：true=直接生成全部、false=先锚定首页（07-17-ppt-ux-fixes #18）。 */

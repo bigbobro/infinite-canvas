@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Dropdown, Input, InputNumber, Modal, Popover, Select, Tooltip, theme as antdTheme } from "antd";
+import { Alert, App, Button, Dropdown, Input, InputNumber, Modal, Popover, Select, Tooltip, theme as antdTheme } from "antd";
 import { ArrowRight, CheckCircle2, ChevronDown, FileText, GitBranchPlus, ImageOff, Layers3, LoaderCircle, Music2, Network, Pencil, Plus, Presentation, RotateCcw, Save, ScanSearch, Sparkles, Trash2, Video, WandSparkles } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
+import { planHasBlockingCompilationIssues, PptGenerationPlanSummary } from "@/components/canvas/canvas-ppt-generation-confirm";
 import { CanvasPptPromptEditor } from "@/components/canvas/canvas-ppt-prompt-editor";
 import { imageAspectOptions, imageSizeLabel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
@@ -15,6 +16,7 @@ import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
+import { buildPptPageSpec, derivePptStyleRules } from "@/lib/ppt/prompt-compiler";
 import { cn } from "@/lib/utils";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -123,6 +125,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     const [promptDraft, setPromptDraft] = useState("");
     const [newTakeDraft, setNewTakeDraft] = useState<{ sourceTakeId?: string; prompt: string } | null>(null);
     const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+    const [compiledOverrideOpen, setCompiledOverrideOpen] = useState(false);
+    const [compiledOverrideDraft, setCompiledOverrideDraft] = useState("");
     const [configPopoverOpen, setConfigPopoverOpen] = useState(false);
     const [configDraft, setConfigDraft] = useState<GenerationConfigDraft>();
     const [configBaseline, setConfigBaseline] = useState<GenerationConfigDraft>();
@@ -145,6 +149,26 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         if (!project || !activeTake) return undefined;
         return createGenerationPlan({ kind: "generateSingle", takeId: activeTake.takeId }, { project, effectiveConfig });
     }, [activeTake, effectiveConfig, project]);
+    const overrideValidationPlan = useMemo(() => {
+        if (!compiledOverrideOpen || !project || !activeTake?.configNode) return undefined;
+        const value = compiledOverrideDraft.trim();
+        const previewProject = {
+            ...project,
+            nodes: project.nodes.map((node) =>
+                node.id === activeTake.configNode?.id
+                    ? {
+                          ...node,
+                          metadata: {
+                              ...node.metadata,
+                              pptCompiledPromptOverride: value || undefined,
+                              pptCompiledPromptReviewedOverride: value && node.metadata?.pptCompiledPromptReviewedOverride === value ? value : undefined,
+                          },
+                      }
+                    : node,
+            ),
+        };
+        return createGenerationPlan({ kind: "generateSingle", takeId: activeTake.takeId }, { project: previewProject, effectiveConfig });
+    }, [activeTake?.configNode, activeTake?.takeId, compiledOverrideDraft, compiledOverrideOpen, effectiveConfig, project]);
     const textModelReady = Boolean(effectiveConfig.textModel.trim() && isAiConfigReady(effectiveConfig, effectiveConfig.textModel));
 
     useEffect(() => {
@@ -170,6 +194,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     useEffect(() => {
         setPromptEditorOpen(false);
+        setCompiledOverrideOpen(false);
         setConfigPopoverOpen(false);
         setConfigDraft(undefined);
         setConfigBaseline(undefined);
@@ -178,6 +203,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     useEffect(() => {
         if (open) return;
         setPromptEditorOpen(false);
+        setCompiledOverrideOpen(false);
         setConfigPopoverOpen(false);
         setConfigDraft(undefined);
         setConfigBaseline(undefined);
@@ -198,6 +224,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     const ppt = project.ppt;
     const page = workspace.page;
+    const pageSpec = ppt.pageSpecs.find((spec) => spec.pageId === page.pageId);
     const activeNode = activeTake?.candidates.find((node) => node.id === activeNodeId);
     const possiblySubmittedStatuses = ["submitting", "submitted", "running", "submission_unknown", "succeeded", "materializing", "recoverable_error"];
     const riskyRequests = activeTake?.generationRequests.filter((request) => !request.remoteTaskId && possiblySubmittedStatuses.includes(request.status)) || [];
@@ -240,9 +267,36 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         }
     };
 
+    const pageSpecForPrompt = (value: string) => {
+        const next = buildPptPageSpec({
+            mode: ppt.mode || "outline",
+            sourceMaterial: ppt.sourceMaterial,
+            page: { pageId: page.pageId, title: page.title, outline: value, visualHint: page.visualHint },
+            version: (pageSpec?.version || 0) + 1,
+        });
+        if (
+            pageSpec &&
+            JSON.stringify({ lockedCopy: next.lockedCopy, lockedFacts: next.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })), layoutIntent: next.layoutIntent, assetRefs: next.assetRefs, message: next.message }) ===
+                JSON.stringify({
+                    lockedCopy: pageSpec.lockedCopy,
+                    lockedFacts: pageSpec.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })),
+                    layoutIntent: pageSpec.layoutIntent,
+                    assetRefs: pageSpec.assetRefs,
+                    message: pageSpec.message,
+                })
+        ) {
+            return pageSpec;
+        }
+        return next;
+    };
+
     const executeGenerationPlan = async (plan: GenerationPlan) => {
         if (!plan.runs.length) {
             message.warning(plan.excludedPages[0]?.reason || "没有可生成的方案");
+            return false;
+        }
+        if (planHasBlockingCompilationIssues(plan)) {
+            message.warning("最终提示词仍有必须处理的问题，请展开检查后再生成");
             return false;
         }
         try {
@@ -269,6 +323,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             return;
         }
         if (!singleGenerationPlan) return;
+        if (planHasBlockingCompilationIssues(singleGenerationPlan)) {
+            modal.warning({ title: "最终提示词需要处理", content: <PptGenerationPlanSummary plan={singleGenerationPlan} />, okText: "知道了", width: 680 });
+            return;
+        }
         if (retrievableRequest) {
             modal.confirm({
                 title: "已有任务可重新获取",
@@ -282,7 +340,12 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         if (riskyRequest || repeatBillingRisk) {
             modal.confirm({
                 title: "仍要重新生成？",
-                content: `上一次请求可能已经产生费用，且无法继续取回。本次将新建 ${singleGenerationPlan.callCount} 个请求（文生图 ${singleGenerationPlan.callBreakdown.textToImage}，图生图 ${singleGenerationPlan.callBreakdown.imageToImage}），可能重复计费。`,
+                content: (
+                    <>
+                        <p>上一次请求可能已经产生费用，且无法继续取回，本次可能重复计费。</p>
+                        <PptGenerationPlanSummary plan={singleGenerationPlan} repeatBillingRiskCount={1} />
+                    </>
+                ),
                 okText: "仍要生成",
                 cancelText: "取消",
                 onOk: async () => {
@@ -302,14 +365,26 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         if (activeTake.generationRuns.length || activeTake.candidates.length) {
             modal.confirm({
                 title: "重新生成当前方案？",
-                content: `本次将新建 ${singleGenerationPlan.callCount} 个请求（文生图 ${singleGenerationPlan.callBreakdown.textToImage}，图生图 ${singleGenerationPlan.callBreakdown.imageToImage}），旧运行和候选稿会保留。`,
+                content: (
+                    <>
+                        <p>旧运行和候选稿会保留。</p>
+                        <PptGenerationPlanSummary plan={singleGenerationPlan} />
+                    </>
+                ),
                 okText: "确认生成",
                 cancelText: "取消",
                 onOk: () => executeGenerationPlan(singleGenerationPlan),
             });
             return;
         }
-        await executeGenerationPlan(singleGenerationPlan);
+        modal.confirm({
+            title: "生成当前方案？",
+            content: <PptGenerationPlanSummary plan={singleGenerationPlan} />,
+            okText: "确认生成",
+            cancelText: "取消",
+            width: 680,
+            onOk: () => executeGenerationPlan(singleGenerationPlan),
+        });
     };
 
     const retrieveExisting = async () => {
@@ -339,7 +414,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     const copyGenerationDiagnostic = () => {
         if (!activeTake || (!activeTake.generationRequests.length && !activeTake.generationRuns.length)) return;
-        const secrets = [effectiveConfig.apiKey, ...effectiveConfig.channels.map((channel) => channel.apiKey), activeTake.prompt, activeTake.layoutPrompt, ...activeTake.upstreamInputs.map((input) => input.text || "")];
+        const secrets = [
+            effectiveConfig.apiKey,
+            ...effectiveConfig.channels.map((channel) => channel.apiKey),
+            activeTake.prompt,
+            activeTake.layoutPrompt,
+            activeTake.configNode?.metadata?.pptCompiledPromptOverride || "",
+            ...activeTake.upstreamInputs.map((input) => input.text || ""),
+        ];
         const requests = activeTake.generationRequests.map((request) => ({
             ...request,
             error: redactDiagnosticText(request.error, secrets),
@@ -369,7 +451,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         setConfigDraft(undefined);
         setConfigBaseline(undefined);
         if (!Object.keys(metadata).length) return;
-        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.configNode.id, metadata }]);
+        const next = canvasContext.applyTrustedOps([{ type: "update_node", id: activeTake.configNode.id, metadata }]);
         if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
         message.success("生成配置已更新");
     };
@@ -380,8 +462,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("方案提示词不能为空");
             return;
         }
-        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: value, status: "success" } }]);
-        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
+        const nextPageSpec = pageSpecForPrompt(value);
+        const next = canvasContext.applyTrustedOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: value, status: "success" } }]);
+        if (!(await persistProject({ nodes: next.nodes, connections: next.connections, ppt: nextPageSpec === pageSpec ? ppt : { ...ppt, pageSpecs: [...ppt.pageSpecs.filter((spec) => spec.pageId !== page.pageId), nextPageSpec] } }))) return;
         setPromptEditorOpen(false);
         message.success(`方案 ${activeTake.index + 1} 的提示词已保存`);
     };
@@ -396,21 +479,105 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("风格基调不能为空");
             return;
         }
-        const next = canvasContext.applyOps([{ type: "update_node", id: nodeId, metadata: { content, status: "success" } }]);
-        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
+        const styleRules = derivePptStyleRules(ppt.requirements, content);
+        const next = canvasContext.applyTrustedOps([{ type: "update_node", id: nodeId, metadata: { content, status: "success" } }]);
+        if (
+            !(await persistProject({
+                nodes: next.nodes,
+                connections: next.connections,
+                ppt: {
+                    ...ppt,
+                    style: { ...ppt.style, description: content },
+                    deckBrief: { ...ppt.deckBrief, ...styleRules, version: ppt.deckBrief.version + 1 },
+                },
+            }))
+        )
+            return;
         message.success("风格基调已更新，将影响全部页面");
     };
 
-    // #31：排版要求只作用于当前方案分支。存专用字段 pptLayoutPrompt——
-    // metadata.prompt 每轮生成会被拼装全文回写(污染),不可作可编辑指令的存储位。
+    // #31：排版要求只作用于当前方案分支，存在专用字段 pptLayoutPrompt。
+    // metadata.prompt 不再作为 PPT Compiler 的指令来源。
     const saveLayoutPrompt = async (content: string) => {
         if (!canvasContext || !activeTake?.configNode) {
             message.warning("画布尚未就绪，请稍后再试");
+            return false;
+        }
+        const value = content.trim();
+        const persistLayout = async (reviewed: boolean) => {
+            const next = canvasContext.applyTrustedOps([
+                {
+                    type: "update_node",
+                    id: activeTake.configNode!.id,
+                    metadata: {
+                        pptLayoutPrompt: value,
+                        pptLayoutPromptReviewed: value && reviewed ? value : undefined,
+                    },
+                },
+            ]);
+            if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return false;
+            message.success(`方案分支 ${activeTake.index + 1} 的排版要求已保存`);
+            return true;
+        };
+        const alreadyReviewed = Boolean(value && activeTake.configNode.metadata?.pptLayoutPromptReviewed === value);
+        if (value && value !== PPT_PAGE_PROMPT && !alreadyReviewed) {
+            return new Promise<boolean>((resolve) => {
+                modal.confirm({
+                    title: "确认排版要求",
+                    content: "自定义排版文本会进入最终提示词。请确认其中没有未经确认的文案或事实；后续再修改时会重新要求确认。",
+                    okText: "确认准确并保存",
+                    cancelText: "继续修改",
+                    onOk: async () => resolve(await persistLayout(true)),
+                    onCancel: () => resolve(false),
+                });
+            });
+        }
+        return persistLayout(alreadyReviewed);
+    };
+
+    const saveCompiledPromptOverride = async () => {
+        if (!canvasContext || !activeTake?.configNode || activeTake.generating || activeTake.unresolvedGeneration) return;
+        const value = compiledOverrideDraft.trim();
+        const blockers = overrideValidationPlan?.compilation?.issues.filter((issue) => issue.severity === "blocking") || [];
+        const needsExplicitReview = blockers.length > 0 && blockers.every((issue) => issue.code === "override_review_required");
+        const alreadyReviewed = Boolean(value && activeTake.configNode.metadata?.pptCompiledPromptReviewedOverride === value);
+        if (value && blockers.length && !needsExplicitReview) {
+            message.warning("覆盖未保存：请先处理下方必须处理的检查项");
             return;
         }
-        const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.configNode.id, metadata: { pptLayoutPrompt: content } }]);
-        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
-        message.success(`方案分支 ${activeTake.index + 1} 的排版要求已保存`);
+        const persistOverride = async (reviewed: boolean) => {
+            const next = canvasContext.applyTrustedOps([
+                {
+                    type: "update_node",
+                    id: activeTake.configNode!.id,
+                    metadata: {
+                        pptCompiledPromptOverride: value || undefined,
+                        pptCompiledPromptReviewedOverride: value && reviewed ? value : undefined,
+                    },
+                },
+            ]);
+            if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
+            setCompiledOverrideOpen(false);
+            message.success(value ? "最终提示词覆盖已保存并通过当前检查" : "已恢复由页面规格自动编译");
+        };
+        if (needsExplicitReview) {
+            modal.confirm({
+                title: "确认新增或改写内容",
+                content: "这些内容无法由 Compiler 自动溯源。请确认文案和事实准确；后续再修改时会重新要求确认。",
+                okText: "确认准确并保存",
+                cancelText: "继续修改",
+                onOk: () => persistOverride(true),
+            });
+            return;
+        }
+        await persistOverride(alreadyReviewed);
+    };
+
+    const confirmPageSpecReview = async () => {
+        if (!pageSpec?.requiresReview || pageSpec.reviewedAt) return;
+        const reviewedAt = new Date().toISOString();
+        if (!(await persistProject({ ppt: { ...ppt, pageSpecs: ppt.pageSpecs.map((spec) => (spec.pageId === page.pageId ? { ...spec, version: spec.version + 1, reviewedAt } : spec)) } }))) return;
+        message.success("已确认本页正文与布局拆分");
     };
 
     const setConfirmed = async (confirmedNodeId?: string) => {
@@ -435,6 +602,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("方案提示词不能为空");
             return;
         }
+        const nextPageSpec = pageSpecForPrompt(prompt);
+        const projectWithSpec =
+            nextPageSpec === pageSpec
+                ? project
+                : {
+                      ...project,
+                      ppt: { ...ppt, pageSpecs: [...ppt.pageSpecs.filter((spec) => spec.pageId !== page.pageId), nextPageSpec] },
+                  };
 
         const takeId = nanoid();
         const outlineId = nanoid();
@@ -443,8 +618,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         const seedLayoutPrompt = sourceTake?.layoutPrompt?.trim() || (isExtractMode ? "" : PPT_PAGE_PROMPT);
         const inheritedConfig = resolveGenerationConfig(effectiveConfig, sourceTake?.configNode, "image");
         const configMetadata: CanvasNodeMetadata = {
-            prompt: isExtractMode ? "" : PPT_PAGE_PROMPT,
+            prompt: "",
             pptLayoutPrompt: seedLayoutPrompt,
+            ...(seedLayoutPrompt && sourceTake?.configNode?.metadata?.pptLayoutPromptReviewed === seedLayoutPrompt ? { pptLayoutPromptReviewed: seedLayoutPrompt } : {}),
             model: inheritedConfig.model,
             size: inheritedConfig.size,
             count: getGenerationCount(inheritedConfig.count),
@@ -475,15 +651,23 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     configMetadata,
                     anchorContent: prompt,
                     inheritedInputNodeIds,
+                    pageSpec: nextPageSpec === pageSpec ? undefined : nextPageSpec,
                     positions: { anchor: outlinePosition, config: configPosition },
                 },
-                { project, effectiveConfig },
+                { project: projectWithSpec, effectiveConfig },
             );
             modal.confirm({
                 title: `保存并生成方案 ${nextTakeIndex}？`,
-                content: `${sourceTake?.requiresRepeatBillingConfirmation ? "原方案的上一次请求可能已产生费用且无法取回结果。" : ""}本次将新建 ${plan.callCount} 个请求（文生图 ${plan.callBreakdown.textToImage}，图生图 ${plan.callBreakdown.imageToImage}），原方案和候选稿会保留。${sourceTake?.requiresRepeatBillingConfirmation ? "继续生成可能重复计费。" : ""}`,
+                content: (
+                    <>
+                        <p>{sourceTake?.requiresRepeatBillingConfirmation ? "原方案的上一次请求可能已产生费用且无法取回结果，继续生成可能重复计费。" : "原方案和候选稿会保留。"}</p>
+                        <PptGenerationPlanSummary plan={plan} repeatBillingRiskCount={sourceTake?.requiresRepeatBillingConfirmation ? 1 : 0} />
+                    </>
+                ),
                 okText: "确认生成",
                 cancelText: "取消",
+                width: 680,
+                okButtonProps: { disabled: planHasBlockingCompilationIssues(plan) },
                 onOk: async () => {
                     if (!(await executeGenerationPlan(plan))) return;
                     setActiveTakeId(takeId);
@@ -508,7 +692,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...inheritedInputNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
-        const next = canvasContext.applyOps(ops);
+        const next = canvasContext.applyTrustedOps(ops);
         const nextTakes = [...page.takes, { takeId, anchorNodeId: outlineId, configNodeId: configId }];
         if (
             !(await persistProject({
@@ -517,6 +701,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                 ppt: {
                     ...ppt,
                     pages: ppt.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)),
+                    pageSpecs: nextPageSpec === pageSpec ? ppt.pageSpecs : [...ppt.pageSpecs.filter((spec) => spec.pageId !== page.pageId), nextPageSpec],
                 },
             }))
         )
@@ -902,9 +1087,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                 <>
                                     <div className="flex items-start justify-between gap-3">
                                         <div>
-                                            <h3 className="text-sm font-semibold">新方案提示词</h3>
+                                            <h3 className="text-sm font-semibold">新方案页面规格</h3>
                                             <p className="mt-1 text-xs" style={{ color: canvasTheme.node.muted }}>
-                                                先调整提示词，创建方案后再决定是否生成，不会自动消耗 API。
+                                                先调整页面规格，创建方案后再决定是否生成，不会自动消耗 API。
                                             </p>
                                         </div>
                                         <GitBranchPlus className="size-4 shrink-0" aria-hidden="true" />
@@ -913,7 +1098,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                         className="mt-3 !h-48 !resize-none overflow-y-auto"
                                         value={newTakeDraft.prompt}
                                         variant="filled"
-                                        placeholder="填写这一方案的完整提示词"
+                                        placeholder="填写这一方案的页面规格"
                                         onChange={(event) => setNewTakeDraft((current) => (current ? { ...current, prompt: event.target.value } : current))}
                                     />
                                     <div className="mt-3 flex justify-end gap-2">
@@ -930,7 +1115,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                     <div
                                         className="thin-scrollbar max-h-[46vh] cursor-text overflow-y-auto whitespace-pre-wrap rounded-lg px-3 py-2 text-sm"
                                         style={{ background: canvasTheme.node.fill }}
-                                        aria-label={`方案 ${activeTake.index + 1} 提示词，双击调整`}
+                                        aria-label={`方案 ${activeTake.index + 1} 页面规格，双击调整`}
                                         title="双击打开大编辑器"
                                         onDoubleClick={() => !activeTake.generating && setPromptEditorOpen(true)}
                                     >
@@ -938,11 +1123,25 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                     </div>
                                     <div className="mt-3 flex items-center justify-between gap-3">
                                         <span className="text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                            {activeTake.canEditPrompt ? "保存只更新当前方案；生成是独立操作" : `${activeTake.candidates.length} 个候选稿共用；调整后会另存为新方案`}
+                                            {activeTake.canEditPrompt ? "保存只更新当前方案；生成前可展开查看最终提示词" : `${activeTake.candidates.length} 个候选稿共用；调整后会另存为新方案`}
                                         </span>
-                                        <Button size="small" icon={<Pencil className="size-3.5" />} disabled={activeTake.generating} onClick={() => setPromptEditorOpen(true)}>
-                                            调整
-                                        </Button>
+                                        <div className="flex shrink-0 gap-1">
+                                            <Button
+                                                size="small"
+                                                type="text"
+                                                icon={<FileText className="size-3.5" />}
+                                                disabled={activeTake.generating || activeTake.unresolvedGeneration}
+                                                onClick={() => {
+                                                    setCompiledOverrideDraft(activeTake.configNode?.metadata?.pptCompiledPromptOverride || singleGenerationPlan?.compilation?.prompts[0]?.finalPrompt || "");
+                                                    setCompiledOverrideOpen(true);
+                                                }}
+                                            >
+                                                {activeTake.configNode?.metadata?.pptCompiledPromptOverride ? "最终提示词（覆盖中）" : "最终提示词覆盖"}
+                                            </Button>
+                                            <Button size="small" icon={<Pencil className="size-3.5" />} disabled={activeTake.generating} onClick={() => setPromptEditorOpen(true)}>
+                                                调整规格
+                                            </Button>
+                                        </div>
                                     </div>
                                     <UpstreamInputsPanel
                                         take={activeTake}
@@ -952,6 +1151,32 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                         onSaveStyle={saveStyleNode}
                                         onSaveLayout={saveLayoutPrompt}
                                     />
+                                    {pageSpec?.requiresReview && !pageSpec.reviewedAt ? (
+                                        <div className="mt-2.5 rounded-lg border p-3 text-xs" style={{ borderColor: token.colorWarningBorder, background: token.colorWarningBg }}>
+                                            <div className="font-medium" style={{ color: token.colorWarningText }}>
+                                                本页规格需要人工确认
+                                            </div>
+                                            <div className="mt-1" style={{ color: canvasTheme.node.muted }}>
+                                                {pageSpec.reviewReason || "系统无法完全确定哪些内容是页面正文、哪些是布局要求。"}
+                                            </div>
+                                            <details className="mt-2" open>
+                                                <summary className="cursor-pointer font-medium">查看解析结果</summary>
+                                                <div className="mt-2 space-y-2">
+                                                    <div>
+                                                        <div className="font-medium">锁定正文</div>
+                                                        <div className="mt-0.5 whitespace-pre-wrap">{pageSpec.lockedCopy.join("\n") || "未识别"}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="font-medium">布局意图</div>
+                                                        <div className="mt-0.5 whitespace-pre-wrap">{pageSpec.layoutIntent.join("\n") || "未识别"}</div>
+                                                    </div>
+                                                    <Button size="small" onClick={() => void confirmPageSpecReview()}>
+                                                        确认当前拆分
+                                                    </Button>
+                                                </div>
+                                            </details>
+                                        </div>
+                                    ) : null}
                                 </>
                             ) : (
                                 <div className="py-4 text-center" style={{ color: canvasTheme.node.muted }}>
@@ -1035,6 +1260,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                                                     <div className="mt-1 break-all font-mono text-[10px]" style={{ color: canvasTheme.node.muted }} title={request.remoteTaskId}>
                                                                         task: {request.remoteTaskId || "暂无"}
                                                                     </div>
+                                                                    {request.compilationSnapshotId ? (
+                                                                        <div className="mt-0.5 break-all font-mono text-[10px]" style={{ color: canvasTheme.node.muted }}>
+                                                                            prompt snapshot: {request.compilationSnapshotId}
+                                                                        </div>
+                                                                    ) : null}
                                                                     {request.resultIdentity ? (
                                                                         <div className="mt-0.5 break-all font-mono text-[10px]" style={{ color: canvasTheme.node.muted }}>
                                                                             result: {request.resultIdentity}
@@ -1283,6 +1513,36 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     onCancel={() => setPromptEditorOpen(false)}
                 />
             ) : null}
+            <Modal
+                title="显式覆盖最终提示词"
+                open={compiledOverrideOpen}
+                onCancel={() => setCompiledOverrideOpen(false)}
+                onOk={() => void saveCompiledPromptOverride()}
+                okText="保存并重新检查"
+                cancelText="取消"
+                width="min(88vw, 1080px)"
+                centered
+                destroyOnHidden
+            >
+                <Alert className="mb-3" type="warning" showIcon message="这里编辑的内容会原样发送给图片模型" description="保存后仍会检查锁定正文、数字、术语、点数和必要约束；新增或改写内容需要再次明确确认。清空内容可恢复自动编译。" />
+                <Input.TextArea
+                    className="thin-scrollbar !h-[min(56vh,640px)] !resize-none overflow-y-auto font-mono text-sm leading-6"
+                    value={compiledOverrideDraft}
+                    aria-label="最终提示词显式覆盖"
+                    onChange={(event) => setCompiledOverrideDraft(event.target.value)}
+                />
+                {overrideValidationPlan ? <PptGenerationPlanSummary plan={overrideValidationPlan} /> : null}
+                <div className="mt-3 flex justify-start">
+                    <Button
+                        type="text"
+                        onClick={() => {
+                            setCompiledOverrideDraft("");
+                        }}
+                    >
+                        清除覆盖，恢复自动编译
+                    </Button>
+                </div>
+            </Modal>
             <CanvasImageLightbox src={lightboxSrc} alt={`第 ${page.index} 页候选稿`} onClose={() => setLightboxSrc(null)} />
         </Modal>
     );
@@ -1358,7 +1618,7 @@ function UpstreamInputsPanel({
     muted: string;
     canEdit: boolean;
     onSaveStyle: (nodeId: string, content: string) => void;
-    onSaveLayout: (content: string) => void;
+    onSaveLayout: (content: string) => Promise<boolean>;
 }) {
     const [collapsed, setCollapsed] = useState(true);
     const [editingStyleNodeId, setEditingStyleNodeId] = useState<string | null>(null);
@@ -1528,9 +1788,8 @@ function UpstreamInputsPanel({
                                 size="small"
                                 type="primary"
                                 icon={<Save className="size-3" />}
-                                onClick={() => {
-                                    onSaveLayout(layoutDraft);
-                                    setEditingLayout(false);
+                                onClick={async () => {
+                                    if (await onSaveLayout(layoutDraft)) setEditingLayout(false);
                                 }}
                             >
                                 保存

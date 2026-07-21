@@ -133,8 +133,7 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             deleteNodeIds,
             generating,
             issues,
-            // 排版要求读专用字段；metadata.prompt 每轮生成会被拼装全文回写(污染),不可作展示/编辑来源。
-            // 旧工程无此字段时回退到与生成路径一致的默认(outline=常量,extract=空)。
+            // 排版要求只读专用字段；metadata.prompt 不是 PPT Compiler 的展示/编辑来源。
             layoutPrompt: (configNode?.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.mode === "extract" ? "" : PPT_PAGE_PROMPT),
             composerContent,
             upstreamInputs,

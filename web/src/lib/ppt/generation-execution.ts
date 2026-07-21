@@ -1,5 +1,5 @@
 import { applyCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
-import { applyGenerationPlanPptOps, type GenerationPlan, type GenerationPlanRequest, type GenerationPlanRun } from "@/lib/ppt/generation-plan";
+import { applyGenerationPlanPptOps, assertGenerationPlanCompilation, assertGenerationPlanCurrentTargets, type GenerationPlan, type GenerationPlanRequest, type GenerationPlanRun } from "@/lib/ppt/generation-plan";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasNodeData, CanvasNodeMetadata, PptGenerationRequestStatus, PptGenerationRequestTrace, PptGenerationRunStatus, PptGenerationRunSummary } from "@/types/canvas";
 
@@ -144,6 +144,7 @@ export type GenerationRecoveryResult = {
 
 export type PptGenerationModule = {
     start: (plan: GenerationPlan) => Promise<GenerationStartResult>;
+    startCandidateEdit: (plan: GenerationPlan) => Promise<GenerationStartResult>;
     recover: (command: GenerationRecoveryCommand) => Promise<GenerationRecoveryResult>;
 };
 
@@ -285,13 +286,24 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
         return task;
     };
 
-    const executeFresh = (run: GenerationPlanRun, request: GenerationPlanRequest) =>
+    const executeFresh = (plan: GenerationPlan, run: GenerationPlanRun, request: GenerationPlanRequest, expectedKind: GenerationPlan["kind"]) =>
         runOnce(request.requestId, async () => {
-            let result: PptGenerationProviderResult;
+            let project: CanvasProject;
             try {
-                const project = await readProject();
+                project = await readProject();
+                assertGenerationPlanCompilation(plan, expectedKind);
+                assertGenerationPlanKind(project, plan, expectedKind);
+                assertCompilerInputsCurrent(project, plan);
+                assertGenerationPlanCurrentTargets(project, plan);
+                assertPlanDurable(project, plan, "submitting");
                 const trace = findRequestTrace(project, request.requestId);
                 if (trace.status !== "submitting") throw new Error(`请求 ${request.requestId} 未取得 durable submitting 锁`);
+            } catch (error) {
+                await handleProviderError(request.requestId, new PptGenerationPreSubmitError(errorMessage(error, "提交前检查失败")));
+                return;
+            }
+            let result: PptGenerationProviderResult;
+            try {
                 result = await dependencies.provider.submit({ project, run, request, onEvent: (event) => onRemoteEvent(request.requestId, event) });
             } catch (error) {
                 await handleProviderError(request.requestId, error);
@@ -332,12 +344,12 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
             };
         });
 
-    const startPlan = async (plan: GenerationPlan): Promise<GenerationStartResult> => {
+    const startPlan = async (plan: GenerationPlan, expectedKind: GenerationPlan["kind"]): Promise<GenerationStartResult> => {
         if (!plan.runs.length) throw new Error("生成计划没有可执行页面");
         const existing = allRequestTraces(await readProject());
         if (plan.runs.some((run) => run.requests.some((request) => existing.some((trace) => trace.requestId === request.requestId)))) throw new Error("该生成计划已经启动，不能重复提交");
         try {
-            await preparePlan(plan, dependencies.durableCanvas);
+            await preparePlan(plan, expectedKind, dependencies.durableCanvas);
             assertPlanDurable(await readProject(), plan, "draft");
             await transitionPlanRequests(plan, dependencies.durableCanvas, "persisted");
             assertPlanDurable(await readProject(), plan, "persisted");
@@ -351,7 +363,7 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
             }
             throw error;
         }
-        const tasks = plan.runs.flatMap((run) => run.requests.map((request) => ({ requestId: request.requestId, task: executeFresh(run, request) })));
+        const tasks = plan.runs.flatMap((run) => run.requests.map((request) => ({ requestId: request.requestId, task: executeFresh(plan, run, request, expectedKind) })));
         return {
             batchId: plan.batchId,
             runIds: plan.runs.map((run) => run.runId),
@@ -362,7 +374,13 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
 
     return {
         start(plan) {
-            return queueProjectOperation(dependencies.projectId, () => startPlan(plan));
+            const frozenPlan = structuredClone(plan);
+            return queueProjectOperation(dependencies.projectId, () => startPlan(frozenPlan, "pageGeneration"));
+        },
+
+        startCandidateEdit(plan) {
+            const frozenPlan = structuredClone(plan);
+            return queueProjectOperation(dependencies.projectId, () => startPlan(frozenPlan, "candidateEdit"));
         },
 
         recover(command) {
@@ -419,9 +437,14 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
     };
 }
 
-async function preparePlan(plan: GenerationPlan, durableCanvas: PptGenerationModuleDependencies["durableCanvas"]) {
+async function preparePlan(plan: GenerationPlan, expectedKind: GenerationPlan["kind"], durableCanvas: PptGenerationModuleDependencies["durableCanvas"]) {
+    assertGenerationPlanCompilation(plan, expectedKind);
+    const blockingIssue = plan.compilation?.issues.find((issue) => issue.severity === "blocking");
+    if (blockingIssue) throw new Error(`最终提示词检查未通过：${blockingIssue.message}`);
     await durableCanvas.mutate((project) => {
         if (!project.ppt) throw new Error("当前工程不是 PPT 工作台工程");
+        assertGenerationPlanKind(project, plan, expectedKind);
+        assertCompilerInputsCurrent(project, plan);
         const unresolved = allRequestTraces(project).filter((trace) => !["completed", "failed", "abandoned"].includes(trace.status));
         const unresolvedRuns = allRunSummaries(project).filter((run) => run.status === "preparing" || run.status === "running" || run.status === "needs_attention");
         const conflict = plan.runs.find((run) => unresolved.some((trace) => trace.pageId === run.pageId && trace.takeId === run.takeId) || unresolvedRuns.some((summary) => summary.pageId === run.pageId && summary.takeId === run.takeId));
@@ -437,6 +460,38 @@ async function preparePlan(plan: GenerationPlan, durableCanvas: PptGenerationMod
         });
         return { ...project, nodes, connections: next.connections, ppt: applyGenerationPlanPptOps(project.ppt, plan.pptOps) };
     });
+}
+
+function assertGenerationPlanKind(project: CanvasProject, plan: GenerationPlan, expectedKind: GenerationPlan["kind"]) {
+    if (plan.kind !== expectedKind) throw new Error(`生成计划类型 ${plan.kind} 与当前启动入口不一致`);
+    if (expectedKind === "pageGeneration") return;
+    const run = plan.runs[0];
+    const request = run?.requests[0];
+    const sourceNode = project.nodes.find((node) => node.id === run?.baseNodeId);
+    const validCandidateEdit =
+        plan.kind === "candidateEdit" &&
+        !plan.compilation &&
+        plan.pptOps.length === 0 &&
+        plan.runs.length === 1 &&
+        run.requests.length === 1 &&
+        run.plannedCount === 1 &&
+        request.requestType === "imageToImage" &&
+        sourceNode?.type === "image" &&
+        sourceNode.metadata?.pptPageId === run.pageId &&
+        sourceNode.metadata?.pptTakeId === run.takeId &&
+        request.inputRefs.length === 1 &&
+        request.inputRefs[0].nodeId === sourceNode.id;
+    if (!validCandidateEdit) throw new Error("候选图编辑计划的结构不合法，不能降级绕过 PPT Compiler");
+}
+
+function assertCompilerInputsCurrent(project: CanvasProject, plan: GenerationPlan) {
+    if (!plan.compilation) return;
+    if (!project.ppt || JSON.stringify(project.ppt.deckBrief) !== JSON.stringify(plan.compilation.deckBrief)) throw new Error("PPT 全局规格已变更，请重新确认生成计划");
+    const pendingPageSpecs = new Map(plan.pptOps.flatMap((op) => (op.type === "setPageSpec" ? [[op.pageSpec.pageId, op.pageSpec] as const] : [])));
+    for (const snapshotPageSpec of plan.compilation.pageSpecs) {
+        const currentPageSpec = pendingPageSpecs.get(snapshotPageSpec.pageId) || project.ppt.pageSpecs.find((pageSpec) => pageSpec.pageId === snapshotPageSpec.pageId);
+        if (!currentPageSpec || JSON.stringify(currentPageSpec) !== JSON.stringify(snapshotPageSpec)) throw new Error(`页面 ${snapshotPageSpec.pageId} 的规格已变更，请重新确认生成计划`);
+    }
 }
 
 async function transitionPlanRequests(plan: GenerationPlan, durableCanvas: PptGenerationModuleDependencies["durableCanvas"], type: "persisted" | "submitting") {
@@ -455,6 +510,11 @@ async function transitionPlanRequests(plan: GenerationPlan, durableCanvas: PptGe
 }
 
 function assertPlanDurable(project: CanvasProject, plan: GenerationPlan, status: "draft" | "persisted" | "submitting") {
+    if (plan.compilation) {
+        const persisted = project.ppt?.compilationSnapshots.find((snapshot) => snapshot.snapshotId === plan.compilation?.snapshotId);
+        if (!persisted) throw new Error(`编译快照 ${plan.compilation.snapshotId} 未持久化`);
+        if (JSON.stringify(persisted) !== JSON.stringify(plan.compilation)) throw new Error(`编译快照 ${plan.compilation.snapshotId} 的落盘内容不一致`);
+    }
     for (const run of plan.runs) {
         const page = project.ppt?.pages.find((item) => item.pageId === run.pageId);
         const take = page?.takes.find((item) => item.takeId === run.takeId);
@@ -490,6 +550,7 @@ function assertPlanDurable(project: CanvasProject, plan: GenerationPlan, status:
                 trace.pageId !== run.pageId ||
                 trace.takeId !== run.takeId ||
                 trace.slotIndex !== request.slotIndex ||
+                trace.compilationSnapshotId !== request.compilationSnapshotId ||
                 !sameProviderIdentity(trace.providerIdentity, request.providerIdentity) ||
                 trace.status !== status
             )
@@ -544,6 +605,7 @@ function initialRequestTrace(plan: GenerationPlan, run: GenerationPlanRun, reque
         requestType: request.requestType,
         model: request.model,
         providerIdentity: request.providerIdentity,
+        compilationSnapshotId: request.compilationSnapshotId,
         status: "draft",
         createdAt: plan.createdAt,
         updatedAt: plan.createdAt,

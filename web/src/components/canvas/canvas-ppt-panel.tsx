@@ -4,6 +4,7 @@ import { App, Button, Modal, Radio, Tooltip, Typography, theme as antdTheme } fr
 import { CheckCircle2, ChevronRight, CircleAlert, ImageOff, Layers, LoaderCircle, Presentation, RotateCcw, Sparkles, X } from "lucide-react";
 
 import { CanvasPptFinalReview } from "@/components/canvas/canvas-ppt-final-review";
+import { planHasBlockingCompilationIssues, PptGenerationPlanSummary } from "@/components/canvas/canvas-ppt-generation-confirm";
 import { CanvasPptPageWorkspace } from "@/components/canvas/canvas-ppt-page-workspace";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolvePageImageNode } from "@/lib/ppt/deck-export";
@@ -47,6 +48,9 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     const [startModalOpen, setStartModalOpen] = useState(false);
     const [restModalOpen, setRestModalOpen] = useState(false);
     const [anchorFirst, setAnchorFirst] = useState(false);
+    const [pendingBatchPlan, setPendingBatchPlan] = useState<GenerationPlan>();
+    const [pendingRepeatBillingRiskCount, setPendingRepeatBillingRiskCount] = useState(0);
+    const [batchStarting, setBatchStarting] = useState(false);
     const notificationTokenRef = useRef<string | null>(null);
 
     useEffect(() => {
@@ -58,6 +62,9 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setStartModalOpen(false);
         setRestModalOpen(false);
         setAnchorFirst(false);
+        setPendingBatchPlan(undefined);
+        setPendingRepeatBillingRiskCount(0);
+        setBatchStarting(false);
         notificationTokenRef.current = null;
     }, [projectId]);
 
@@ -89,8 +96,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setSurface("workbench");
         setFinalReviewOpen(false);
     }, [notificationToken, notifiedPageId, notifiedTakeId, pageWorkspaces]);
-    const startPlan = useMemo(() => (currentProject ? createGenerationPlan({ kind: "startBatch", anchorFirst }, { project: currentProject, effectiveConfig }) : undefined), [anchorFirst, currentProject, effectiveConfig]);
-    const restPlan = useMemo(() => (currentProject ? createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : undefined), [currentProject, effectiveConfig]);
+    const restPlanPreview = useMemo(() => (currentProject ? createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : undefined), [currentProject, effectiveConfig]);
     const repeatBillingRiskCount = (plan?: GenerationPlan) =>
         plan?.runs.filter((run) => pageWorkspaces.find((workspace) => workspace.page.pageId === run.pageId)?.takes.find((take) => take.takeId === run.takeId)?.requiresRepeatBillingConfirmation).length || 0;
 
@@ -110,6 +116,10 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     const executePlan = async (plan: GenerationPlan) => {
         if (!plan.pageCount) {
             message.warning("没有可生成的页面");
+            return false;
+        }
+        if (planHasBlockingCompilationIssues(plan)) {
+            message.warning("最终提示词仍有必须处理的问题，请展开检查后再生成");
             return false;
         }
         try {
@@ -134,7 +144,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     if (pages.length > 1) {
         if (nothingGenerated) batchState = { kind: "start" };
         else if (!skipAnchor && !ppt.anchorConfirmed && !firstConfirmed) batchState = { kind: "waitingFirst" };
-        else if (restUntouchedWorkspaces.length) batchState = { kind: "confirmRest", count: restPlan?.pageCount ?? 0 };
+        else if (restUntouchedWorkspaces.length) batchState = { kind: "confirmRest", count: restPlanPreview?.pageCount ?? 0 };
     }
 
     const batchLabel = batchState.kind === "start" ? "开始生成" : batchState.kind === "waitingFirst" ? "等待确认首页" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
@@ -146,19 +156,58 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
 
     const openBatchModal = () => {
         if (batchState.kind === "start") {
-            setAnchorFirst(hasStyleNode);
+            const nextAnchorFirst = hasStyleNode;
+            const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: nextAnchorFirst }, { project: currentProject, effectiveConfig });
+            setAnchorFirst(nextAnchorFirst);
+            setPendingBatchPlan(plan);
+            setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
             setStartModalOpen(true);
-        } else if (batchState.kind === "confirmRest") setRestModalOpen(true);
+        } else if (batchState.kind === "confirmRest") {
+            const plan = createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig });
+            setPendingBatchPlan(plan);
+            setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
+            setRestModalOpen(true);
+        }
     };
 
     const confirmStart = async () => {
-        if (!startPlan || !(await executePlan(startPlan))) return;
-        setStartModalOpen(false);
+        if (!pendingBatchPlan || batchStarting) return;
+        setBatchStarting(true);
+        try {
+            if (!(await executePlan(pendingBatchPlan))) return;
+            setStartModalOpen(false);
+            setPendingBatchPlan(undefined);
+        } finally {
+            setBatchStarting(false);
+        }
     };
 
     const confirmRest = async () => {
-        if (!restPlan || !(await executePlan(restPlan))) return;
-        setRestModalOpen(false);
+        if (!pendingBatchPlan || batchStarting) return;
+        setBatchStarting(true);
+        try {
+            if (!(await executePlan(pendingBatchPlan))) return;
+            setRestModalOpen(false);
+            setPendingBatchPlan(undefined);
+        } finally {
+            setBatchStarting(false);
+        }
+    };
+
+    const changeAnchorFirst = (value: boolean) => {
+        if (batchStarting) return;
+        const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: value }, { project: currentProject, effectiveConfig });
+        setAnchorFirst(value);
+        setPendingBatchPlan(plan);
+        setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
+    };
+
+    const closeBatchModal = (kind: "start" | "rest") => {
+        if (batchStarting) return;
+        if (kind === "start") setStartModalOpen(false);
+        else setRestModalOpen(false);
+        setPendingBatchPlan(undefined);
+        setPendingRepeatBillingRiskCount(0);
     };
 
     const reanchor = () => {
@@ -349,14 +398,29 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
             <BatchConfirmModal
                 open={startModalOpen}
                 anchorFirst={anchorFirst}
-                plan={startPlan}
-                repeatBillingRiskCount={repeatBillingRiskCount(startPlan)}
-                onAnchorFirstChange={setAnchorFirst}
-                onCancel={() => setStartModalOpen(false)}
+                plan={pendingBatchPlan}
+                repeatBillingRiskCount={pendingRepeatBillingRiskCount}
+                starting={batchStarting}
+                onAnchorFirstChange={changeAnchorFirst}
+                onCancel={() => closeBatchModal("start")}
                 onConfirm={confirmStart}
             />
-            <Modal open={restModalOpen} onCancel={() => setRestModalOpen(false)} onOk={confirmRest} title={`生成其余 ${restPlan?.pageCount ?? 0} 页？`} okText="生成" okButtonProps={{ disabled: !restPlan?.pageCount }} cancelText="取消" destroyOnHidden>
-                {restPlan ? <PlanCostSummary plan={restPlan} repeatBillingRiskCount={repeatBillingRiskCount(restPlan)} /> : null}
+            <Modal
+                open={restModalOpen}
+                onCancel={() => closeBatchModal("rest")}
+                onOk={confirmRest}
+                title={`生成其余 ${pendingBatchPlan?.pageCount ?? 0} 页？`}
+                okText="生成"
+                confirmLoading={batchStarting}
+                closable={!batchStarting}
+                maskClosable={!batchStarting}
+                keyboard={!batchStarting}
+                cancelButtonProps={{ disabled: batchStarting }}
+                okButtonProps={{ disabled: batchStarting || !pendingBatchPlan?.pageCount || planHasBlockingCompilationIssues(pendingBatchPlan) }}
+                cancelText="取消"
+                destroyOnHidden
+            >
+                {pendingBatchPlan ? <PptGenerationPlanSummary plan={pendingBatchPlan} repeatBillingRiskCount={pendingRepeatBillingRiskCount} /> : null}
             </Modal>
         </>
     );
@@ -367,6 +431,7 @@ function BatchConfirmModal({
     anchorFirst,
     plan,
     repeatBillingRiskCount,
+    starting,
     onAnchorFirstChange,
     onCancel,
     onConfirm,
@@ -375,6 +440,7 @@ function BatchConfirmModal({
     anchorFirst: boolean;
     plan?: GenerationPlan;
     repeatBillingRiskCount: number;
+    starting: boolean;
     onAnchorFirstChange: (value: boolean) => void;
     onCancel: () => void;
     onConfirm: () => void | Promise<void>;
@@ -384,13 +450,18 @@ function BatchConfirmModal({
             open={open}
             onCancel={onCancel}
             onOk={onConfirm}
+            confirmLoading={starting}
+            closable={!starting}
+            maskClosable={!starting}
+            keyboard={!starting}
             title={`开始生成 ${plan?.pageCount ?? 0} 页？`}
             okText={anchorFirst ? "生成第 1 页" : `生成全部 ${plan?.pageCount ?? 0} 页`}
-            okButtonProps={{ disabled: !plan?.pageCount }}
+            cancelButtonProps={{ disabled: starting }}
+            okButtonProps={{ disabled: starting || !plan?.pageCount || planHasBlockingCompilationIssues(plan) }}
             cancelText="取消"
             destroyOnHidden
         >
-            <Radio.Group className="flex flex-col gap-3" value={anchorFirst} onChange={(event) => onAnchorFirstChange(event.target.value)}>
+            <Radio.Group className="flex flex-col gap-3" value={anchorFirst} disabled={starting} onChange={(event) => onAnchorFirstChange(event.target.value)}>
                 <Radio value={true}>
                     <div className="text-sm font-medium">先生成第 1 页，确认风格后再批量</div>
                     <Typography.Text type="secondary" className="text-xs">
@@ -404,32 +475,8 @@ function BatchConfirmModal({
                     </Typography.Text>
                 </Radio>
             </Radio.Group>
-            {plan ? <PlanCostSummary plan={plan} repeatBillingRiskCount={repeatBillingRiskCount} /> : null}
+            {plan ? <PptGenerationPlanSummary plan={plan} repeatBillingRiskCount={repeatBillingRiskCount} /> : null}
         </Modal>
-    );
-}
-
-function PlanCostSummary({ plan, repeatBillingRiskCount = 0 }: { plan: GenerationPlan; repeatBillingRiskCount?: number }) {
-    const missingConfigCount = plan.excludedPages.filter((page) => page.reason === "缺少生成配置").length;
-    return (
-        <div className="mt-4 space-y-1.5">
-            <Typography.Text type="secondary" className="block">
-                实际生成 {plan.pageCount} 页，共 {plan.callCount} 次图片生成 API 调用。
-            </Typography.Text>
-            <Typography.Text type="secondary" className="block text-xs">
-                文生图 {plan.callBreakdown.textToImage} 次 · 图生图 {plan.callBreakdown.imageToImage} 次
-            </Typography.Text>
-            {repeatBillingRiskCount ? (
-                <Typography.Text type="warning" className="block text-xs">
-                    其中 {repeatBillingRiskCount} 页的上一次请求可能已产生费用且结果无法取回，继续生成可能重复计费。
-                </Typography.Text>
-            ) : null}
-            {missingConfigCount ? (
-                <Typography.Text type="warning" className="block text-xs">
-                    {missingConfigCount} 页缺少生成配置，已跳过。
-                </Typography.Text>
-            ) : null}
-        </div>
     );
 }
 

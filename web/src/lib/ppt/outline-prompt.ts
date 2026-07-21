@@ -5,6 +5,7 @@ export type PptOutlinePage = {
     title: string;
     outline: string;
     visualHint: string;
+    sourceRange?: { startLine: number; endLine: number };
 };
 
 export type PptOutlineResult = {
@@ -14,7 +15,7 @@ export type PptOutlineResult = {
 const OUTLINE_SYSTEM_PROMPT = `你是 PPT 大纲策划专家。根据用户提供的材料与要求，规划分页大纲。
 只输出 JSON，不要输出解释文字或代码块标记，JSON 格式如下：
 {"pages":[{"title":"页标题","outline":"该页要点，简洁短句，可用分号分隔","visualHint":"该页配图的视觉建议"}]}
-页数需覆盖材料核心内容，标题精炼，每页要点不超过 3 条。`;
+页数需覆盖材料核心内容，标题精炼。材料明确给出几条要点，就完整保留几条；数字、术语、事实和表格含义不得压缩、改写或补写。`;
 
 export async function generatePptOutline(config: AiConfig, material: string, requirements: string, onDelta: (text: string) => void, options?: { signal?: AbortSignal }): Promise<PptOutlineResult> {
     const messages: AiTextMessage[] = [
@@ -137,15 +138,21 @@ function buildExtractResult(raw: string, lines: string[]): PptExtractResult {
         }
         const startLine = clamp(Math.round(range.startLine), 1, totalLines);
         const endLine = clamp(Math.round(range.endLine), 1, totalLines);
-        const outline = stripFenceLines(lines.slice(startLine - 1, endLine))
-            .join("\n")
-            .trim();
+        const slice = lines.slice(startLine - 1, endLine);
+        const leadingFence = FENCE_LINE_PATTERN.test(slice[0]?.trim() || "");
+        const trailingFence = FENCE_LINE_PATTERN.test(slice.at(-1)?.trim() || "");
+        const outline = stripFenceLines(slice).join("\n").trim();
         if (!outline) {
             dropRange(range, index);
             return;
         }
         for (let line = startLine; line <= endLine; line++) coveredLines.add(line);
-        pages.push({ title: range.title || `第${index + 1}页`, outline, visualHint: "" });
+        pages.push({
+            title: range.title || `第${index + 1}页`,
+            outline,
+            visualHint: "",
+            sourceRange: { startLine: startLine + (leadingFence ? 1 : 0), endLine: endLine - (trailingFence ? 1 : 0) },
+        });
     });
 
     if (!pages.length) throw new Error("未能在材料中识别出分页结构，请确认材料已按页组织，或改用老模式");
@@ -310,9 +317,15 @@ function previewExtractPage(range: RawExtractPage, index: number, lines: string[
     if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || Math.round(startLine) > Math.round(endLine)) return null;
     const clampedStart = clamp(Math.round(startLine), 1, totalLines);
     const clampedEnd = clamp(Math.round(endLine), 1, totalLines);
-    const outline = stripFenceLines(lines.slice(clampedStart - 1, clampedEnd))
-        .join("\n")
-        .trim();
+    const slice = lines.slice(clampedStart - 1, clampedEnd);
+    const leadingFence = FENCE_LINE_PATTERN.test(slice[0]?.trim() || "");
+    const trailingFence = FENCE_LINE_PATTERN.test(slice.at(-1)?.trim() || "");
+    const outline = stripFenceLines(slice).join("\n").trim();
     if (!outline) return null;
-    return { title: String(range?.title ?? `第${index + 1}页`).trim() || `第${index + 1}页`, outline, visualHint: "" };
+    return {
+        title: String(range?.title ?? `第${index + 1}页`).trim() || `第${index + 1}页`,
+        outline,
+        visualHint: "",
+        sourceRange: { startLine: clampedStart + (leadingFence ? 1 : 0), endLine: clampedEnd - (trailingFence ? 1 : 0) },
+    };
 }

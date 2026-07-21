@@ -261,7 +261,7 @@ function PptWizard({
         }
     };
 
-    const updatePage = (index: number, patch: Partial<PptOutlinePage>) => setPages((prev) => prev.map((page, i) => (i === index ? { ...page, ...patch } : page)));
+    const updatePage = (index: number, patch: Partial<PptOutlinePage>) => setPages((prev) => prev.map((page, i) => (i === index ? { ...page, ...patch, ...(patch.outline === undefined ? {} : { sourceRange: undefined }) } : page)));
     const removePage = (index: number) => setPages((prev) => prev.filter((_, i) => i !== index));
     const addPage = () => setPages((prev) => [...prev, { title: `第${prev.length + 1}页`, outline: "", visualHint: "" }]);
 

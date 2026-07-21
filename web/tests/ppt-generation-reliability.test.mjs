@@ -8,12 +8,28 @@ let createPptGenerationModule;
 let resolvePptGenerationProviderIdentity;
 let assertPptGenerationProviderIdentity;
 let hasPptRepeatBillingRisk;
+let buildPptDeckProject;
+let createGenerationPlan;
+let createPptCandidateEditPlan;
+let compilePptPromptSnapshot;
+let PPT_PAGE_PROMPT;
+let defaultConfig;
+let agentOpsTouchPptGenerationLedger;
+let historyEntryTouchesPptGenerationLedger;
+let nodeIdsTouchPptControlledNodes;
+let sanitizeCopiedCanvasMetadata;
 
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ createPptGenerationModule } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
-    ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
-    ({ hasPptRepeatBillingRisk } = await vite.ssrLoadModule("/src/lib/ppt/generation-ledger.ts"));
+    ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
+    ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
+    ({ PPT_PAGE_PROMPT } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
+    ({ hasPptRepeatBillingRisk, agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, sanitizeCopiedCanvasMetadata } = await vite.ssrLoadModule(
+        "/src/lib/ppt/generation-ledger.ts",
+    ));
+    ({ buildPptDeckProject } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
+    ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
 });
 
 after(async () => {
@@ -82,6 +98,232 @@ test("落盘或 durable read-back 失败时 POST 次数为 0", async (context) =
             assert.equal(harness.stats.resumeCalls, 0);
         });
     }
+});
+
+test("request.prompt 与 Compiler 快照不一致时 POST 次数为 0", async () => {
+    const partial = buildPptDeckProject({
+        title: "Compiler durable gate",
+        sourceMaterial: "关键指标\n设备在线率 98.5%",
+        requirements: "目标：保留关键事实",
+        style: { description: "专业咨询风" },
+        pages: [{ title: "关键指标", outline: "关键指标\n设备在线率 98.5%", visualHint: "" }],
+        uploadedRefs: [],
+        mode: "extract",
+    });
+    const project = {
+        id: "project-compiler-tamper",
+        createdAt: "2026-07-21T00:00:00.000Z",
+        updatedAt: "2026-07-21T00:00:00.000Z",
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: false,
+        ...partial,
+    };
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    plan.runs[0].requests[0].prompt += "\n未记录的篡改";
+    const harness = createHarness(project);
+    const module = createPptGenerationModule(harness.dependencies);
+
+    await assert.rejects(module.start(plan), /实际提示词与编译快照不一致/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("Compiler 快照绑定或整个快照缺失时 POST 次数为 0", async (context) => {
+    for (const mutation of [
+        {
+            name: "missing request binding",
+            apply: (plan) => delete plan.runs[0].requests[0].compilationSnapshotId,
+            pattern: /编译快照绑定不一致/,
+        },
+        {
+            name: "missing compilation",
+            apply: (plan) => delete plan.compilation,
+            pattern: /缺少 Compiler 快照/,
+        },
+    ]) {
+        await context.test(mutation.name, async () => {
+            const project = compilerProject(`compiler-${mutation.name}`);
+            const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+            mutation.apply(plan);
+            const harness = createHarness(project);
+            const module = createPptGenerationModule(harness.dependencies);
+
+            await assert.rejects(module.start(plan), mutation.pattern);
+            assert.equal(harness.stats.submitCalls, 0);
+        });
+    }
+});
+
+test("Compiler 计划不能伪装成候选图编辑后整体降级", async () => {
+    const project = compilerProject("compiler-downgrade");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    plan.kind = "candidateEdit";
+    delete plan.compilation;
+    plan.pptOps = plan.pptOps.filter((op) => op.type !== "appendCompilationSnapshot");
+    plan.runs.forEach((run) => run.requests.forEach((request) => delete request.compilationSnapshotId));
+    const harness = createHarness(project);
+    const module = createPptGenerationModule(harness.dependencies);
+
+    await assert.rejects(module.start(plan), /缺少 Compiler 快照|启动入口不一致/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("候选图编辑只能从独立入口启动", async () => {
+    const project = compilerProject("candidate-entry");
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const candidate = canvasNode("candidate-source", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(candidate);
+    project.connections.push({ id: "config-candidate", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    const plan = createPptCandidateEditPlan({
+        project,
+        effectiveConfig: defaultConfig,
+        pageId: page.pageId,
+        takeId: take.takeId,
+        sourceNodeId: candidate.id,
+        prompt: "将标题字号放大",
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+    });
+
+    const pageHarness = createHarness(project);
+    await assert.rejects(createPptGenerationModule(pageHarness.dependencies).start(plan), /缺少 Compiler 快照/);
+    assert.equal(pageHarness.stats.submitCalls, 0);
+
+    const editHarness = createHarness(project);
+    const started = await createPptGenerationModule(editHarness.dependencies).startCandidateEdit(plan);
+    await started.settled;
+    assert.equal(editHarness.stats.submitCalls, 1);
+});
+
+test("Compiler 快照和请求同步篡改仍然 POST 次数为 0", async () => {
+    const project = compilerProject("compiler-double-tamper");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    plan.compilation.prompts[0].finalPrompt += "\n未经 Compiler 生成的内容";
+    plan.runs[0].requests[0].prompt = plan.compilation.prompts[0].finalPrompt;
+    const harness = createHarness(project);
+    const module = createPptGenerationModule(harness.dependencies);
+
+    await assert.rejects(module.start(plan), /快照不是由当前编译输入确定性生成/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("快照之后 PageSpec 已升版时旧计划 POST 次数为 0", async () => {
+    const project = compilerProject("compiler-stale-spec");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    project.ppt.pageSpecs[0] = { ...project.ppt.pageSpecs[0], version: project.ppt.pageSpecs[0].version + 1, reviewedAt: "2026-07-21T01:00:00.000Z" };
+    const harness = createHarness(project);
+    const module = createPptGenerationModule(harness.dependencies);
+
+    await assert.rejects(module.start(plan), /规格已变更/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("启动时冻结计划，后续内存修改不会改变实际 POST prompt", async () => {
+    const project = compilerProject("compiler-frozen-plan");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    const expectedPrompt = plan.runs[0].requests[0].prompt;
+    const harness = createHarness(project);
+    const module = createPptGenerationModule(harness.dependencies);
+    const starting = module.start(plan);
+    plan.runs[0].requests[0].prompt += "\n迟到篡改";
+    const started = await starting;
+    await started.settled;
+
+    assert.deepEqual(harness.stats.submittedPrompts, [expectedPrompt]);
+});
+
+test("POST 前 PageSpec 才升版时明确失败且不记为未知提交", async () => {
+    const project = compilerProject("compiler-late-stale-spec");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    const harness = createHarness(project, {
+        durableOptions: {
+            beforeReads: {
+                5: (current) => ({
+                    ...current,
+                    ppt: {
+                        ...current.ppt,
+                        pageSpecs: current.ppt.pageSpecs.map((pageSpec, index) => (index === 0 ? { ...pageSpec, version: pageSpec.version + 1 } : pageSpec)),
+                    },
+                }),
+            },
+        },
+    });
+    const module = createPptGenerationModule(harness.dependencies);
+    const started = await module.start(plan);
+    const settled = await started.settled;
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.deepEqual(settled.attentionRequestIds, [plan.runs[0].requests[0].requestId]);
+    assert.equal(requestTrace(await harness.durable.read(), plan.runs[0].requests[0].requestId).status, "failed");
+});
+
+test("POST 前 Compiler 输入节点才变更时为 0 POST 且明确失败", async () => {
+    const project = compilerProject("compiler-late-target");
+    const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
+    const anchorNodeId = project.ppt.pages[0].takes[0].anchorNodeId;
+    const harness = createHarness(project, {
+        durableOptions: {
+            beforeReads: {
+                5: (current) => ({ ...current, nodes: current.nodes.map((node) => (node.id === anchorNodeId ? { ...node, metadata: { ...node.metadata, content: `${node.metadata.content}\n迟到的篡改` } } : node)) }),
+            },
+        },
+    });
+    const started = await createPptGenerationModule(harness.dependencies).start(plan);
+    await started.settled;
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(requestTrace(await harness.durable.read(), plan.runs[0].requests[0].requestId).status, "failed");
+});
+
+test("Agent 不能修改、连入或删除 PPT 受控输入", () => {
+    const project = baseProject("agent-guard");
+    project.nodes.push(canvasNode("style", "text", { content: "专业风格", status: "success", pptRole: "style" }), canvasNode("ordinary", "text", { content: "未确认结论", status: "success" }));
+    project.connections.push({ id: "style-config", fromNodeId: "style", toNodeId: "config" });
+
+    for (const ops of [
+        [{ type: "update_node", id: "style", metadata: { content: "被篡改" } }],
+        [{ type: "connect_nodes", fromNodeId: "ordinary", toNodeId: "config" }],
+        [{ type: "delete_node", id: "anchor" }],
+        [{ type: "delete_connections", id: "style-config" }],
+        [{ type: "delete_connections", all: true }],
+    ]) {
+        assert.equal(agentOpsTouchPptGenerationLedger(ops, project.nodes, project.connections), true);
+    }
+});
+
+test("结构画布撤销不能改写 PPT 受控节点与连线，但允许位置变化", () => {
+    const project = baseProject("history-guard");
+    project.nodes.push(canvasNode("style", "text", { content: "专业风格", status: "success", pptRole: "style" }));
+    project.connections.push({ id: "style-config", fromNodeId: "style", toNodeId: "config" });
+
+    const moved = project.nodes.map((node) => (node.id === "anchor" ? { ...node, position: { x: 120, y: 80 }, width: 360, height: 240 } : node));
+    assert.equal(historyEntryTouchesPptGenerationLedger(project.nodes, moved, project.connections, project.connections), false);
+    assert.equal(historyEntryTouchesPptGenerationLedger(project.nodes, project.nodes.filter((node) => node.id !== "anchor"), project.connections, project.connections), true);
+    assert.equal(
+        historyEntryTouchesPptGenerationLedger(
+            project.nodes,
+            project.nodes.map((node) => (node.id === "style" ? { ...node, metadata: { ...node.metadata, content: "被替换的风格" } } : node)),
+            project.connections,
+            project.connections,
+        ),
+        true,
+    );
+    assert.equal(historyEntryTouchesPptGenerationLedger(project.nodes, project.nodes, project.connections, project.connections.filter((connection) => connection.id !== "style-config")), true);
+});
+
+test("共享风格与来源节点受统一保护，复制时移除 PPT 身份", () => {
+    const nodes = [canvasNode("style", "image", { content: "data:image/png;base64,AA==", pptRole: "style" }), canvasNode("source", "text", { content: "原文", pptRole: "source" })];
+    assert.equal(nodeIdsTouchPptControlledNodes(nodes, new Set(["style"])), true);
+    assert.equal(nodeIdsTouchPptControlledNodes(nodes, new Set(["source"])), true);
+    assert.equal(sanitizeCopiedCanvasMetadata(nodes[0].metadata).pptRole, undefined);
+    assert.equal(sanitizeCopiedCanvasMetadata(nodes[1].metadata).pptRole, undefined);
 });
 
 test("刷新看到无 task ID 的 submitting 时进入 unknown，且不会自动重提", async () => {
@@ -246,12 +488,67 @@ function baseProject(suffix) {
             requirements: "",
             style: { description: "", references: [] },
             pages: [{ pageId: "page-1", index: 1, title: "第一页", outline: "测试提示词", visualHint: "", takes: [{ takeId: "take-1", anchorNodeId: "anchor", configNodeId: "config" }] }],
+            deckBrief: { version: 1, audience: "", goal: "", narrative: "", visualLanguage: "", globalRules: [], forbiddenRules: [], lockedDeckFacts: [] },
+            pageSpecs: [
+                {
+                    pageId: "page-1",
+                    version: 1,
+                    sourceRefs: [{ source: "material", excerpt: "测试提示词", startLine: 1, endLine: 1 }],
+                    lockedCopy: ["测试提示词"],
+                    lockedFacts: [],
+                    message: "第一页",
+                    layoutIntent: [],
+                    assetRefs: [],
+                    freedom: "可在不改变锁定内容的前提下优化视觉组织",
+                    requiresReview: false,
+                },
+            ],
+            compilationSnapshots: [],
+            mode: "outline",
         },
+    };
+}
+
+function compilerProject(suffix) {
+    const partial = buildPptDeckProject({
+        title: "Compiler durable gate",
+        sourceMaterial: "关键指标\n设备在线率 98.5%",
+        requirements: "目标：保留关键事实",
+        style: { description: "专业咨询风" },
+        pages: [{ title: "关键指标", outline: "关键指标\n设备在线率 98.5%", visualHint: "" }],
+        uploadedRefs: [],
+        mode: "extract",
+    });
+    return {
+        id: `project-${suffix}`,
+        createdAt: "2026-07-21T00:00:00.000Z",
+        updatedAt: "2026-07-21T00:00:00.000Z",
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: false,
+        ...partial,
     };
 }
 
 function generationPlan(count, suffix) {
     const createdAt = "2026-07-21T00:00:00.000Z";
+    const deckBrief = { version: 1, audience: "", goal: "", narrative: "", visualLanguage: "", globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
+    const pageSpec = {
+        pageId: "page-1",
+        version: 1,
+        sourceRefs: [{ source: "material", excerpt: "测试提示词", startLine: 1, endLine: 1 }],
+        lockedCopy: ["测试提示词"],
+        lockedFacts: [],
+        message: "第一页",
+        layoutIntent: [],
+        assetRefs: [],
+        freedom: "可在不改变锁定内容的前提下优化视觉组织",
+        requiresReview: false,
+    };
+    const target = { pageId: "page-1", takeId: "take-1", semanticText: "测试提示词", layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, styleTexts: [], extraTexts: [], override: undefined, overrideConfirmed: false };
+    const compilation = compilePptPromptSnapshot({ snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], targets: [target] });
+    const prompt = compilation.prompts[0].finalPrompt;
     const rootNodeId = `root-${suffix}`;
     const requestNodeIds = count === 1 ? [rootNodeId] : Array.from({ length: count }, (_, index) => `slot-${suffix}-${index}`);
     const requests = requestNodeIds.map((requestNodeId, slotIndex) => ({
@@ -261,14 +558,15 @@ function generationPlan(count, suffix) {
         requestType: "textToImage",
         model: "fake-image",
         providerIdentity: fakeProviderIdentity(),
-        prompt: "测试提示词",
+        compilationSnapshotId: compilation.snapshotId,
+        prompt,
         inputRefs: [],
         referenceSnapshots: [],
         settings: { size: "1024x1024", quality: "standard" },
     }));
     const run = { runId: `run-${suffix}`, pageId: "page-1", takeId: "take-1", pageIndex: 1, baseNodeId: "config", rootNodeId, plannedCount: count, requests };
     const rootMetadata = {
-        prompt: "测试提示词",
+        prompt,
         status: "idle",
         model: "fake-image",
         count,
@@ -290,11 +588,13 @@ function generationPlan(count, suffix) {
         createdAt,
         runs: [run],
         structureOps,
-        pptOps: [],
+        pptOps: [{ type: "appendCompilationSnapshot", snapshot: compilation }],
         pageCount: 1,
         callCount: count,
         callBreakdown: { textToImage: count, imageToImage: 0 },
         excludedPages: [],
+        kind: "pageGeneration",
+        compilation,
     };
 }
 
@@ -335,7 +635,7 @@ function projectWithRequest(suffix, { status, remoteTaskId }) {
 
 function createHarness(project, options = {}) {
     const durable = createDurable(project, options.durableOptions);
-    const stats = { submitCalls: 0, resumeCalls: 0, materializeCalls: 0 };
+    const stats = { submitCalls: 0, resumeCalls: 0, materializeCalls: 0, submittedPrompts: [] };
     const notifications = [];
     let materializeAttempts = 0;
     let resumeAttempts = 0;
@@ -350,6 +650,7 @@ function createHarness(project, options = {}) {
             provider: {
                 submit: async ({ request, onEvent }) => {
                     stats.submitCalls += 1;
+                    stats.submittedPrompts.push(request.prompt);
                     const taskId = options.taskOnSubmit || options.taskBeforeSubmitError ? `task-${request.requestId}` : undefined;
                     if (taskId) {
                         await onEvent({ type: "task_created", taskId });
@@ -382,7 +683,7 @@ function createHarness(project, options = {}) {
     };
 }
 
-function createDurable(initialProject, { failMutations = [], failReads = [] } = {}) {
+function createDurable(initialProject, { failMutations = [], failReads = [], beforeReads = {} } = {}) {
     let state = structuredClone(initialProject);
     let mutationCount = 0;
     let readCount = 0;
@@ -405,6 +706,7 @@ function createDurable(initialProject, { failMutations = [], failReads = [] } = 
             await queue;
             readCount += 1;
             if (failReads.includes(readCount)) throw new Error(`durable read ${readCount} failed`);
+            if (beforeReads[readCount]) state = structuredClone(beforeReads[readCount](structuredClone(state)));
             return structuredClone(state);
         },
     };

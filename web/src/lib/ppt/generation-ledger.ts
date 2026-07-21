@@ -20,6 +20,22 @@ export function hasPptGenerationLedger(nodes: readonly CanvasNodeData[]) {
     return nodes.some((node) => node.metadata?.pptGenerationRun || node.metadata?.pptGenerationRequest);
 }
 
+export function isPptControlledNode(node: CanvasNodeData | undefined) {
+    return Boolean(node && ((node.metadata?.pptPageId && node.metadata.pptTakeId) || node.metadata?.pptRole === "style" || node.metadata?.pptRole === "source"));
+}
+
+export function hasPptControlledNodes(nodes: readonly CanvasNodeData[]) {
+    return nodes.some(isPptControlledNode);
+}
+
+export function nodeIdsTouchPptControlledNodes(nodes: readonly CanvasNodeData[], nodeIds: ReadonlySet<string>) {
+    return nodes.some((node) => nodeIds.has(node.id) && isPptControlledNode(node));
+}
+
+export function connectionTouchesPptControlledNodes(nodes: readonly CanvasNodeData[], connection: CanvasConnection | undefined) {
+    return Boolean(connection && nodeIdsTouchPptControlledNodes(nodes, new Set([connection.fromNodeId, connection.toNodeId])));
+}
+
 export function nodeIdsTouchUnresolvedPptGeneration(nodes: readonly CanvasNodeData[], nodeIds: ReadonlySet<string>) {
     const activeScopes = unresolvedScopeKeys(nodes);
     return nodes.some((node) => nodeIds.has(node.id) && Boolean(activeScopes.has(nodeScopeKey(node.metadata)) || isUnresolvedRequestNode(node)));
@@ -40,20 +56,31 @@ export function connectionTouchesPptGenerationLedger(nodes: readonly CanvasNodeD
 
 export function agentOpsTouchPptGenerationLedger(ops: readonly CanvasAgentOp[], nodes: readonly CanvasNodeData[], connections: readonly CanvasConnection[]) {
     for (const op of ops) {
-        if (op.type === "add_node" && (op.metadata?.pptGenerationRun || op.metadata?.pptGenerationRequest || unresolvedScopeKeys(nodes).has(nodeScopeKey(op.metadata)))) return true;
+        if (
+            op.type === "add_node" &&
+            (op.metadata?.pptGenerationRun ||
+                op.metadata?.pptGenerationRequest ||
+                op.metadata?.pptPageId ||
+                op.metadata?.pptTakeId ||
+                op.metadata?.pptRole === "style" ||
+                op.metadata?.pptRole === "source" ||
+                unresolvedScopeKeys(nodes).has(nodeScopeKey(op.metadata)))
+        )
+            return true;
         if (op.type === "update_node") {
             const target = nodes.find((node) => node.id === op.id);
             if (target?.metadata?.pptGenerationRun || target?.metadata?.pptGenerationRequest || op.metadata?.pptGenerationRun || op.metadata?.pptGenerationRequest) return true;
+            if (isPptControlledNode(target) || op.metadata?.pptPageId || op.metadata?.pptTakeId || op.metadata?.pptRole === "style" || op.metadata?.pptRole === "source") return true;
             if (nodeIdsTouchUnresolvedPptGeneration(nodes, new Set([op.id]))) return true;
         }
         if (op.type === "delete_node") {
             const ids = new Set(op.ids || (op.id ? [op.id] : op.nodeType ? nodes.filter((node) => node.type === op.nodeType).map((node) => node.id) : []));
-            if (nodeIdsTouchPptGenerationLedger(nodes, ids)) return true;
+            if (nodeIdsTouchPptGenerationLedger(nodes, ids) || nodeIdsTouchPptControlledNodes(nodes, ids)) return true;
         }
         if (op.type === "delete_connections") {
-            if (op.all) return hasPptGenerationLedger(nodes);
+            if (op.all) return hasPptGenerationLedger(nodes) || hasPptControlledNodes(nodes);
             const ids = new Set(op.ids || (op.id ? [op.id] : []));
-            if (connections.some((connection) => ids.has(connection.id) && connectionTouchesPptGenerationLedger(nodes, connection))) return true;
+            if (connections.some((connection) => ids.has(connection.id) && (connectionTouchesPptGenerationLedger(nodes, connection) || connectionTouchesPptControlledNodes(nodes, connection)))) return true;
         }
         if (op.type === "connect_nodes") {
             const fromNode = nodes.find((node) => node.id === op.fromNodeId);
@@ -62,15 +89,17 @@ export function agentOpsTouchPptGenerationLedger(ops: readonly CanvasAgentOp[], 
                 fromNode?.metadata?.pptGenerationRun ||
                 fromNode?.metadata?.pptGenerationRequest ||
                 (fromNode?.metadata?.pptPageId && fromNode.metadata.pptTakeId) ||
+                isPptControlledNode(fromNode) ||
                 toNode?.metadata?.pptGenerationRun ||
                 toNode?.metadata?.pptGenerationRequest ||
+                isPptControlledNode(toNode) ||
                 nodeIdsTouchUnresolvedPptGeneration(nodes, new Set([op.fromNodeId, op.toNodeId]))
             )
                 return true;
         }
         if (op.type === "run_generation") {
             const target = nodes.find((node) => node.id === op.nodeId);
-            if (target?.metadata?.pptGenerationRun || target?.metadata?.pptGenerationRequest || (target?.metadata?.pptPageId && target.metadata.pptTakeId)) return true;
+            if (target?.metadata?.pptGenerationRun || target?.metadata?.pptGenerationRequest || isPptControlledNode(target)) return true;
         }
     }
     return false;
@@ -80,7 +109,7 @@ export function sanitizeCopiedCanvasMetadata(metadata: CanvasNodeMetadata | unde
     if (!metadata) return undefined;
     const next = { ...metadata };
     const hadRuntimeState = Boolean(next.pptGenerationRun || next.pptGenerationRequest || next.imageTask || next.isBatchRoot || next.batchRootId);
-    const hadPptOwnership = Boolean(next.pptGenerationRun || next.pptGenerationRequest || next.pptPageId || next.pptTakeId);
+    const hadPptOwnership = Boolean(next.pptGenerationRun || next.pptGenerationRequest || next.pptPageId || next.pptTakeId || next.pptRole === "style" || next.pptRole === "source");
     delete next.pptGenerationRun;
     delete next.pptGenerationRequest;
     delete next.imageTask;
@@ -102,21 +131,21 @@ export function sanitizeCopiedCanvasMetadata(metadata: CanvasNodeMetadata | unde
 }
 
 export function historyEntryTouchesPptGenerationLedger(currentNodes: readonly CanvasNodeData[], nextNodes: readonly CanvasNodeData[], currentConnections: readonly CanvasConnection[], nextConnections: readonly CanvasConnection[]) {
-    const currentLedgerNodes = currentNodes.filter(hasLedgerMetadata);
-    const nextLedgerNodes = nextNodes.filter(hasLedgerMetadata);
-    const currentById = new Map(currentLedgerNodes.map((node) => [node.id, node]));
-    const nextById = new Map(nextLedgerNodes.map((node) => [node.id, node]));
-    const ledgerNodeIds = new Set([...currentById.keys(), ...nextById.keys()]);
-    if ([...ledgerNodeIds].some((nodeId) => JSON.stringify(ledgerProjection(currentById.get(nodeId))) !== JSON.stringify(ledgerProjection(nextById.get(nodeId))))) return true;
-    const currentLedgerConnections = currentConnections
-        .filter((connection) => ledgerNodeIds.has(connection.fromNodeId) || ledgerNodeIds.has(connection.toNodeId))
+    const currentProtectedNodes = currentNodes.filter((node) => hasLedgerMetadata(node) || isPptControlledNode(node));
+    const nextProtectedNodes = nextNodes.filter((node) => hasLedgerMetadata(node) || isPptControlledNode(node));
+    const currentById = new Map(currentProtectedNodes.map((node) => [node.id, node]));
+    const nextById = new Map(nextProtectedNodes.map((node) => [node.id, node]));
+    const protectedNodeIds = new Set([...currentById.keys(), ...nextById.keys()]);
+    if ([...protectedNodeIds].some((nodeId) => JSON.stringify(protectedProjection(currentById.get(nodeId))) !== JSON.stringify(protectedProjection(nextById.get(nodeId))))) return true;
+    const currentProtectedConnections = currentConnections
+        .filter((connection) => protectedNodeIds.has(connection.fromNodeId) || protectedNodeIds.has(connection.toNodeId))
         .map(connectionIdentity)
         .sort();
-    const nextLedgerConnections = nextConnections
-        .filter((connection) => ledgerNodeIds.has(connection.fromNodeId) || ledgerNodeIds.has(connection.toNodeId))
+    const nextProtectedConnections = nextConnections
+        .filter((connection) => protectedNodeIds.has(connection.fromNodeId) || protectedNodeIds.has(connection.toNodeId))
         .map(connectionIdentity)
         .sort();
-    return JSON.stringify(currentLedgerConnections) !== JSON.stringify(nextLedgerConnections);
+    return JSON.stringify(currentProtectedConnections) !== JSON.stringify(nextProtectedConnections);
 }
 
 function isUnresolvedRequestNode(node: CanvasNodeData) {
@@ -159,23 +188,12 @@ function hasLedgerMetadata(node: CanvasNodeData) {
     return Boolean(node.metadata?.pptGenerationRun || node.metadata?.pptGenerationRequest);
 }
 
-function ledgerProjection(node: CanvasNodeData | undefined) {
+function protectedProjection(node: CanvasNodeData | undefined) {
     if (!node) return null;
-    const metadata = node.metadata;
+    const { fontSize: _fontSize, freeResize: _freeResize, groupId: _groupId, interactive: _interactive, ...metadata } = node.metadata || {};
     return {
-        run: metadata?.pptGenerationRun,
-        request: metadata?.pptGenerationRequest,
-        imageTask: metadata?.imageTask,
-        status: metadata?.status,
-        errorDetails: metadata?.errorDetails,
-        content: metadata?.content,
-        storageKey: metadata?.storageKey,
-        naturalWidth: metadata?.naturalWidth,
-        naturalHeight: metadata?.naturalHeight,
-        bytes: metadata?.bytes,
-        mimeType: metadata?.mimeType,
-        batchChildIds: metadata?.batchChildIds,
-        primaryImageId: metadata?.primaryImageId,
+        type: node.type,
+        metadata,
     };
 }
 

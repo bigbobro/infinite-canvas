@@ -1,0 +1,72 @@
+{
+    "mode": "extract",
+    "sourceMaterial": "工业智能增长方案\n副标题：从设备连接到持续收益\n\n---\n\n核心判断\n2026年，工业 AI 从试点走向规模化复制。\n\n---\n\n五项原则\n必须完整呈现以下5点：\n1. 数据可追溯\n2. 模型可解释\n3. 过程可审计\n4. 责任可定位\n5. 价值可量化\n布局：整页左对齐\n\n---\n\n关键指标\n设备在线率 98.5%\n累计接入 1,200 台设备\nTCO 降低 23%\n\n---\n\n双柱对比\n2025年收入 3.2亿元\n2026年收入 4.8亿元\n布局：整页左对齐，右侧两个柱状图左右排列\n\n---\n\n术语口径\n术语：EBITDA、ROIC、OEE\n全部使用统一财务与设备效率口径。\n\n---\n\n交付矩阵\n表格：三列分别为阶段、负责人、验收标准，表格语义不得改变。\n\n---\n\n行动总结\n先完成一条可验证链路，再复制到全部工厂。",
+    "requirements": "受众：集团管理层\n目标：在8页内形成可决策的工业智能方案\n叙事主线：判断、原则、指标、路径、行动\n禁止使用3D图标",
+    "styleDescription": "专业咨询报告风，深蓝色与大留白，扁平线性图标",
+    "pages": [
+        {
+            "pageId": "page-1",
+            "takeId": "take-1",
+            "title": "工业智能增长方案",
+            "outline": "工业智能增长方案\n副标题：从设备连接到持续收益",
+            "visualHint": "封面使用大标题和充足留白",
+            "layoutIntent": "标题居中"
+        },
+        {
+            "pageId": "page-2",
+            "takeId": "take-2",
+            "title": "核心判断",
+            "outline": "核心判断\n2026年，工业 AI 从试点走向规模化复制。",
+            "visualHint": "突出一句核心判断",
+            "layoutIntent": "左侧结论，右侧概念图"
+        },
+        {
+            "pageId": "page-3",
+            "takeId": "take-3",
+            "title": "五项原则",
+            "outline": "五项原则\n必须完整呈现以下5点：\n1. 数据可追溯\n2. 模型可解释\n3. 过程可审计\n4. 责任可定位\n5. 价值可量化\n布局：整页左对齐",
+            "visualHint": "",
+            "layoutIntent": "整页左对齐"
+        },
+        {
+            "pageId": "page-4",
+            "takeId": "take-4",
+            "title": "关键指标",
+            "outline": "关键指标\n设备在线率 98.5%\n累计接入 1,200 台设备\nTCO 降低 23%",
+            "visualHint": "数字使用大字号强调",
+            "layoutIntent": "三个指标水平排列"
+        },
+        {
+            "pageId": "page-5",
+            "takeId": "take-5",
+            "title": "双柱对比",
+            "outline": "双柱对比\n2025年收入 3.2亿元\n2026年收入 4.8亿元\n布局：整页左对齐，右侧两个柱状图左右排列",
+            "visualHint": "",
+            "layoutIntent": "整页左对齐，右侧两个柱状图左右排列"
+        },
+        {
+            "pageId": "page-6",
+            "takeId": "take-6",
+            "title": "术语口径",
+            "outline": "术语口径\n术语：EBITDA、ROIC、OEE\n全部使用统一财务与设备效率口径。",
+            "visualHint": "三个术语使用等宽字体",
+            "layoutIntent": "三列对齐"
+        },
+        {
+            "pageId": "page-7",
+            "takeId": "take-7",
+            "title": "交付矩阵",
+            "outline": "交付矩阵\n表格：三列分别为阶段、负责人、验收标准，表格语义不得改变。",
+            "visualHint": "使用简洁表格",
+            "layoutIntent": "表头固定为阶段、负责人、验收标准"
+        },
+        {
+            "pageId": "page-8",
+            "takeId": "take-8",
+            "title": "行动总结",
+            "outline": "行动总结\n先完成一条可验证链路，再复制到全部工厂。",
+            "visualHint": "用箭头表达从试点到规模化",
+            "layoutIntent": "横向行动路径"
+        }
+    ]
+}

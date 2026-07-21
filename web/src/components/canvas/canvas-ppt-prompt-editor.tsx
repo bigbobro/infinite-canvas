@@ -15,8 +15,8 @@ type Props = {
     onCancel: () => void;
 };
 
-const REWRITE_SYSTEM_PROMPT = `你是 PPT 页面生图提示词编辑器。根据用户的修改要求改写完整提示词。
-只返回改写后的完整提示词，不解释、不加标题、不使用代码块；保留用户没有要求删除的事实、结构与约束。`;
+const REWRITE_SYSTEM_PROMPT = `你是 PPT 页面规格编辑器。根据用户的修改要求改写当前页面规格。
+只返回改写后的页面规格，不解释、不加标题、不使用代码块；保留用户没有要求删除的事实、结构与约束。`;
 
 export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textModelReady, onSave, onSaveAndGenerate, onCancel }: Props) {
     const { message } = App.useApp();
@@ -87,7 +87,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
         setErrorDetails("");
         const messages: AiTextMessage[] = [
             { role: "system", content: REWRITE_SYSTEM_PROMPT },
-            { role: "user", content: `当前完整提示词：\n${beforeRewrite}\n\n修改要求：\n${instruction.trim()}` },
+            { role: "user", content: `当前页面规格：\n${beforeRewrite}\n\n修改要求：\n${instruction.trim()}` },
         ];
         try {
             // requestImageQuestion 优先读 config.model，必须显式覆盖为文本模型。
@@ -128,7 +128,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
             <div className="space-y-4">
                 <div>
                     <div className="mb-2 flex items-center justify-between gap-3">
-                        <span className="text-sm font-medium">完整提示词</span>
+                        <span className="text-sm font-medium">页面规格</span>
                         <span className="font-mono text-xs tabular-nums text-muted-foreground">
                             {editorDraft.split("\n").length} 行 · {editorDraft.length} 字
                         </span>
@@ -137,8 +137,8 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
                         className="thin-scrollbar !h-[min(60vh,720px)] !resize-none overflow-y-auto font-mono text-sm leading-6"
                         style={{ maxHeight: "max(240px, calc(100dvh - 300px))" }}
                         value={editorDraft}
-                        placeholder="填写这一方案的完整提示词"
-                        aria-label="完整方案提示词"
+                        placeholder="填写这一方案的页面规格"
+                        aria-label="方案页面规格"
                         onChange={(event) => updateDraft(event.target.value)}
                     />
                 </div>

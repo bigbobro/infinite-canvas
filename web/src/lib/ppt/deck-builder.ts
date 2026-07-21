@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import { getNodeSpec } from "@/constant/canvas";
+import { buildPptCompilerModel } from "@/lib/ppt/prompt-compiler";
 import type { UploadedImage } from "@/services/image-storage";
 import type { CanvasProject, CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
@@ -9,6 +10,7 @@ export type PptDeckPageInput = {
     title: string;
     outline: string;
     visualHint: string;
+    sourceRange?: { startLine: number; endLine: number };
 };
 
 export type BuildPptDeckParams = {
@@ -107,7 +109,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
 
         const configMetadata: CanvasNodeData["metadata"] = {
             ...configSpec.metadata,
-            prompt: mode === "extract" ? "" : PPT_PAGE_PROMPT,
+            prompt: "",
             pptLayoutPrompt: mode === "extract" ? "" : PPT_PAGE_PROMPT,
             size: "16:9",
             count: 1,
@@ -134,6 +136,13 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
 
         return { pageId, index, title: page.title, outline: page.outline, visualHint: page.visualHint, takes: [{ takeId, anchorNodeId: outlineId, configNodeId: configId }] };
     });
+    const compilerModel = buildPptCompilerModel({
+        mode,
+        sourceMaterial,
+        requirements,
+        styleDescription,
+        pages: pptPages.map((page, index) => ({ pageId: page.pageId, title: page.title, outline: pages[index].outline, visualHint: pages[index].visualHint, sourceRange: pages[index].sourceRange })),
+    });
 
     return {
         title,
@@ -145,12 +154,15 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
             requirements,
             style: { description: styleDescription, references: uploadedRefs.map((ref) => ({ storageKey: ref.storageKey })) },
             pages: pptPages,
+            deckBrief: compilerModel.deckBrief,
+            pageSpecs: compilerModel.pageSpecs,
+            compilationSnapshots: [],
             anchorConfirmed: false,
             mode,
         },
     };
 }
 
-// 页面标题/要点/视觉建议与风格说明由上游连线的文本节点在生成时自动拼入 prompt（buildNodeGenerationContext），
-// config 节点的 prompt 只保留版式与生成指令，保证大纲/风格的单一来源（画布上改文本节点后重新生成即生效）。
+// 页面标题/要点/视觉建议与风格说明由上游连线的文本节点交给 PPT Compiler 统一编译。
+// config 节点只保留可见的版式指令，保证大纲/风格/版式各有单一来源。
 export const PPT_PAGE_PROMPT = "生成一张 PPT 页面图片，画面比例 16:9，按下方页面大纲与风格说明设计完整的幻灯片版式，标题与要点文字准确、排版简洁。";

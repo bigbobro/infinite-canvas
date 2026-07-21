@@ -49,10 +49,14 @@ import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePptGenerationModule } from "@/pages/canvas/hooks/use-ppt-generation-module"; // [二开] PPT 付费生成的持久化门禁与恢复入口
 import {
     connectionTouchesPptGenerationLedger,
+    connectionTouchesPptControlledNodes,
     hasPptGenerationLedger,
+    hasPptControlledNodes,
     hasUnresolvedPptGeneration,
     historyEntryTouchesPptGenerationLedger,
     nodeIdsTouchPptGenerationLedger,
+    isPptControlledNode,
+    nodeIdsTouchPptControlledNodes,
     nodeIdsTouchUnresolvedPptGeneration,
     sanitizeCopiedCanvasMetadata,
 } from "@/lib/ppt/generation-ledger";
@@ -554,8 +558,11 @@ function InfiniteCanvasPage() {
                 fromNode?.metadata?.pptGenerationRun ||
                 fromNode?.metadata?.pptGenerationRequest ||
                 (fromNode?.metadata?.pptPageId && fromNode.metadata.pptTakeId) ||
+                isPptControlledNode(fromNode) ||
                 toNode?.metadata?.pptGenerationRun ||
                 toNode?.metadata?.pptGenerationRequest ||
+                (toNode?.metadata?.pptPageId && toNode.metadata.pptTakeId) ||
+                isPptControlledNode(toNode) ||
                 nodeIdsTouchUnresolvedPptGeneration(nodesRef.current, new Set([fromNodeId, toNodeId]))
             ) {
                 message.warning("PPT 方案的生成连线由工作台管理");
@@ -585,8 +592,11 @@ function InfiniteCanvasPage() {
                 fromNode?.metadata?.pptGenerationRun ||
                 fromNode?.metadata?.pptGenerationRequest ||
                 (fromNode?.metadata?.pptPageId && fromNode.metadata.pptTakeId) ||
+                isPptControlledNode(fromNode) ||
                 toNode?.metadata?.pptGenerationRun ||
                 toNode?.metadata?.pptGenerationRequest ||
+                (toNode?.metadata?.pptPageId && toNode.metadata.pptTakeId) ||
+                isPptControlledNode(toNode) ||
                 nodeIdsTouchUnresolvedPptGeneration(nodesRef.current, new Set([connection.fromNodeId, connection.toNodeId]))
             ) {
                 message.warning("PPT 方案的生成连线由工作台管理");
@@ -804,8 +814,8 @@ function InfiniteCanvasPage() {
             nodesRef.current.forEach((node) => {
                 if (ids.has(node.id)) node.metadata?.batchChildIds?.forEach((childId) => allIds.add(childId));
             });
-            if (!options?.allowPptLedger && nodeIdsTouchPptGenerationLedger(nodesRef.current, allIds)) {
-                message.warning("该节点属于 PPT 生成记录，请在 PPT 工作台中删除对应方案");
+            if (!options?.allowPptLedger && (nodeIdsTouchPptControlledNodes(nodesRef.current, allIds) || nodeIdsTouchPptGenerationLedger(nodesRef.current, allIds))) {
+                message.warning("该节点属于 PPT 工作台，请在 PPT 工作台中处理");
                 return;
             }
             setNodes((prev) => {
@@ -880,6 +890,10 @@ function InfiniteCanvasPage() {
                 connectionTouchesPptGenerationLedger(
                     nodesRef.current,
                     connectionsRef.current.find((connection) => connection.id === connectionId),
+                ) ||
+                connectionTouchesPptControlledNodes(
+                    nodesRef.current,
+                    connectionsRef.current.find((connection) => connection.id === connectionId),
                 )
             ) {
                 message.warning("该连线属于 PPT 生成记录，请在 PPT 工作台中处理对应方案");
@@ -905,8 +919,8 @@ function InfiniteCanvasPage() {
     }, [cancelPendingConnectionCreate]);
 
     const clearCanvas = useCallback(() => {
-        if (hasPptGenerationLedger(nodesRef.current)) {
-            message.warning("画布包含 PPT 生成记录，请先在 PPT 工作台中删除对应方案");
+        if (hasPptGenerationLedger(nodesRef.current) || hasPptControlledNodes(nodesRef.current)) {
+            message.warning("画布包含 PPT 页面或生成记录，请在 PPT 工作台中处理");
             setClearConfirmOpen(false);
             return;
         }
@@ -1302,7 +1316,9 @@ function InfiniteCanvasPage() {
         if (wasClick && clickedNodeId) {
             const clickedNode = nodesRef.current.find((node) => node.id === clickedNodeId);
             const clickedDefinition = clickedNode ? getNodeDefinition(clickedNode.type) : undefined;
-            if (clickedNode?.type === CanvasNodeType.Text) {
+            if (isPptControlledNode(clickedNode)) {
+                setDialogNodeId(null);
+            } else if (clickedNode?.type === CanvasNodeType.Text) {
                 setDialogNodeId((current) => (current === clickedNodeId ? current : null));
             } else if (clickedDefinition?.hidePanel) {
                 // 纯展示型插件节点:单击只选中,不弹下方面板
@@ -1638,6 +1654,10 @@ function InfiniteCanvasPage() {
     const blockPptInputMutation = useCallback(
         (nodeId: string) => {
             const node = nodesRef.current.find((item) => item.id === nodeId);
+            if (isPptControlledNode(node)) {
+                message.warning({ key: "ppt-compiler-input-locked", content: "PPT 页面规格、风格和生成配置请在 PPT 工作台中调整" });
+                return true;
+            }
             const blocked = Boolean(node?.metadata?.pptGenerationRun || node?.metadata?.pptGenerationRequest || nodeIdsTouchUnresolvedPptGeneration(nodesRef.current, new Set([nodeId])));
             if (blocked) message.warning({ key: "ppt-generation-input-locked", content: "该操作会改动 PPT 生成记录，请先在 PPT 工作台处理当前方案" });
             return blocked;
@@ -1647,7 +1667,8 @@ function InfiniteCanvasPage() {
 
     const blockPptLedgerDerivation = useCallback(
         (nodeId: string) => {
-            const blocked = nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([nodeId]));
+            const nodeIds = new Set([nodeId]);
+            const blocked = nodeIdsTouchPptGenerationLedger(nodesRef.current, nodeIds) || nodeIdsTouchPptControlledNodes(nodesRef.current, nodeIds);
             if (blocked) message.warning({ key: "ppt-generation-derivation-locked", content: "该工具不会写入 PPT 生成记录；请先复制为普通画布图片再使用" });
             return blocked;
         },
@@ -1695,38 +1716,49 @@ function InfiniteCanvasPage() {
         );
     }, []);
 
-    const setBatchPrimary = useCallback((child: CanvasNodeData) => {
-        const rootId = child.metadata?.batchRootId;
-        if (!rootId || !child.metadata?.content) return;
-        setNodes((prev) =>
-            prev.map((node) =>
-                node.id === rootId
-                    ? {
-                          ...node,
-                          width: child.width,
-                          height: child.height,
-                          metadata: {
-                              ...node.metadata,
-                              content: child.metadata?.content,
-                              primaryImageId: child.id,
-                              naturalWidth: child.metadata?.naturalWidth,
-                              naturalHeight: child.metadata?.naturalHeight,
-                              freeResize: child.metadata?.freeResize,
-                          },
-                      }
-                    : node,
-            ),
-        );
-    }, []);
+    const setBatchPrimary = useCallback(
+        (child: CanvasNodeData) => {
+            const rootId = child.metadata?.batchRootId;
+            if (!rootId || !child.metadata?.content) return;
+            const nodeIds = new Set([child.id, rootId]);
+            if (nodeIdsTouchPptControlledNodes(nodesRef.current, nodeIds) || nodeIdsTouchPptGenerationLedger(nodesRef.current, nodeIds)) {
+                message.warning("PPT 候选稿请在 PPT 工作台中选择");
+                return;
+            }
+            setNodes((prev) =>
+                prev.map((node) =>
+                    node.id === rootId
+                        ? {
+                              ...node,
+                              width: child.width,
+                              height: child.height,
+                              metadata: {
+                                  ...node.metadata,
+                                  content: child.metadata?.content,
+                                  primaryImageId: child.id,
+                                  naturalWidth: child.metadata?.naturalWidth,
+                                  naturalHeight: child.metadata?.naturalHeight,
+                                  freeResize: child.metadata?.freeResize,
+                              },
+                          }
+                        : node,
+                ),
+            );
+        },
+        [message],
+    );
 
-    const openTextEditor = useCallback((node: CanvasNodeData) => {
-        if (node.type !== CanvasNodeType.Text) return;
-        setSelectedNodeIds(new Set([node.id]));
-        setSelectedConnectionId(null);
-        setDialogNodeId(node.id);
-        setEditingNodeId(node.id);
-        setEditRequestNonce((value) => value + 1);
-    }, []);
+    const openTextEditor = useCallback(
+        (node: CanvasNodeData) => {
+            if (node.type !== CanvasNodeType.Text || blockPptInputMutation(node.id)) return;
+            setSelectedNodeIds(new Set([node.id]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(node.id);
+            setEditingNodeId(node.id);
+            setEditRequestNonce((value) => value + 1);
+        },
+        [blockPptInputMutation],
+    );
 
     const handleNodePromptChange = useCallback(
         (nodeId: string, prompt: string) => {
@@ -2059,7 +2091,7 @@ function InfiniteCanvasPage() {
 
     const handleUploadRequest = useCallback(
         (nodeId?: string, position?: Position) => {
-            if (nodeId && nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([nodeId]))) {
+            if (nodeId && (nodeIdsTouchPptControlledNodes(nodesRef.current, new Set([nodeId])) || nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([nodeId])))) {
                 message.warning({ key: "ppt-generation-replace-locked", content: "PPT 生成稿不能原位替换，请在工作台中派生或删除对应方案" });
                 return;
             }
@@ -2074,7 +2106,7 @@ function InfiniteCanvasPage() {
             const file = event.target.files?.[0];
             const target = uploadTargetRef.current;
             if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/") && !isAudioFile(file))) return;
-            if (target?.nodeId && nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([target.nodeId]))) {
+            if (target?.nodeId && (nodeIdsTouchPptControlledNodes(nodesRef.current, new Set([target.nodeId])) || nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([target.nodeId])))) {
                 message.warning({ key: "ppt-generation-replace-locked", content: "PPT 生成稿不能原位替换，请在工作台中派生或删除对应方案" });
                 uploadTargetRef.current = null;
                 event.target.value = "";
@@ -2210,7 +2242,7 @@ function InfiniteCanvasPage() {
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
-            if (sourceNode?.metadata?.pptPageId && sourceNode.metadata.pptTakeId) {
+            if (isPptControlledNode(sourceNode)) {
                 message.warning("请在 PPT 工作台中生成，确保请求状态可保存、可恢复");
                 return;
             }
@@ -2638,11 +2670,12 @@ function InfiniteCanvasPage() {
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData) => {
             const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
-            if (node.metadata?.pptGenerationRequest || (node.metadata?.pptPageId && node.metadata.pptTakeId) || (sourceNode.metadata?.pptPageId && sourceNode.metadata.pptTakeId)) {
+            const batchRoot = node.metadata?.batchRootId ? nodesRef.current.find((item) => item.id === node.metadata?.batchRootId) : null;
+            const retryNodeIds = new Set([node.id, sourceNode.id, ...(batchRoot ? [batchRoot.id] : [])]);
+            if (nodeIdsTouchPptControlledNodes(nodesRef.current, retryNodeIds) || nodeIdsTouchPptGenerationLedger(nodesRef.current, retryNodeIds)) {
                 message.warning("请在 PPT 工作台中重试，确保请求状态可保存、可恢复");
                 return;
             }
-            const batchRoot = node.metadata?.batchRootId ? nodesRef.current.find((item) => item.id === node.metadata?.batchRootId) : null;
             const savedImageMetadata = node.type === CanvasNodeType.Image ? { ...batchRoot?.metadata, ...node.metadata } : undefined;
             const hasSavedImageMetadata = Boolean(savedImageMetadata?.generationType);
             const generationConfig =
@@ -2779,6 +2812,7 @@ function InfiniteCanvasPage() {
 
     const generateImageFromTextNode = useCallback(
         (node: CanvasNodeData) => {
+            if (blockPptInputMutation(node.id)) return;
             const prompt = (node.metadata?.content || node.metadata?.prompt || "").trim();
             if (!prompt) {
                 message.warning("文本节点为空，无法生图");
@@ -2811,7 +2845,7 @@ function InfiniteCanvasPage() {
             setSelectedConnectionId(null);
             setDialogNodeId(configNode.id);
         },
-        [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, message],
+        [blockPptInputMutation, effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, message],
     );
 
     const insertAssistantImage = useCallback(
@@ -2934,21 +2968,34 @@ function InfiniteCanvasPage() {
     );
 
     const renderNodeContentPanel = useCallback(
-        (contentNode: CanvasNodeData) => (
-            <CanvasConfigNodePanel
-                node={contentNode}
-                isRunning={runningNodeId === contentNode.id}
-                inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
-                onConfigChange={handleConfigNodeChange}
-                onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
-                onStop={confirmStopGeneration}
-                onGenerate={(nodeId) => {
-                    const target = nodesRef.current.find((item) => item.id === nodeId);
-                    void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
-                }}
-            />
-        ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+        (contentNode: CanvasNodeData) =>
+            isPptControlledNode(contentNode) ? (
+                <div className="flex h-full w-full cursor-move flex-col justify-between px-4 pb-4 pt-7 text-sm" style={{ color: theme.node.text }}>
+                    <div>
+                        <div className="font-semibold">PPT 生成配置</div>
+                        <div className="mt-2 text-xs leading-5" style={{ color: theme.node.muted }}>
+                            由 PPT 工作台统一管理
+                        </div>
+                    </div>
+                    <div className="text-xs" style={{ color: theme.node.muted }}>
+                        {[contentNode.metadata?.model, contentNode.metadata?.size].filter(Boolean).join(" · ")}
+                    </div>
+                </div>
+            ) : (
+                <CanvasConfigNodePanel
+                    node={contentNode}
+                    isRunning={runningNodeId === contentNode.id}
+                    inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
+                    onConfigChange={handleConfigNodeChange}
+                    onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
+                    onStop={confirmStopGeneration}
+                    onGenerate={(nodeId) => {
+                        const target = nodesRef.current.find((item) => item.id === nodeId);
+                        void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
+                    }}
+                />
+            ),
+        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId, theme.node.muted, theme.node.text],
     );
 
     if (!projectReady) return <CanvasRefreshShell />;
