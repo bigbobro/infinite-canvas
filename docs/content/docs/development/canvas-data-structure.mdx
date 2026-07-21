@@ -124,6 +124,25 @@ type CanvasNodeMetadata = {
 };
 ```
 
+PPT 候选经“按要求改图”生成时，请求轨迹还会冻结下面的修改快照：
+
+```ts
+type PptCandidateEditSnapshot = {
+  baseNodeId: string;
+  globalInstruction: string;
+  annotations: Array<{
+    index: number;
+    x: number;
+    y: number;
+    instruction: string;
+  }>;
+  finalPrompt: string;
+};
+
+// PptGenerationRequestTrace 中的可选字段
+candidateEdit?: PptCandidateEditSnapshot;
+```
+
 不同节点的使用方式：
 
 - 图片节点：`content` 是当前可展示的图片 URL，通常是 `blob:` URL；`storageKey` 指向本地图片 Blob；`naturalWidth/naturalHeight/bytes/mimeType` 保存原图信息。
@@ -134,6 +153,7 @@ type CanvasNodeMetadata = {
 - 异步生图任务：`imageTask` 是「猫佬（异步任务）」渠道的活动句柄，使页面刷新后能接着轮询而不是丢弃任务。明确完成、失败、取消或放弃后会清除；网络、取图或本地物化暂时失败且仍可按 task ID 取回时继续保留。`model` 存的是编码后的「渠道::模型」值，用于定位任务所属渠道。
 - PPT 归属：`pptPageId` / `pptTakeId` 标记节点属于哪一页、哪一方案；`pptPageIndex` 只用于展示。
 - PPT 生成轨迹：`pptGenerationRun` 记录一个页方案运行的摘要，`pptGenerationRequest` 记录一个实际付费请求槽的状态、远端 task ID、结果身份、不含 API Key 的冻结渠道身份与重复计费风险。count=1 时两者在同一输出节点；count>1 时 run summary 在 root，每个子节点保留自己的 request trace。`imageTask` 仅是活动任务句柄，不代替终态轨迹。
+- PPT 修改追溯：修改 Request 本身已含 `requestId` / `runId` / `pageId` / `takeId`，`candidateEdit` 再记录基图、整页要求、点位序号与相对坐标、逐点说明和最终提示词。零点位直接使用原基图，有点位才临时生成带编号标记的请求图片；新结果只追加候选，页面的 `confirmedNodeId` 不因生成而改写。
 
 ## 连线结构
 
