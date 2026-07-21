@@ -150,9 +150,9 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
     const candidateIds = new Set(takes.flatMap((take) => take.candidates.map((node) => node.id)));
     // #7：确认状态只归并为两类用户语言问题，避免「节点不存在/类型异常/不属于本页」等技术分支重复表述。
     const confirmationIssues: string[] = [];
-    if (!page.confirmedNodeId) confirmationIssues.push("尚未确认最终版本");
+    if (!page.confirmedNodeId) confirmationIssues.push("尚未确认最终版");
     else if (!confirmedNode || confirmedNode.type !== CanvasNodeType.Image || confirmedNode.metadata?.status !== "success" || !confirmedNode.metadata?.storageKey || !candidateIds.has(confirmedNode.id)) {
-        confirmationIssues.push("已确认的版本已失效，请重新确认");
+        confirmationIssues.push("已确认的最终版已失效，请重新确认");
     }
 
     return { page, takes, confirmedNode, resolvedConfirmedNodeId, confirmationIssues };

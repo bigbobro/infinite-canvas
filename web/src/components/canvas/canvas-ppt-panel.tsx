@@ -44,6 +44,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     const [surface, setSurface] = useState<"workbench" | "structure">("workbench");
     const [focusPageId, setFocusPageId] = useState<string | null>(null);
     const [focusTakeId, setFocusTakeId] = useState<string | null>(null);
+    const [focusRunId, setFocusRunId] = useState<string | null>(null);
     const [finalReviewOpen, setFinalReviewOpen] = useState(false);
     const [startModalOpen, setStartModalOpen] = useState(false);
     const [restModalOpen, setRestModalOpen] = useState(false);
@@ -58,6 +59,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setSurface("workbench");
         setFocusPageId(null);
         setFocusTakeId(null);
+        setFocusRunId(null);
         setFinalReviewOpen(false);
         setStartModalOpen(false);
         setRestModalOpen(false);
@@ -84,7 +86,8 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     }, [currentProject]);
     const notifiedPageId = searchParams.get("pptPage");
     const notifiedTakeId = searchParams.get("pptTake");
-    const notificationToken = [searchParams.get("pptRun"), searchParams.get("pptStatus")].filter(Boolean).join(":");
+    const notifiedRunId = searchParams.get("pptRun");
+    const notificationToken = [notifiedRunId, searchParams.get("pptStatus")].filter(Boolean).join(":");
     useEffect(() => {
         if (!notifiedPageId || !notificationToken || notificationTokenRef.current === notificationToken) return;
         const workspace = pageWorkspaces.find((item) => item.page.pageId === notifiedPageId);
@@ -93,9 +96,10 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setPanelOpen(true);
         setFocusPageId(notifiedPageId);
         setFocusTakeId(workspace.takes.some((take) => take.takeId === notifiedTakeId) ? notifiedTakeId : null);
+        setFocusRunId(notifiedRunId);
         setSurface("workbench");
         setFinalReviewOpen(false);
-    }, [notificationToken, notifiedPageId, notifiedTakeId, pageWorkspaces]);
+    }, [notificationToken, notifiedPageId, notifiedRunId, notifiedTakeId, pageWorkspaces]);
     const restPlanPreview = useMemo(() => (currentProject ? createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : undefined), [currentProject, effectiveConfig]);
     const repeatBillingRiskCount = (plan?: GenerationPlan) =>
         plan?.runs.filter((run) => pageWorkspaces.find((workspace) => workspace.page.pageId === run.pageId)?.takes.find((take) => take.takeId === run.takeId)?.requiresRepeatBillingConfirmation).length || 0;
@@ -372,9 +376,14 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
                 projectId={projectId}
                 pageId={activePageId}
                 targetTakeId={focusTakeId || undefined}
+                targetRunId={focusRunId || undefined}
                 generationModule={generationModule}
-                onPageChange={setFocusPageId}
+                onPageChange={(nextPageId) => {
+                    setFocusPageId(nextPageId);
+                    setFocusRunId(null);
+                }}
                 onTargetTakeApplied={() => setFocusTakeId(null)}
+                onTargetRunApplied={() => setFocusRunId(null)}
                 controls={{
                     batchLabel,
                     batchDisabled,

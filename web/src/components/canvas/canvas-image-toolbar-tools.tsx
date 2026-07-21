@@ -92,9 +92,9 @@ export const imageToolDefinitions: ImageToolDefinition[] = [
     {
         id: "annotate",
         defaultVisible: true,
-        panelLabel: "标注改图",
-        label: "标注改图",
-        title: "在图上点位标注，一次提交多点修改",
+        panelLabel: "按要求改图",
+        label: "按要求改图",
+        title: "整页要求与点位要求可单独或组合使用",
         icon: () => <MapPin className="size-4" />,
         run: (node) => useAnnotateStore.getState().open(node.id),
     },

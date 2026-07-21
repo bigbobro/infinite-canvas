@@ -40,6 +40,18 @@ export type PptGenerationProviderIdentity = {
     model: string;
 };
 
+export type PptCandidateEditSnapshot = {
+    baseNodeId: string;
+    globalInstruction: string;
+    annotations: Array<{
+        index: number;
+        x: number;
+        y: number;
+        instruction: string;
+    }>;
+    finalPrompt: string;
+};
+
 export type PptGenerationRequestTrace = {
     requestId: string;
     runId: string;
@@ -51,6 +63,7 @@ export type PptGenerationRequestTrace = {
     model: string;
     providerIdentity: PptGenerationProviderIdentity;
     compilationSnapshotId?: string;
+    candidateEdit?: PptCandidateEditSnapshot;
     status: PptGenerationRequestStatus;
     remoteTaskId?: string;
     remoteTaskExpiresAt?: number;

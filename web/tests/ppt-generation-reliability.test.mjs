@@ -25,9 +25,7 @@ before(async () => {
     ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ PPT_PAGE_PROMPT } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
-    ({ hasPptRepeatBillingRisk, agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, sanitizeCopiedCanvasMetadata } = await vite.ssrLoadModule(
-        "/src/lib/ppt/generation-ledger.ts",
-    ));
+    ({ hasPptRepeatBillingRisk, agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, sanitizeCopiedCanvasMetadata } = await vite.ssrLoadModule("/src/lib/ppt/generation-ledger.ts"));
     ({ buildPptDeckProject } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
 });
@@ -182,13 +180,21 @@ test("候选图编辑只能从独立入口启动", async () => {
     });
     project.nodes.push(candidate);
     project.connections.push({ id: "config-candidate", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    page.confirmedNodeId = candidate.id;
+    const sourceContent = candidate.metadata.content;
+    const candidateEdit = {
+        baseNodeId: candidate.id,
+        globalInstruction: "将标题字号放大",
+        annotations: [],
+        finalPrompt: "将标题字号放大",
+    };
     const plan = createPptCandidateEditPlan({
         project,
         effectiveConfig: defaultConfig,
         pageId: page.pageId,
         takeId: take.takeId,
         sourceNodeId: candidate.id,
-        prompt: "将标题字号放大",
+        candidateEdit,
         reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
     });
 
@@ -200,6 +206,217 @@ test("候选图编辑只能从独立入口启动", async () => {
     const started = await createPptGenerationModule(editHarness.dependencies).startCandidateEdit(plan);
     await started.settled;
     assert.equal(editHarness.stats.submitCalls, 1);
+    const durable = await editHarness.durable.read();
+    const resultNode = durable.nodes.find((node) => node.id === plan.runs[0].rootNodeId);
+    const durableSource = durable.nodes.find((node) => node.id === candidate.id);
+    assert.deepEqual(resultNode.metadata.pptGenerationRequest.candidateEdit, candidateEdit);
+    assert.ok(durable.connections.some((connection) => connection.fromNodeId === candidate.id && connection.toNodeId === resultNode.id));
+    assert.equal(durable.ppt.pages[0].confirmedNodeId, candidate.id);
+    assert.equal(durableSource.metadata.content, sourceContent);
+});
+
+test("再生成一稿和候选修改都固定为单候选且不改配置 count", () => {
+    const project = compilerProject("single-candidate");
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const configNode = project.nodes.find((node) => node.id === take.configNodeId);
+    configNode.metadata.count = 3;
+
+    const firstPlan = createGenerationPlan({ kind: "generateSingle", takeId: take.takeId }, { project, effectiveConfig: defaultConfig });
+    assert.equal(firstPlan.runs[0].plannedCount, 3);
+    assert.equal(firstPlan.runs[0].requests.length, 3);
+
+    const candidate = canvasNode("single-candidate-source", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        model: "fake-image",
+        count: 3,
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(candidate);
+    project.connections.push({ id: "single-candidate-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+
+    const rerunPlan = createGenerationPlan({ kind: "generateOneCandidate", takeId: take.takeId }, { project, effectiveConfig: defaultConfig });
+    assert.equal(rerunPlan.runs[0].plannedCount, 1);
+    assert.equal(rerunPlan.runs[0].requests.length, 1);
+    assert.equal(rerunPlan.callCount, 1);
+    assert.equal(rerunPlan.runs[0].requests[0].candidateEdit, undefined);
+    assert.equal(rerunPlan.runs[0].requests[0].prompt, firstPlan.runs[0].requests[0].prompt);
+
+    const candidateEdit = {
+        baseNodeId: candidate.id,
+        globalInstruction: "整体增加留白",
+        annotations: [{ index: 1, x: 0.25, y: 0.4, instruction: "图标改为蓝色" }],
+        finalPrompt: "整体增加留白\n① 图标改为蓝色",
+    };
+    const editPlan = createPptCandidateEditPlan({
+        project,
+        effectiveConfig: defaultConfig,
+        pageId: page.pageId,
+        takeId: take.takeId,
+        sourceNodeId: candidate.id,
+        candidateEdit,
+        reference: { id: `${candidate.id}-marked`, name: "marked.png", type: "image/png", dataUrl: candidate.metadata.content },
+    });
+    assert.equal(editPlan.runs[0].plannedCount, 1);
+    assert.equal(editPlan.runs[0].requests.length, 1);
+    assert.equal(editPlan.callCount, 1);
+    assert.equal(editPlan.runs[0].requests[0].candidateEdit, candidateEdit);
+    assert.equal(configNode.metadata.count, 3);
+});
+
+test("候选修改拒绝 batch root 与不匹配的基图快照", () => {
+    const project = compilerProject("candidate-source-guard");
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const batchRoot = canvasNode("candidate-batch-root", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        batchChildIds: ["candidate-batch-child"],
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    const candidate = canvasNode("candidate-batch-child", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        batchRootId: batchRoot.id,
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    const flagOnlyBatchRoot = canvasNode("candidate-flag-only-batch-root", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        isBatchRoot: true,
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(batchRoot, candidate, flagOnlyBatchRoot);
+    project.connections.push({ id: "config-batch-root", fromNodeId: take.configNodeId, toNodeId: batchRoot.id });
+    project.connections.push({ id: "config-flag-only-batch-root", fromNodeId: take.configNodeId, toNodeId: flagOnlyBatchRoot.id });
+
+    assert.throws(
+        () =>
+            createPptCandidateEditPlan({
+                project,
+                effectiveConfig: defaultConfig,
+                pageId: page.pageId,
+                takeId: take.takeId,
+                sourceNodeId: batchRoot.id,
+                candidateEdit: { baseNodeId: batchRoot.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+                reference: { id: batchRoot.id, name: "batch-root.png", type: "image/png", dataUrl: batchRoot.metadata.content },
+            }),
+        /不是当前 PPT 方案的成功候选/,
+    );
+    assert.throws(
+        () =>
+            createPptCandidateEditPlan({
+                project,
+                effectiveConfig: defaultConfig,
+                pageId: page.pageId,
+                takeId: take.takeId,
+                sourceNodeId: flagOnlyBatchRoot.id,
+                candidateEdit: { baseNodeId: flagOnlyBatchRoot.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+                reference: { id: flagOnlyBatchRoot.id, name: "batch-root.png", type: "image/png", dataUrl: flagOnlyBatchRoot.metadata.content },
+            }),
+        /不是当前 PPT 方案的成功候选/,
+    );
+    assert.throws(
+        () =>
+            createPptCandidateEditPlan({
+                project,
+                effectiveConfig: defaultConfig,
+                pageId: page.pageId,
+                takeId: take.takeId,
+                sourceNodeId: candidate.id,
+                candidateEdit: { baseNodeId: "other-node", globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+                reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+            }),
+        /基图不一致/,
+    );
+});
+
+test("候选修改在启动前再次拒绝变成 batch root 的基图", async () => {
+    const project = compilerProject("candidate-source-recheck");
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const candidate = canvasNode("candidate-source-recheck-node", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(candidate);
+    project.connections.push({ id: "candidate-source-recheck-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    const plan = createPptCandidateEditPlan({
+        project,
+        effectiveConfig: defaultConfig,
+        pageId: page.pageId,
+        takeId: take.takeId,
+        sourceNodeId: candidate.id,
+        candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+    });
+    candidate.metadata.isBatchRoot = true;
+    const harness = createHarness(project);
+
+    await assert.rejects(createPptGenerationModule(harness.dependencies).startCandidateEdit(plan), /候选图编辑计划的结构不合法/);
+    assert.equal(harness.stats.submitCalls, 0);
+});
+
+test("candidateEdit 快照在 POST 前被篡改时为 0 POST", async () => {
+    const project = compilerProject("candidate-lineage-tamper");
+    const page = project.ppt.pages[0];
+    const take = page.takes[0];
+    const candidate = canvasNode("candidate-lineage-source", "image", {
+        content: "data:image/png;base64,AA==",
+        status: "success",
+        pptPageId: page.pageId,
+        pptTakeId: take.takeId,
+        pptPageIndex: page.index,
+    });
+    project.nodes.push(candidate);
+    project.connections.push({ id: "candidate-lineage-source-connection", fromNodeId: take.configNodeId, toNodeId: candidate.id });
+    const plan = createPptCandidateEditPlan({
+        project,
+        effectiveConfig: defaultConfig,
+        pageId: page.pageId,
+        takeId: take.takeId,
+        sourceNodeId: candidate.id,
+        candidateEdit: { baseNodeId: candidate.id, globalInstruction: "增加留白", annotations: [], finalPrompt: "增加留白" },
+        reference: { id: candidate.id, name: "candidate.png", type: "image/png", dataUrl: candidate.metadata.content },
+    });
+    const requestId = plan.runs[0].requests[0].requestId;
+    const harness = createHarness(project, {
+        durableOptions: {
+            beforeReads: {
+                5: (current) => ({
+                    ...current,
+                    nodes: current.nodes.map((node) =>
+                        node.metadata?.pptGenerationRequest?.requestId === requestId
+                            ? {
+                                  ...node,
+                                  metadata: {
+                                      ...node.metadata,
+                                      pptGenerationRequest: { ...node.metadata.pptGenerationRequest, candidateEdit: { ...node.metadata.pptGenerationRequest.candidateEdit, finalPrompt: "被篡改的提示词" } },
+                                  },
+                              }
+                            : node,
+                    ),
+                }),
+            },
+        },
+    });
+    const started = await createPptGenerationModule(harness.dependencies).startCandidateEdit(plan);
+    await started.settled;
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(requestTrace(await harness.durable.read(), requestId).status, "failed");
 });
 
 test("Compiler 快照和请求同步篡改仍然 POST 次数为 0", async () => {
@@ -305,7 +522,15 @@ test("结构画布撤销不能改写 PPT 受控节点与连线，但允许位置
 
     const moved = project.nodes.map((node) => (node.id === "anchor" ? { ...node, position: { x: 120, y: 80 }, width: 360, height: 240 } : node));
     assert.equal(historyEntryTouchesPptGenerationLedger(project.nodes, moved, project.connections, project.connections), false);
-    assert.equal(historyEntryTouchesPptGenerationLedger(project.nodes, project.nodes.filter((node) => node.id !== "anchor"), project.connections, project.connections), true);
+    assert.equal(
+        historyEntryTouchesPptGenerationLedger(
+            project.nodes,
+            project.nodes.filter((node) => node.id !== "anchor"),
+            project.connections,
+            project.connections,
+        ),
+        true,
+    );
     assert.equal(
         historyEntryTouchesPptGenerationLedger(
             project.nodes,
@@ -315,7 +540,15 @@ test("结构画布撤销不能改写 PPT 受控节点与连线，但允许位置
         ),
         true,
     );
-    assert.equal(historyEntryTouchesPptGenerationLedger(project.nodes, project.nodes, project.connections, project.connections.filter((connection) => connection.id !== "style-config")), true);
+    assert.equal(
+        historyEntryTouchesPptGenerationLedger(
+            project.nodes,
+            project.nodes,
+            project.connections,
+            project.connections.filter((connection) => connection.id !== "style-config"),
+        ),
+        true,
+    );
 });
 
 test("共享风格与来源节点受统一保护，复制时移除 PPT 身份", () => {

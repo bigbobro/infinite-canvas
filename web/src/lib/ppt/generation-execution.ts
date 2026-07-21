@@ -1,5 +1,6 @@
 import { applyCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
-import { applyGenerationPlanPptOps, assertGenerationPlanCompilation, assertGenerationPlanCurrentTargets, type GenerationPlan, type GenerationPlanRequest, type GenerationPlanRun } from "@/lib/ppt/generation-plan";
+import { applyGenerationPlanPptOps, assertGenerationPlanCompilation, assertGenerationPlanCurrentTargets, isPptCandidateEditSnapshot, type GenerationPlan, type GenerationPlanRequest, type GenerationPlanRun } from "@/lib/ppt/generation-plan";
+import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasNodeData, CanvasNodeMetadata, PptGenerationRequestStatus, PptGenerationRequestTrace, PptGenerationRunStatus, PptGenerationRunSummary } from "@/types/canvas";
 
@@ -468,6 +469,12 @@ function assertGenerationPlanKind(project: CanvasProject, plan: GenerationPlan, 
     const run = plan.runs[0];
     const request = run?.requests[0];
     const sourceNode = project.nodes.find((node) => node.id === run?.baseNodeId);
+    const page = project.ppt?.pages.find((item) => item.pageId === run?.pageId);
+    const sourceCandidate =
+        page &&
+        buildPptPageWorkspace(project, page)
+            .takes.find((take) => take.takeId === run?.takeId)
+            ?.candidates.find((candidate) => candidate.id === sourceNode?.id);
     const validCandidateEdit =
         plan.kind === "candidateEdit" &&
         !plan.compilation &&
@@ -476,9 +483,11 @@ function assertGenerationPlanKind(project: CanvasProject, plan: GenerationPlan, 
         run.requests.length === 1 &&
         run.plannedCount === 1 &&
         request.requestType === "imageToImage" &&
-        sourceNode?.type === "image" &&
-        sourceNode.metadata?.pptPageId === run.pageId &&
-        sourceNode.metadata?.pptTakeId === run.takeId &&
+        sourceNode !== undefined &&
+        !sourceNode.metadata?.isBatchRoot &&
+        sourceCandidate === sourceNode &&
+        isPptCandidateEditSnapshot(request.candidateEdit, sourceNode.id) &&
+        request.prompt === request.candidateEdit.finalPrompt &&
         request.inputRefs.length === 1 &&
         request.inputRefs[0].nodeId === sourceNode.id;
     if (!validCandidateEdit) throw new Error("候选图编辑计划的结构不合法，不能降级绕过 PPT Compiler");
@@ -551,6 +560,7 @@ function assertPlanDurable(project: CanvasProject, plan: GenerationPlan, status:
                 trace.takeId !== run.takeId ||
                 trace.slotIndex !== request.slotIndex ||
                 trace.compilationSnapshotId !== request.compilationSnapshotId ||
+                JSON.stringify(trace.candidateEdit) !== JSON.stringify(request.candidateEdit) ||
                 !sameProviderIdentity(trace.providerIdentity, request.providerIdentity) ||
                 trace.status !== status
             )
@@ -606,6 +616,7 @@ function initialRequestTrace(plan: GenerationPlan, run: GenerationPlanRun, reque
         model: request.model,
         providerIdentity: request.providerIdentity,
         compilationSnapshotId: request.compilationSnapshotId,
+        candidateEdit: request.candidateEdit ? structuredClone(request.candidateEdit) : undefined,
         status: "draft",
         createdAt: plan.createdAt,
         updatedAt: plan.createdAt,

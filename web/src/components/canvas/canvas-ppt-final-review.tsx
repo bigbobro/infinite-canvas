@@ -195,7 +195,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                 <div className="min-w-0">
                                     <h2 className="text-sm font-semibold leading-5 text-white/90">最终检视</h2>
                                     <p className="truncate text-xs leading-4 text-white/70">
-                                        {loading ? "正在检查每页已确认版本…" : inspection?.ready ? `全部 ${pages.length} 页已定稿，可以打包下载` : problemCount ? `还有 ${problemCount} 页需要处理` : "请先完成每页确认"}
+                                        {loading ? "正在检查每页最终版…" : inspection?.ready ? `全部 ${pages.length} 页已定稿，可以打包下载` : problemCount ? `还有 ${problemCount} 页需要处理` : "请先完成每页确认"}
                                     </p>
                                 </div>
                             </div>
@@ -240,7 +240,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                         className="relative flex aspect-video h-full max-h-full w-fit max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg shadow-artwork duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none"
                                         onClick={() => setLightboxSrc(activePage.previewUrl || null)}
                                     >
-                                        <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认版本）`} className="size-full object-contain" />
+                                        <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认最终版）`} className="size-full object-contain" />
                                         <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/55 px-2 py-1 font-mono text-xs tabular-nums text-white/75">
                                             {pad2(activePosition + 1)} / {pad2(pages.length)}
                                         </span>
