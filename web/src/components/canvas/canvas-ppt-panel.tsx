@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import { App, Button, Modal, Radio, Tooltip, Typography, theme as antdTheme } from "antd";
 import { CheckCircle2, ChevronRight, CircleAlert, ImageOff, Layers, LoaderCircle, Presentation, RotateCcw, Sparkles, X } from "lucide-react";
 
@@ -7,9 +7,10 @@ import { CanvasPptFinalReview } from "@/components/canvas/canvas-ppt-final-revie
 import { CanvasPptPageWorkspace } from "@/components/canvas/canvas-ppt-page-workspace";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolvePageImageNode } from "@/lib/ppt/deck-export";
+import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { buildPptPageWorkspace, type PptPageWorkspace } from "@/lib/ppt/page-workspace";
-import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStore, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
@@ -23,13 +24,14 @@ const PANEL_SAFE_WIDTH = PANEL_WIDTH + PANEL_GAP * 2;
 type BatchState = { kind: "start" } | { kind: "waitingFirst" } | { kind: "confirmRest"; count: number } | { kind: "hidden" };
 
 function isPageUntouched(workspace: PptPageWorkspace) {
-    return !workspace.takes.some((take) => take.candidates.length > 0 || take.generating);
+    return !workspace.takes.some((take) => take.candidates.length > 0 || take.generating || take.unresolvedGeneration);
 }
 
-export function CanvasPptPanel() {
+export function CanvasPptPanel({ generationModule }: { generationModule: PptGenerationModule }) {
     const { message, modal } = App.useApp();
     const { token } = antdTheme.useToken();
     const params = useParams<{ id: string }>();
+    const [searchParams] = useSearchParams();
     const projectId = params.id || "";
     const canvasTheme = canvasThemes[useThemeStore((state) => state.theme)];
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
@@ -39,20 +41,24 @@ export function CanvasPptPanel() {
     const setPptOverlayOpen = useCanvasUiStore((state) => state.setPptOverlayOpen);
     const [panelOpen, setPanelOpen] = useState(true);
     const [surface, setSurface] = useState<"workbench" | "structure">("workbench");
-    const [focusPageIndex, setFocusPageIndex] = useState<number | null>(null);
+    const [focusPageId, setFocusPageId] = useState<string | null>(null);
+    const [focusTakeId, setFocusTakeId] = useState<string | null>(null);
     const [finalReviewOpen, setFinalReviewOpen] = useState(false);
     const [startModalOpen, setStartModalOpen] = useState(false);
     const [restModalOpen, setRestModalOpen] = useState(false);
     const [anchorFirst, setAnchorFirst] = useState(false);
+    const notificationTokenRef = useRef<string | null>(null);
 
     useEffect(() => {
         setPanelOpen(true);
         setSurface("workbench");
-        setFocusPageIndex(null);
+        setFocusPageId(null);
+        setFocusTakeId(null);
         setFinalReviewOpen(false);
         setStartModalOpen(false);
         setRestModalOpen(false);
         setAnchorFirst(false);
+        notificationTokenRef.current = null;
     }, [projectId]);
 
     // #34：精修台/最终检视打开期间，画布节点悬浮工具条不得渲染（数据安全，避免误点删除底层节点）。
@@ -69,8 +75,24 @@ export function CanvasPptPanel() {
         if (!currentProject?.ppt) return [];
         return [...currentProject.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(currentProject, page));
     }, [currentProject]);
+    const notifiedPageId = searchParams.get("pptPage");
+    const notifiedTakeId = searchParams.get("pptTake");
+    const notificationToken = [searchParams.get("pptRun"), searchParams.get("pptStatus")].filter(Boolean).join(":");
+    useEffect(() => {
+        if (!notifiedPageId || !notificationToken || notificationTokenRef.current === notificationToken) return;
+        const workspace = pageWorkspaces.find((item) => item.page.pageId === notifiedPageId);
+        if (!workspace) return;
+        notificationTokenRef.current = notificationToken;
+        setPanelOpen(true);
+        setFocusPageId(notifiedPageId);
+        setFocusTakeId(workspace.takes.some((take) => take.takeId === notifiedTakeId) ? notifiedTakeId : null);
+        setSurface("workbench");
+        setFinalReviewOpen(false);
+    }, [notificationToken, notifiedPageId, notifiedTakeId, pageWorkspaces]);
     const startPlan = useMemo(() => (currentProject ? createGenerationPlan({ kind: "startBatch", anchorFirst }, { project: currentProject, effectiveConfig }) : undefined), [anchorFirst, currentProject, effectiveConfig]);
     const restPlan = useMemo(() => (currentProject ? createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : undefined), [currentProject, effectiveConfig]);
+    const repeatBillingRiskCount = (plan?: GenerationPlan) =>
+        plan?.runs.filter((run) => pageWorkspaces.find((workspace) => workspace.page.pageId === run.pageId)?.takes.find((take) => take.takeId === run.takeId)?.requiresRepeatBillingConfirmation).length || 0;
 
     const ppt = currentProject?.ppt;
     if (!ppt || !currentProject) return null;
@@ -82,35 +104,31 @@ export function CanvasPptPanel() {
     const skipAnchor = ppt.skipAnchor ?? !hasStyleNode;
     const confirmedCount = pageWorkspaces.filter((item) => item.confirmationIssues.length === 0).length;
     const generatingCount = pageWorkspaces.filter((item) => item.takes.some((take) => take.generating)).length;
-    const firstPageIndex = pageWorkspaces[0]?.page.index ?? pages[0]?.index ?? 1;
-    const activePageIndex = focusPageIndex != null && pageWorkspaces.some((item) => item.page.index === focusPageIndex) ? focusPageIndex : firstPageIndex;
+    const firstPageId = pageWorkspaces[0]?.page.pageId ?? pages[0]?.pageId ?? "";
+    const activePageId = focusPageId && pageWorkspaces.some((item) => item.page.pageId === focusPageId) ? focusPageId : firstPageId;
 
-    const executePlan = (plan: GenerationPlan) => {
-        if (!canvasContext) {
-            message.warning("画布尚未就绪，请稍后再试");
-            return false;
-        }
+    const executePlan = async (plan: GenerationPlan) => {
         if (!plan.pageCount) {
             message.warning("没有可生成的页面");
             return false;
         }
-        const next = canvasContext.applyOps(plan.ops);
-        const latestPpt = useCanvasStore.getState().projects.find((project) => project.id === projectId)?.ppt;
-        updateProject(projectId, {
-            nodes: next.nodes,
-            connections: next.connections,
-            ...(latestPpt ? { ppt: plan.pptPatch(latestPpt) } : {}),
-        });
-        return true;
+        try {
+            const result = await generationModule.start(plan);
+            void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "生成状态保存失败"));
+            return true;
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "PPT 生成启动失败");
+            return false;
+        }
     };
 
-    const firstPage = pages.find((page) => page.index === 1) || pages[0];
-    const firstWorkspace = pageWorkspaces.find((item) => item.page.index === firstPage?.index);
+    const firstPage = pageWorkspaces[0]?.page ?? pages[0];
+    const firstWorkspace = pageWorkspaces.find((item) => item.page.pageId === firstPage?.pageId);
     const firstConfirmed = Boolean(firstWorkspace && firstWorkspace.confirmationIssues.length === 0);
     const nothingGenerated = pageWorkspaces.length > 0 && pageWorkspaces.every(isPageUntouched);
     // 首页单独排除只在「锚定流程」下有意义（首页已确认，天然不在未生成集合里）；skipAnchor=true 时不应
     // 无条件排除首页——否则用户若先手动生成过某一其他页，首页会被永久挡在批量「生成其余」之外。
-    const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.index !== firstPage?.index) && isPageUntouched(item));
+    const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.pageId !== firstPage?.pageId) && isPageUntouched(item));
     // #3+#26：批量按钮四态状态机，替换旧的「anchorPending 二态」实现，杜绝首页候选未确认时仍可重复触发生成。
     let batchState: BatchState = { kind: "hidden" };
     if (pages.length > 1) {
@@ -133,13 +151,13 @@ export function CanvasPptPanel() {
         } else if (batchState.kind === "confirmRest") setRestModalOpen(true);
     };
 
-    const confirmStart = () => {
-        if (!startPlan || !executePlan(startPlan)) return;
+    const confirmStart = async () => {
+        if (!startPlan || !(await executePlan(startPlan))) return;
         setStartModalOpen(false);
     };
 
-    const confirmRest = () => {
-        if (!restPlan || !executePlan(restPlan)) return;
+    const confirmRest = async () => {
+        if (!restPlan || !(await executePlan(restPlan))) return;
         setRestModalOpen(false);
     };
 
@@ -149,7 +167,14 @@ export function CanvasPptPanel() {
             content: "回到先确认首页再批量的流程，不会删除已生成的内容。",
             okText: "重新锚定",
             cancelText: "取消",
-            onOk: () => updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: false } }),
+            onOk: async () => {
+                updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: false } });
+                try {
+                    await flushCanvasStore();
+                } catch (error) {
+                    message.error(error instanceof Error ? error.message : "流程状态保存失败");
+                }
+            },
         });
     };
 
@@ -187,7 +212,7 @@ export function CanvasPptPanel() {
                   }),
               )
             : undefined;
-        if (selectedPage) setFocusPageIndex(selectedPage.page.index);
+        if (selectedPage) setFocusPageId(selectedPage.page.pageId);
         setSurface("workbench");
     };
 
@@ -257,14 +282,14 @@ export function CanvasPptPanel() {
                         <div className="thin-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
                             {pageWorkspaces.map((workspace) => (
                                 <PptPageRow
-                                    key={workspace.page.index}
+                                    key={workspace.page.pageId}
                                     workspace={workspace}
                                     project={currentProject}
                                     canvasTheme={canvasTheme}
                                     successColor={token.colorSuccess}
                                     errorColor={token.colorError}
                                     onOpen={() => {
-                                        setFocusPageIndex(workspace.page.index);
+                                        setFocusPageId(workspace.page.pageId);
                                         setSurface("workbench");
                                     }}
                                 />
@@ -296,8 +321,11 @@ export function CanvasPptPanel() {
                 key={projectId}
                 open={surface === "workbench"}
                 projectId={projectId}
-                pageIndex={activePageIndex}
-                onPageChange={setFocusPageIndex}
+                pageId={activePageId}
+                targetTakeId={focusTakeId || undefined}
+                generationModule={generationModule}
+                onPageChange={setFocusPageId}
+                onTargetTakeApplied={() => setFocusTakeId(null)}
                 controls={{
                     batchLabel,
                     batchDisabled,
@@ -311,22 +339,46 @@ export function CanvasPptPanel() {
                 open={finalReviewOpen}
                 projectId={projectId}
                 onClose={() => setFinalReviewOpen(false)}
-                onEditPage={(pageIndex) => {
+                onEditPage={(pageId) => {
                     setFinalReviewOpen(false);
-                    setFocusPageIndex(pageIndex);
+                    setFocusPageId(pageId);
                     setSurface("workbench");
                 }}
             />
 
-            <BatchConfirmModal open={startModalOpen} anchorFirst={anchorFirst} plan={startPlan} onAnchorFirstChange={setAnchorFirst} onCancel={() => setStartModalOpen(false)} onConfirm={confirmStart} />
+            <BatchConfirmModal
+                open={startModalOpen}
+                anchorFirst={anchorFirst}
+                plan={startPlan}
+                repeatBillingRiskCount={repeatBillingRiskCount(startPlan)}
+                onAnchorFirstChange={setAnchorFirst}
+                onCancel={() => setStartModalOpen(false)}
+                onConfirm={confirmStart}
+            />
             <Modal open={restModalOpen} onCancel={() => setRestModalOpen(false)} onOk={confirmRest} title={`生成其余 ${restPlan?.pageCount ?? 0} 页？`} okText="生成" okButtonProps={{ disabled: !restPlan?.pageCount }} cancelText="取消" destroyOnHidden>
-                {restPlan ? <PlanCostSummary plan={restPlan} /> : null}
+                {restPlan ? <PlanCostSummary plan={restPlan} repeatBillingRiskCount={repeatBillingRiskCount(restPlan)} /> : null}
             </Modal>
         </>
     );
 }
 
-function BatchConfirmModal({ open, anchorFirst, plan, onAnchorFirstChange, onCancel, onConfirm }: { open: boolean; anchorFirst: boolean; plan?: GenerationPlan; onAnchorFirstChange: (value: boolean) => void; onCancel: () => void; onConfirm: () => void }) {
+function BatchConfirmModal({
+    open,
+    anchorFirst,
+    plan,
+    repeatBillingRiskCount,
+    onAnchorFirstChange,
+    onCancel,
+    onConfirm,
+}: {
+    open: boolean;
+    anchorFirst: boolean;
+    plan?: GenerationPlan;
+    repeatBillingRiskCount: number;
+    onAnchorFirstChange: (value: boolean) => void;
+    onCancel: () => void;
+    onConfirm: () => void | Promise<void>;
+}) {
     return (
         <Modal
             open={open}
@@ -352,12 +404,12 @@ function BatchConfirmModal({ open, anchorFirst, plan, onAnchorFirstChange, onCan
                     </Typography.Text>
                 </Radio>
             </Radio.Group>
-            {plan ? <PlanCostSummary plan={plan} /> : null}
+            {plan ? <PlanCostSummary plan={plan} repeatBillingRiskCount={repeatBillingRiskCount} /> : null}
         </Modal>
     );
 }
 
-function PlanCostSummary({ plan }: { plan: GenerationPlan }) {
+function PlanCostSummary({ plan, repeatBillingRiskCount = 0 }: { plan: GenerationPlan; repeatBillingRiskCount?: number }) {
     const missingConfigCount = plan.excludedPages.filter((page) => page.reason === "缺少生成配置").length;
     return (
         <div className="mt-4 space-y-1.5">
@@ -367,6 +419,11 @@ function PlanCostSummary({ plan }: { plan: GenerationPlan }) {
             <Typography.Text type="secondary" className="block text-xs">
                 文生图 {plan.callBreakdown.textToImage} 次 · 图生图 {plan.callBreakdown.imageToImage} 次
             </Typography.Text>
+            {repeatBillingRiskCount ? (
+                <Typography.Text type="warning" className="block text-xs">
+                    其中 {repeatBillingRiskCount} 页的上一次请求可能已产生费用且结果无法取回，继续生成可能重复计费。
+                </Typography.Text>
+            ) : null}
             {missingConfigCount ? (
                 <Typography.Text type="warning" className="block text-xs">
                     {missingConfigCount} 页缺少生成配置，已跳过。

@@ -28,6 +28,19 @@ export type MaolaoRequestOptions = {
 
 export type ImageTaskHandle = { taskId: string; expiresAt?: number };
 
+export class ImageTaskRemoteFailedError extends Error {
+    override name = "ImageTaskRemoteFailedError";
+}
+
+export class ImageTaskUnavailableError extends Error {
+    override name = "ImageTaskUnavailableError";
+}
+
+/** 远端任务已成功，但可交付图片已过期或缺失；再生成可能重复计费。 */
+export class ImageTaskDeliveryUnavailableError extends Error {
+    override name = "ImageTaskDeliveryUnavailableError";
+}
+
 const POLL_INTERVAL_MS = 2500;
 /**
  * ≈20 分钟。不可低于服务端预算：实测猫佬单次请求预算为 660 秒（超时记 504
@@ -97,12 +110,12 @@ export async function waitForImageTask(config: AiConfig, taskId: string, options
             ).data;
             consecutiveErrors = 0;
             if (task.status === "succeeded") return task;
-            if (task.status === "failed") throw new Error(readImageTaskError(task.error) || "图片生成失败");
+            if (task.status === "failed") throw new ImageTaskRemoteFailedError(readImageTaskError(task.error) || "图片生成失败");
             options?.onProgress?.(task.progress || "");
         } catch (error) {
-            // 取消是用户意图；404 表示任务不存在，重试无用；任务 failed 抛的是普通 Error，同样直接上抛。
+            // 取消是用户意图；404 表示任务不存在，重试无用；远端 failed 也直接上抛。
             if (isAbortError(error) || !axios.isAxiosError(error)) throw error;
-            if (error.response?.status === 404) throw new Error("图片任务不存在或已失效");
+            if (error.response?.status === 404) throw new ImageTaskUnavailableError("图片任务不存在或已失效");
             consecutiveErrors += 1;
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) throw error;
         }
@@ -117,6 +130,7 @@ export async function waitForImageTask(config: AiConfig, taskId: string, options
  * 走同网关，CORS 已验证。
  */
 async function fetchImageTaskContents(config: AiConfig, taskId: string, count: number, signal?: AbortSignal) {
+    if (count < 1) throw new ImageTaskDeliveryUnavailableError("图片任务已成功，但没有可交付图片");
     const images = [];
     for (let index = 0; index < count; index += 1) {
         try {
@@ -128,11 +142,11 @@ async function fetchImageTaskContents(config: AiConfig, taskId: string, count: n
             });
             images.push({ id: nanoid(), dataUrl: await blobToDataUrl(response.data) });
         } catch (error) {
-            if (axios.isAxiosError(error) && error.response?.status === 410) throw new Error("生成结果已过期，请重新生成");
+            if (axios.isAxiosError(error) && error.response?.status === 410) throw new ImageTaskDeliveryUnavailableError("生成结果已过期，再次生成可能重复计费");
             throw error;
         }
     }
-    if (!images.length) throw new Error("接口没有返回图片");
+    if (!images.length) throw new ImageTaskDeliveryUnavailableError("图片任务已成功，但没有可交付图片");
     return images;
 }
 

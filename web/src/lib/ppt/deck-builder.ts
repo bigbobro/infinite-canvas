@@ -87,6 +87,8 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
     const rowHeight = Math.max(outlineSpec.height, configSpec.height) + ROW_GAP;
 
     const pptPages: CanvasProjectPptPage[] = pages.map((page, pageIndex) => {
+        const pageId = nanoid();
+        const takeId = nanoid();
         const index = pageIndex + 1;
         const rowY = pageIndex * rowHeight;
         const outlineId = nanoid();
@@ -100,7 +102,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
             position: { x: outlineX, y: rowY },
             width: outlineSpec.width,
             height: outlineSpec.height,
-            metadata: { ...outlineSpec.metadata, content: outlineContent, status: "success", pptPageIndex: index, pptRole: "outline" },
+            metadata: { ...outlineSpec.metadata, content: outlineContent, status: "success", pptPageId: pageId, pptTakeId: takeId, pptPageIndex: index, pptRole: "outline" },
         });
 
         const configMetadata: CanvasNodeData["metadata"] = {
@@ -109,6 +111,8 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
             pptLayoutPrompt: mode === "extract" ? "" : PPT_PAGE_PROMPT,
             size: "16:9",
             count: 1,
+            pptPageId: pageId,
+            pptTakeId: takeId,
             pptPageIndex: index,
             pptRole: "page",
         };
@@ -128,7 +132,7 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
         connections.push({ id: nanoid(), fromNodeId: outlineId, toNodeId: configId });
         styleNodeIds.forEach((styleNodeId) => connections.push({ id: nanoid(), fromNodeId: styleNodeId, toNodeId: configId }));
 
-        return { index, title: page.title, outline: page.outline, visualHint: page.visualHint, takes: [{ anchorNodeId: outlineId, configNodeId: configId }] };
+        return { pageId, index, title: page.title, outline: page.outline, visualHint: page.visualHint, takes: [{ takeId, anchorNodeId: outlineId, configNodeId: configId }] };
     });
 
     return {

@@ -50,17 +50,7 @@ export async function persistImageTaskToStore(projectId: string, nodeId: string,
     await flushCanvasStore();
 }
 
-export function useCanvasImageTasks({
-    projectId,
-    projectLoaded,
-    effectiveConfig,
-    nodesRef,
-    setNodes,
-    startGenerationRequest,
-    finishGenerationRequest,
-    isGenerationCanceled,
-    imageMetadata,
-}: UseCanvasImageTasksParams) {
+export function useCanvasImageTasks({ projectId, projectLoaded, effectiveConfig, nodesRef, setNodes, startGenerationRequest, finishGenerationRequest, isGenerationCanceled, imageMetadata }: UseCanvasImageTasksParams) {
     /** 正在续轮询的节点，防止 effect 重跑时对同一任务挂起多个轮询循环。 */
     const resumingNodeIdsRef = useRef(new Set<string>());
 
@@ -81,6 +71,8 @@ export function useCanvasImageTasks({
         if (!projectLoaded) return;
         nodesRef.current?.forEach((node) => {
             const task = node.metadata?.imageTask;
+            // PPT 请求槽由 PptGenerationModule 续跑并维护 terminal trace；不能让通用 hook 同时轮询。
+            if (node.metadata?.pptGenerationRequest) return;
             if (node.metadata?.status !== "loading" || !task) return;
             if (resumingNodeIdsRef.current.has(node.id)) return; // effect 重跑 / StrictMode 双调用时避免挂多个轮询
             resumingNodeIdsRef.current.add(node.id);

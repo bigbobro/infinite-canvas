@@ -11,16 +11,18 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { GENERATION_COUNT_MAX, GENERATION_COUNT_MIN, getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
+import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { cn } from "@/lib/utils";
-import { pageTakes, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { useCopyText } from "@/hooks/use-copy-text";
+import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { CanvasNodeType, type CanvasNodeMetadata } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeMetadata, type PptGenerationRequestStatus, type PptGenerationRequestTrace, type PptGenerationRunStatus, type PptGenerationRunSummary } from "@/types/canvas";
 
 const ROW_GAP = 48;
 
@@ -29,8 +31,11 @@ type GenerationConfigDraft = { model: string; size: string; count: number };
 type Props = {
     open: boolean;
     projectId: string;
-    pageIndex: number;
-    onPageChange: (pageIndex: number) => void;
+    pageId: string;
+    targetTakeId?: string;
+    generationModule: PptGenerationModule;
+    onPageChange: (pageId: string) => void;
+    onTargetTakeApplied?: () => void;
     controls: {
         batchLabel: string;
         batchDisabled: boolean;
@@ -42,19 +47,57 @@ type Props = {
 };
 
 /** 生成中已用时长（#28），组件内计时，不持久化。 */
-function useElapsedSeconds(active: boolean) {
+function useElapsedSeconds(active: boolean, startedAt?: string) {
     const [seconds, setSeconds] = useState(0);
     useEffect(() => {
         if (!active) {
             setSeconds(0);
             return;
         }
-        const start = Date.now();
-        setSeconds(0);
-        const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - start) / 1000)), 1000);
+        const start = startedAt ? Date.parse(startedAt) : Date.now();
+        const safeStart = Number.isFinite(start) ? start : Date.now();
+        setSeconds(Math.max(0, Math.floor((Date.now() - safeStart) / 1000)));
+        const timer = window.setInterval(() => setSeconds(Math.max(0, Math.floor((Date.now() - safeStart) / 1000))), 1000);
         return () => window.clearInterval(timer);
-    }, [active]);
+    }, [active, startedAt]);
     return seconds;
+}
+
+const requestStatusLabel: Record<PptGenerationRequestStatus, string> = {
+    draft: "待提交",
+    persisted: "计划已保存",
+    submitting: "提交中",
+    submitted: "已提交 / 排队",
+    running: "生成中",
+    submission_unknown: "提交结果未知",
+    succeeded: "结果已返回",
+    materializing: "保存结果中",
+    completed: "已回填",
+    recoverable_error: "可恢复异常",
+    failed: "已失败",
+    abandoned: "已放弃",
+};
+
+const runStatusLabel: Record<PptGenerationRunStatus, string> = {
+    preparing: "准备中",
+    running: "生成中",
+    needs_attention: "需要处理",
+    completed: "已完成",
+    partial: "部分完成",
+    failed: "失败",
+    abandoned: "已放弃",
+};
+
+function redactDiagnosticText(value: string | undefined, secrets: readonly string[] = []) {
+    if (!value) return value;
+    return secrets
+        .filter((secret) => secret.length >= 4)
+        .reduce((text, secret) => text.split(secret).join("[REDACTED]"), value)
+        .slice(0, 500)
+        .replace(/data:[^;\s]+;base64,[A-Za-z0-9+/=_-]+/gi, "[REDACTED_DATA]")
+        .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+        .replace(/((?:api[_-]?key|access[_-]?token|token|authorization)\s*[:=]\s*)[^\s&,;]+/gi, "$1[REDACTED]")
+        .replace(/([?&](?:key|api_key|token|access_token)=)[^&#\s]+/gi, "$1[REDACTED]");
 }
 
 function formatElapsed(seconds: number) {
@@ -63,8 +106,9 @@ function formatElapsed(seconds: number) {
     return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChange, controls }: Props) {
+export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, generationModule, onPageChange, onTargetTakeApplied, controls }: Props) {
     const { message, modal } = App.useApp();
+    const copyText = useCopyText();
     const { token } = antdTheme.useToken();
     const canvasTheme = canvasThemes[useThemeStore((state) => state.theme)];
     const project = useCanvasStore((state) => state.projects.find((item) => item.id === projectId));
@@ -74,30 +118,32 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const effectiveConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const [activeTakeKey, setActiveTakeKey] = useState<string>();
+    const [activeTakeId, setActiveTakeId] = useState<string>();
     const [activeNodeId, setActiveNodeId] = useState<string>();
     const [promptDraft, setPromptDraft] = useState("");
-    const [newTakeDraft, setNewTakeDraft] = useState<{ sourceTakeKey?: string; prompt: string } | null>(null);
+    const [newTakeDraft, setNewTakeDraft] = useState<{ sourceTakeId?: string; prompt: string } | null>(null);
     const [promptEditorOpen, setPromptEditorOpen] = useState(false);
     const [configPopoverOpen, setConfigPopoverOpen] = useState(false);
     const [configDraft, setConfigDraft] = useState<GenerationConfigDraft>();
     const [configBaseline, setConfigBaseline] = useState<GenerationConfigDraft>();
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-    const selectionPageIndexRef = useRef<number | undefined>(undefined);
+    const selectionPageIdRef = useRef<string | undefined>(undefined);
 
     const workspaces = useMemo(() => {
         if (!project?.ppt) return [];
         return [...project.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(project, page));
     }, [project]);
-    const workspace = workspaces.find((item) => item.page.index === pageIndex);
-    const activeTake = workspace?.takes.find((take) => take.key === activeTakeKey) ?? workspace?.takes[0];
+    const workspace = workspaces.find((item) => item.page.pageId === pageId);
+    const activeTake = workspace?.takes.find((take) => take.takeId === activeTakeId) ?? workspace?.takes[0];
     const isExtractMode = project?.ppt?.mode === "extract";
     const fallbackPrompt = workspace ? (isExtractMode ? workspace.page.outline : [`标题：${workspace.page.title}`, workspace.page.outline, workspace.page.visualHint ? `视觉建议：${workspace.page.visualHint}` : ""].filter(Boolean).join("\n\n")) : "";
-    const generatingElapsed = useElapsedSeconds(Boolean(activeTake?.generating));
+    const latestGenerationRun = activeTake ? [...activeTake.generationRuns].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).at(-1) : undefined;
+    const latestGenerationRequests = latestGenerationRun ? activeTake?.generationRequests.filter((request) => request.runId === latestGenerationRun.runId).sort((left, right) => left.slotIndex - right.slotIndex) || [] : [];
+    const generatingElapsed = useElapsedSeconds(Boolean(activeTake?.generating), latestGenerationRun?.createdAt);
     const activeGenerationConfig = useMemo(() => (activeTake?.configNode ? resolveGenerationConfig(effectiveConfig, activeTake.configNode, "image") : undefined), [activeTake?.configNode, effectiveConfig]);
     const singleGenerationPlan = useMemo(() => {
         if (!project || !activeTake) return undefined;
-        return createGenerationPlan({ kind: "generateSingle", takeKey: activeTake.key }, { project, effectiveConfig });
+        return createGenerationPlan({ kind: "generateSingle", takeId: activeTake.takeId }, { project, effectiveConfig });
     }, [activeTake, effectiveConfig, project]);
     const textModelReady = Boolean(effectiveConfig.textModel.trim() && isAiConfigReady(effectiveConfig, effectiveConfig.textModel));
 
@@ -106,26 +152,28 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         if (!workspace) return;
         const confirmedTake = workspace.takes.find((take) => take.candidates.some((node) => node.id === workspace.resolvedConfirmedNodeId));
         const fallbackTake = [...workspace.takes].reverse().find((take) => take.candidates.length) ?? workspace.takes.at(-1);
-        const currentTake = workspace.takes.find((take) => take.key === activeTakeKey);
-        const pageChanged = selectionPageIndexRef.current !== pageIndex;
-        const nextTake = pageChanged ? (confirmedTake ?? fallbackTake) : (currentTake ?? confirmedTake ?? fallbackTake);
+        const currentTake = workspace.takes.find((take) => take.takeId === activeTakeId);
+        const targetTake = workspace.takes.find((take) => take.takeId === targetTakeId);
+        const pageChanged = selectionPageIdRef.current !== pageId;
+        const nextTake = targetTake ?? (pageChanged ? (confirmedTake ?? fallbackTake) : (currentTake ?? confirmedTake ?? fallbackTake));
         const nextNodeId = nextTake?.candidates.some((node) => node.id === activeNodeId) ? activeNodeId : (nextTake?.candidates.find((node) => node.id === workspace.resolvedConfirmedNodeId)?.id ?? nextTake?.candidates.at(-1)?.id);
-        selectionPageIndexRef.current = pageIndex;
-        if (activeTakeKey !== nextTake?.key) setActiveTakeKey(nextTake?.key);
+        selectionPageIdRef.current = pageId;
+        if (activeTakeId !== nextTake?.takeId) setActiveTakeId(nextTake?.takeId);
         if (activeNodeId !== nextNodeId) setActiveNodeId(nextNodeId);
-    }, [activeNodeId, activeTakeKey, open, pageIndex, workspace]);
+        if (targetTake) onTargetTakeApplied?.();
+    }, [activeNodeId, activeTakeId, onTargetTakeApplied, open, pageId, targetTakeId, workspace]);
 
     useEffect(() => {
         if (newTakeDraft) return;
         setPromptDraft(activeTake?.prompt ?? fallbackPrompt);
-    }, [activeTake?.key, activeTake?.prompt, fallbackPrompt, newTakeDraft, pageIndex]);
+    }, [activeTake?.takeId, activeTake?.prompt, fallbackPrompt, newTakeDraft, pageId]);
 
     useEffect(() => {
         setPromptEditorOpen(false);
         setConfigPopoverOpen(false);
         setConfigDraft(undefined);
         setConfigBaseline(undefined);
-    }, [activeTake?.key, pageIndex]);
+    }, [activeTake?.takeId, pageId]);
 
     useEffect(() => {
         if (open) return;
@@ -144,13 +192,19 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
 
     useEffect(() => {
         setLightboxSrc(null);
-    }, [pageIndex]);
+    }, [pageId]);
 
     if (!open || !project?.ppt || !workspace) return null;
 
     const ppt = project.ppt;
     const page = workspace.page;
     const activeNode = activeTake?.candidates.find((node) => node.id === activeNodeId);
+    const possiblySubmittedStatuses = ["submitting", "submitted", "running", "submission_unknown", "succeeded", "materializing", "recoverable_error"];
+    const riskyRequests = activeTake?.generationRequests.filter((request) => !request.remoteTaskId && possiblySubmittedStatuses.includes(request.status)) || [];
+    const riskyRequest = riskyRequests[0];
+    const repeatBillingRisk = Boolean(activeTake?.requiresRepeatBillingConfirmation);
+    const retrievableRequest = activeTake?.generationRequests.find((request) => request.remoteTaskId && possiblySubmittedStatuses.includes(request.status));
+    const abandonableRequest = riskyRequest ?? (retrievableRequest?.status === "recoverable_error" ? retrievableRequest : undefined);
     const activeConfirmed = Boolean(activeNode && activeNode.id === workspace.resolvedConfirmedNodeId);
     // 预览井下缘信息条用：当前查看候选稿在其方案分支内的序号（第 N 稿）。
     const activeVersionIndex = activeTake?.candidates.findIndex((node) => node.id === activeNode?.id) ?? -1;
@@ -158,31 +212,50 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     const centerGenerateCtaShown = Boolean(!activeNode && !activeTake?.generating && activeTake?.configNode);
     const takeOverflow = workspace.takes.length >= 5;
     const visibleTakes = takeOverflow ? (activeTake ? [activeTake] : []) : workspace.takes;
-    const overflowTakes = takeOverflow ? workspace.takes.filter((take) => take.key !== activeTake?.key) : [];
+    const overflowTakes = takeOverflow ? workspace.takes.filter((take) => take.takeId !== activeTake?.takeId) : [];
     const generationCount = singleGenerationPlan?.callCount || (activeGenerationConfig ? getGenerationCount(activeGenerationConfig.count) : 1);
     const configCount = activeGenerationConfig ? getGenerationCount(activeGenerationConfig.count) : 1;
     const defaultConfigDraft = activeGenerationConfig ? { model: activeGenerationConfig.model, size: activeGenerationConfig.size, count: configCount } : undefined;
     const configSummary = activeGenerationConfig ? `${modelOptionLabel(effectiveConfig, activeGenerationConfig.model)} · ${imageSizeLabel(activeGenerationConfig.size)} · ${configCount} 张` : "生成配置缺失";
     const configDraftDirty = Boolean(configDraft && configBaseline && (configDraft.model !== configBaseline.model || configDraft.size !== configBaseline.size || configDraft.count !== configBaseline.count));
     const generationLabel = (label: string) => (generationCount > 1 ? `${label}（${generationCount} 张）` : label);
-
-    const executeGenerationPlan = (plan: GenerationPlan) => {
-        if (!canvasContext) {
-            message.warning("画布尚未就绪，请稍后再试");
+    const returnedRequestCount = latestGenerationRequests.filter((request) => request.resultIdentity).length;
+    const completedRequestCount = latestGenerationRequests.filter((request) => request.status === "completed").length;
+    const generationRuns = project.nodes
+        .map((node) => node.metadata?.pptGenerationRun)
+        .filter((run): run is PptGenerationRunSummary => Boolean(run))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const generationRequests = project.nodes.map((node) => node.metadata?.pptGenerationRequest).filter((request): request is PptGenerationRequestTrace => Boolean(request));
+    const runsByBatch = new Map<string, typeof generationRuns>();
+    generationRuns.forEach((run) => runsByBatch.set(run.batchId, [...(runsByBatch.get(run.batchId) || []), run]));
+    const generationBatches = [...runsByBatch.entries()];
+    const persistProject = async (patch: Parameters<typeof updateProject>[1]) => {
+        updateProject(projectId, patch);
+        try {
+            await flushCanvasStore();
+            return true;
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "画布保存失败");
             return false;
         }
-        if (!plan.items.length) {
+    };
+
+    const executeGenerationPlan = async (plan: GenerationPlan) => {
+        if (!plan.runs.length) {
             message.warning(plan.excludedPages[0]?.reason || "没有可生成的方案");
             return false;
         }
-        const next = canvasContext.applyOps(plan.ops);
-        const latestPpt = useCanvasStore.getState().projects.find((item) => item.id === projectId)?.ppt;
-        if (!latestPpt) return false;
-        updateProject(projectId, { nodes: next.nodes, connections: next.connections, ppt: plan.pptPatch(latestPpt) });
-        return true;
+        try {
+            const result = await generationModule.start(plan);
+            void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "生成状态保存失败"));
+            return true;
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "PPT 生成启动失败");
+            return false;
+        }
     };
 
-    const runGeneration = () => {
+    const runGeneration = async () => {
         if (!activeTake?.configNode) {
             message.warning(activeTake ? `第 ${page.index} 页方案 ${activeTake.index + 1} 的配置缺失` : `第 ${page.index} 页尚未创建方案`);
             return;
@@ -195,7 +268,84 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             message.warning("请先填写方案提示词");
             return;
         }
-        if (singleGenerationPlan) executeGenerationPlan(singleGenerationPlan);
+        if (!singleGenerationPlan) return;
+        if (retrievableRequest) {
+            modal.confirm({
+                title: "已有任务可重新获取",
+                content: "请先继续获取原任务，避免新建请求导致重复计费。如果确定放弃原任务，请先在错误区标记放弃。",
+                okText: "重新获取",
+                cancelText: "暂不处理",
+                onOk: () => retrieveExisting(),
+            });
+            return;
+        }
+        if (riskyRequest || repeatBillingRisk) {
+            modal.confirm({
+                title: "仍要重新生成？",
+                content: `上一次请求可能已经产生费用，且无法继续取回。本次将新建 ${singleGenerationPlan.callCount} 个请求（文生图 ${singleGenerationPlan.callBreakdown.textToImage}，图生图 ${singleGenerationPlan.callBreakdown.imageToImage}），可能重复计费。`,
+                okText: "仍要生成",
+                cancelText: "取消",
+                onOk: async () => {
+                    try {
+                        for (const request of riskyRequests) {
+                            const recovery = await generationModule.recover({ type: "abandonUnknown", requestId: request.requestId });
+                            void recovery.settled.catch((error) => message.error(error instanceof Error ? error.message : "旧请求状态保存失败"));
+                        }
+                        await executeGenerationPlan(singleGenerationPlan);
+                    } catch (error) {
+                        message.error(error instanceof Error ? error.message : "无法开始新的生成");
+                    }
+                },
+            });
+            return;
+        }
+        if (activeTake.generationRuns.length || activeTake.candidates.length) {
+            modal.confirm({
+                title: "重新生成当前方案？",
+                content: `本次将新建 ${singleGenerationPlan.callCount} 个请求（文生图 ${singleGenerationPlan.callBreakdown.textToImage}，图生图 ${singleGenerationPlan.callBreakdown.imageToImage}），旧运行和候选稿会保留。`,
+                okText: "确认生成",
+                cancelText: "取消",
+                onOk: () => executeGenerationPlan(singleGenerationPlan),
+            });
+            return;
+        }
+        await executeGenerationPlan(singleGenerationPlan);
+    };
+
+    const retrieveExisting = async () => {
+        if (!retrievableRequest) return;
+        try {
+            const result = await generationModule.recover({ type: "retrieveExisting", requestId: retrievableRequest.requestId });
+            void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "任务结果保存失败"));
+            message.info("已开始重新获取原任务结果");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "重新获取失败");
+        }
+    };
+
+    const abandonPendingRequest = () => {
+        if (!abandonableRequest) return;
+        modal.confirm({
+            title: "放弃这次待处理请求？",
+            content: "只会停止追踪这次请求，不会删除已生成的其他候选稿。之后再次生成会创建新请求，可能重复计费。",
+            okText: "标记放弃",
+            cancelText: "取消",
+            onOk: async () => {
+                const result = await generationModule.recover({ type: "abandonUnknown", requestId: abandonableRequest.requestId });
+                void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "请求状态保存失败"));
+            },
+        });
+    };
+
+    const copyGenerationDiagnostic = () => {
+        if (!activeTake || (!activeTake.generationRequests.length && !activeTake.generationRuns.length)) return;
+        const secrets = [effectiveConfig.apiKey, ...effectiveConfig.channels.map((channel) => channel.apiKey), activeTake.prompt, activeTake.layoutPrompt, ...activeTake.upstreamInputs.map((input) => input.text || "")];
+        const requests = activeTake.generationRequests.map((request) => ({
+            ...request,
+            error: redactDiagnosticText(request.error, secrets),
+            recentEvents: (request.recentEvents || []).map((event) => ({ ...event, error: redactDiagnosticText(event.error, secrets) })),
+        }));
+        copyText(JSON.stringify({ projectId, pageId: page.pageId, takeId: activeTake.takeId, runs: activeTake.generationRuns, requests }, null, 2), "生成诊断已复制");
     };
 
     const updateConfigPopover = (nextOpen: boolean) => {
@@ -209,7 +359,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         setConfigPopoverOpen(nextOpen);
     };
 
-    const saveGenerationConfig = () => {
+    const saveGenerationConfig = async () => {
         if (!canvasContext || !activeTake?.configNode || !configDraft || !configBaseline) return;
         const metadata: CanvasNodeMetadata = {};
         if (configDraft.model !== configBaseline.model) metadata.model = configDraft.model;
@@ -220,24 +370,24 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         setConfigBaseline(undefined);
         if (!Object.keys(metadata).length) return;
         const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.configNode.id, metadata }]);
-        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
         message.success("生成配置已更新");
     };
 
-    const savePrompt = (value: string) => {
+    const savePrompt = async (value: string) => {
         if (!canvasContext || !activeTake?.anchorNode || !activeTake.canEditPrompt) return;
         if (!value.trim()) {
             message.warning("方案提示词不能为空");
             return;
         }
         const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: value, status: "success" } }]);
-        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
         setPromptEditorOpen(false);
         message.success(`方案 ${activeTake.index + 1} 的提示词已保存`);
     };
 
     // #30：风格基调节点为全部页面共用，保存直接写回该节点，影响全部方案分支。
-    const saveStyleNode = (nodeId: string, content: string) => {
+    const saveStyleNode = async (nodeId: string, content: string) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
@@ -247,36 +397,36 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             return;
         }
         const next = canvasContext.applyOps([{ type: "update_node", id: nodeId, metadata: { content, status: "success" } }]);
-        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
         message.success("风格基调已更新，将影响全部页面");
     };
 
     // #31：排版要求只作用于当前方案分支。存专用字段 pptLayoutPrompt——
     // metadata.prompt 每轮生成会被拼装全文回写(污染),不可作可编辑指令的存储位。
-    const saveLayoutPrompt = (content: string) => {
+    const saveLayoutPrompt = async (content: string) => {
         if (!canvasContext || !activeTake?.configNode) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
         const next = canvasContext.applyOps([{ type: "update_node", id: activeTake.configNode.id, metadata: { pptLayoutPrompt: content } }]);
-        updateProject(projectId, { nodes: next.nodes, connections: next.connections });
+        if (!(await persistProject({ nodes: next.nodes, connections: next.connections }))) return;
         message.success(`方案分支 ${activeTake.index + 1} 的排版要求已保存`);
     };
 
-    const setConfirmed = (confirmedNodeId?: string) => {
-        updateProject(projectId, { ppt: setPptPageConfirmedNode(ppt, page.index, confirmedNodeId) });
+    const setConfirmed = async (confirmedNodeId?: string) => {
+        await persistProject({ ppt: setPptPageConfirmedNode(ppt, page.pageId, confirmedNodeId) });
     };
 
     // #20：确认后自动前进到下一个未确认页；全部确认完则跳最终检视。
     const goToNextUnconfirmed = () => {
-        const currentPos = workspaces.findIndex((item) => item.page.index === page.index);
+        const currentPos = workspaces.findIndex((item) => item.page.pageId === page.pageId);
         const rotated = [...workspaces.slice(currentPos + 1), ...workspaces.slice(0, currentPos + 1)];
-        const next = rotated.find((item) => item.page.index !== page.index && item.confirmationIssues.length > 0);
-        if (next) changePage(next.page.index);
+        const next = rotated.find((item) => item.page.pageId !== page.pageId && item.confirmationIssues.length > 0);
+        if (next) changePage(next.page.pageId);
         else discardPendingPrompt(controls.onOpenFinalReview);
     };
 
-    const createTakeFromPrompt = (prompt: string, sourceTake: PptPageWorkspaceTake | undefined, autoGenerate: boolean) => {
+    const createTakeFromPrompt = async (prompt: string, sourceTake: PptPageWorkspaceTake | undefined, autoGenerate: boolean) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
@@ -286,6 +436,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             return;
         }
 
+        const takeId = nanoid();
         const outlineId = nanoid();
         const configId = nanoid();
         // 派生/复制继承源方案的 effective 配置；空白方案使用当前全局 effective 配置。
@@ -297,12 +448,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             model: inheritedConfig.model,
             size: inheritedConfig.size,
             count: getGenerationCount(inheritedConfig.count),
+            pptPageId: page.pageId,
+            pptTakeId: takeId,
             pptPageIndex: page.index,
             pptRole: "page",
         };
         if (isExtractMode) configMetadata.composerContent = "";
 
-        const gridNodes = project.nodes.filter((node) => node.metadata?.pptPageIndex != null);
+        const gridNodes = project.nodes.filter((node) => node.metadata?.pptPageId);
         const gridBottom = gridNodes.length ? Math.max(...gridNodes.map((node) => node.position.y + node.height)) : undefined;
         const newRowY = gridBottom == null ? undefined : gridBottom + ROW_GAP;
         const outlinePosition = sourceTake?.anchorNode && newRowY != null ? { x: sourceTake.anchorNode.position.x, y: newRowY } : undefined;
@@ -310,12 +463,13 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         const inheritedInputNodeIds = sourceTake?.configNode
             ? [...new Set(project.connections.filter((connection) => connection.toNodeId === sourceTake.configNode?.id && connection.fromNodeId !== sourceTake.anchorNode?.id).map((connection) => connection.fromNodeId))]
             : project.nodes.filter((node) => node.metadata?.pptRole === "style").map((node) => node.id);
-        const nextTakeIndex = pageTakes(page).length + 1;
+        const nextTakeIndex = page.takes.length + 1;
         if (autoGenerate) {
             const plan = createGenerationPlan(
                 {
                     kind: "deriveAndGenerate",
-                    pageIndex: page.index,
+                    pageId: page.pageId,
+                    reservedTakeId: takeId,
                     reservedAnchorNodeId: outlineId,
                     reservedConfigNodeId: configId,
                     configMetadata,
@@ -325,31 +479,49 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                 },
                 { project, effectiveConfig },
             );
-            if (!executeGenerationPlan(plan)) return;
-            setActiveTakeKey(configId);
-            setActiveNodeId(undefined);
-            setNewTakeDraft(null);
-            setPromptEditorOpen(false);
-            message.success(`已基于新提示词创建方案 ${nextTakeIndex} 并开始生成`);
+            modal.confirm({
+                title: `保存并生成方案 ${nextTakeIndex}？`,
+                content: `${sourceTake?.requiresRepeatBillingConfirmation ? "原方案的上一次请求可能已产生费用且无法取回结果。" : ""}本次将新建 ${plan.callCount} 个请求（文生图 ${plan.callBreakdown.textToImage}，图生图 ${plan.callBreakdown.imageToImage}），原方案和候选稿会保留。${sourceTake?.requiresRepeatBillingConfirmation ? "继续生成可能重复计费。" : ""}`,
+                okText: "确认生成",
+                cancelText: "取消",
+                onOk: async () => {
+                    if (!(await executeGenerationPlan(plan))) return;
+                    setActiveTakeId(takeId);
+                    setActiveNodeId(undefined);
+                    setNewTakeDraft(null);
+                    setPromptEditorOpen(false);
+                    message.success(`已基于新提示词创建方案 ${nextTakeIndex} 并开始生成`);
+                },
+            });
             return;
         }
         const ops: CanvasAgentOp[] = [
-            { type: "add_node", id: outlineId, nodeType: CanvasNodeType.Text, title: `第${page.index}页大纲`, position: outlinePosition, metadata: { content: prompt, status: "success", pptPageIndex: page.index, pptRole: "outline" } },
+            {
+                type: "add_node",
+                id: outlineId,
+                nodeType: CanvasNodeType.Text,
+                title: `第${page.index}页大纲`,
+                position: outlinePosition,
+                metadata: { content: prompt, status: "success", pptPageId: page.pageId, pptTakeId: takeId, pptPageIndex: page.index, pptRole: "outline" },
+            },
             { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, position: configPosition, metadata: configMetadata },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
             ...inheritedInputNodeIds.map((id): CanvasAgentOp => ({ type: "connect_nodes", fromNodeId: id, toNodeId: configId })),
         ];
         const next = canvasContext.applyOps(ops);
-        const nextTakes = [...pageTakes(page), { anchorNodeId: outlineId, configNodeId: configId }];
-        updateProject(projectId, {
-            nodes: next.nodes,
-            connections: next.connections,
-            ppt: {
-                ...ppt,
-                pages: ppt.pages.map((item) => (item.index === page.index ? { ...item, takes: nextTakes, anchorNodeId: undefined, configNodeId: undefined } : item)),
-            },
-        });
-        setActiveTakeKey(configId);
+        const nextTakes = [...page.takes, { takeId, anchorNodeId: outlineId, configNodeId: configId }];
+        if (
+            !(await persistProject({
+                nodes: next.nodes,
+                connections: next.connections,
+                ppt: {
+                    ...ppt,
+                    pages: ppt.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)),
+                },
+            }))
+        )
+            return;
+        setActiveTakeId(takeId);
         setActiveNodeId(undefined);
         setNewTakeDraft(null);
         setPromptEditorOpen(false);
@@ -361,37 +533,53 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             message.warning("方案提示词不能为空");
             return;
         }
-        createTakeFromPrompt(newTakeDraft.prompt, newTakeDraft.sourceTakeKey ? workspace.takes.find((take) => take.key === newTakeDraft.sourceTakeKey) : undefined, false);
+        void createTakeFromPrompt(newTakeDraft.prompt, newTakeDraft.sourceTakeId ? workspace.takes.find((take) => take.takeId === newTakeDraft.sourceTakeId) : undefined, false);
     };
 
     // 删除集完全由 read model 派生；共享命令负责 abort、画布 UI 清态与图片存储清理。
-    const deleteTake = (take: PptPageWorkspaceTake) => {
+    const deleteTake = async (take: PptPageWorkspaceTake) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
         }
-        if (take.generating) return;
+        if (take.generating || take.unresolvedGeneration) return;
         const willUnconfirm = Boolean(workspace.resolvedConfirmedNodeId && take.deleteNodeIds.includes(workspace.resolvedConfirmedNodeId));
-        const pptAfterUnconfirm = willUnconfirm ? setPptPageConfirmedNode(ppt, page.index, undefined) : ppt;
-        const nextTakes = pageTakes(page).filter((item) => item.configNodeId !== take.key);
-        const remainingWorkspaceTakes = workspace.takes.filter((item) => item.key !== take.key);
-        const deletingActive = activeTake?.key === take.key;
+        const latestProject = useCanvasStore.getState().projects.find((item) => item.id === projectId);
+        const latestPpt = latestProject?.ppt;
+        const latestPage = latestPpt?.pages.find((item) => item.pageId === page.pageId);
+        if (!latestProject || !latestPpt || !latestPage) {
+            message.warning("PPT 工程已变化，请刷新后重试");
+            return;
+        }
+        const pptAfterUnconfirm = willUnconfirm ? setPptPageConfirmedNode(latestPpt, page.pageId, undefined) : latestPpt;
+        const nextTakes = latestPage.takes.filter((item) => item.takeId !== take.takeId);
+        const remainingWorkspaceTakes = workspace.takes.filter((item) => item.takeId !== take.takeId);
+        const deletingActive = activeTake?.takeId === take.takeId;
         const nextActiveTake = deletingActive ? (remainingWorkspaceTakes[take.index] ?? remainingWorkspaceTakes[take.index - 1]) : activeTake;
-        canvasContext.deleteCanvasNodesWithEffects(take.deleteNodeIds);
-        updateProject(projectId, {
-            ppt: { ...pptAfterUnconfirm, pages: pptAfterUnconfirm.pages.map((item) => (item.index === page.index ? { ...item, takes: nextTakes, anchorNodeId: undefined, configNodeId: undefined } : item)) },
-        });
+        const deleteIds = new Set(take.deleteNodeIds);
+        if (
+            !(await persistProject({
+                nodes: latestProject.nodes.filter((node) => !deleteIds.has(node.id)),
+                connections: latestProject.connections.filter((connection) => !deleteIds.has(connection.fromNodeId) && !deleteIds.has(connection.toNodeId)),
+                ppt: { ...pptAfterUnconfirm, pages: pptAfterUnconfirm.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)) },
+            }))
+        )
+            return;
+        canvasContext.deletePptCanvasNodesWithEffects(take.deleteNodeIds);
         if (deletingActive) {
-            setActiveTakeKey(nextActiveTake?.key);
+            setActiveTakeId(nextActiveTake?.takeId);
             setActiveNodeId(nextActiveTake?.candidates.find((node) => node.id === workspace.resolvedConfirmedNodeId)?.id ?? nextActiveTake?.candidates.at(-1)?.id);
         }
-        if (newTakeDraft?.sourceTakeKey === take.key) setNewTakeDraft(null);
+        if (newTakeDraft?.sourceTakeId === take.takeId) setNewTakeDraft(null);
         if (deletingActive) setPromptEditorOpen(false);
         message.success(`方案分支 ${take.index + 1} 已删除`);
     };
 
     const confirmDeleteTake = (take: PptPageWorkspaceTake) => {
-        if (take.generating) return;
+        if (take.generating || take.unresolvedGeneration) {
+            message.warning(take.generating ? "方案仍在生成，暂不能删除" : "请先重新获取或标记放弃待处理请求，再删除方案");
+            return;
+        }
         const willUnconfirm = Boolean(workspace.resolvedConfirmedNodeId && take.deleteNodeIds.includes(workspace.resolvedConfirmedNodeId));
         let content = "该方案的提示词与配置将移除";
         if (take.candidates.length) content += `，其 ${take.candidates.length} 张候选稿将一并从画布删除`;
@@ -426,23 +614,23 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
     };
 
     const beginPageTake = (sourceTake?: PptPageWorkspaceTake | null) => {
-        discardPendingPrompt(() => setNewTakeDraft({ sourceTakeKey: sourceTake?.key, prompt: sourceTake ? sourceTake.prompt : fallbackPrompt }));
+        discardPendingPrompt(() => setNewTakeDraft({ sourceTakeId: sourceTake?.takeId, prompt: sourceTake ? sourceTake.prompt : fallbackPrompt }));
     };
 
-    const selectTake = (takeKey: string) =>
+    const selectTake = (takeId: string) =>
         discardPendingPrompt(() => {
-            const take = workspace.takes.find((item) => item.key === takeKey);
-            setActiveTakeKey(takeKey);
+            const take = workspace.takes.find((item) => item.takeId === takeId);
+            setActiveTakeId(takeId);
             setActiveNodeId(take?.candidates.find((node) => node.id === workspace.resolvedConfirmedNodeId)?.id ?? take?.candidates.at(-1)?.id);
         });
 
-    const selectCandidate = (takeKey: string, nodeId: string) =>
+    const selectCandidate = (takeId: string, nodeId: string) =>
         discardPendingPrompt(() => {
-            setActiveTakeKey(takeKey);
+            setActiveTakeId(takeId);
             setActiveNodeId(nodeId);
         });
 
-    const changePage = (nextPageIndex: number) => discardPendingPrompt(() => onPageChange(nextPageIndex));
+    const changePage = (nextPageId: string) => discardPendingPrompt(() => onPageChange(nextPageId));
 
     // #21：键盘导航——↑/↓ 切页，←/→ 切候选；输入框/文本域/可编辑区聚焦时放行，不劫持按键。
     const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -451,11 +639,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
         const target = event.target as HTMLElement;
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
         if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-            const currentPos = workspaces.findIndex((item) => item.page.index === pageIndex);
+            const currentPos = workspaces.findIndex((item) => item.page.pageId === pageId);
             const nextPage = workspaces[event.key === "ArrowUp" ? currentPos - 1 : currentPos + 1];
             if (nextPage) {
                 event.preventDefault();
-                changePage(nextPage.page.index);
+                changePage(nextPage.page.pageId);
             }
         } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
             if (!activeTake?.candidates.length) return;
@@ -463,7 +651,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             const nextNode = activeTake.candidates[event.key === "ArrowLeft" ? currentIdx - 1 : currentIdx + 1];
             if (nextNode) {
                 event.preventDefault();
-                selectCandidate(activeTake.key, nextNode.id);
+                selectCandidate(activeTake.takeId, nextNode.id);
             }
         }
     };
@@ -511,6 +699,71 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                         </h2>
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-1">
+                        {generationBatches.length ? (
+                            <Popover
+                                trigger="click"
+                                placement="bottomRight"
+                                content={
+                                    <div className="thin-scrollbar max-h-[65vh] w-[440px] max-w-[78vw] space-y-3 overflow-y-auto pr-1 text-xs">
+                                        {generationBatches.map(([batchId, runs]) => (
+                                            <section key={batchId} className="space-y-1.5">
+                                                <div className="flex items-center justify-between gap-3 font-medium">
+                                                    <span title={batchId}>批次 {batchId.slice(0, 8)}</span>
+                                                    <span style={{ color: canvasTheme.node.muted }}>
+                                                        {runs.filter((run) => run.status === "completed").length}/{runs.length} 个 Run 完成
+                                                    </span>
+                                                </div>
+                                                {runs.map((run) => {
+                                                    const runPage = workspaces.find((item) => item.page.pageId === run.pageId);
+                                                    const runTake = runPage?.takes.find((item) => item.takeId === run.takeId);
+                                                    const requests = generationRequests.filter((request) => request.runId === run.runId).sort((left, right) => left.slotIndex - right.slotIndex);
+                                                    return (
+                                                        <div key={run.runId} className="rounded-md border px-2 py-1.5" style={{ borderColor: canvasTheme.node.stroke }}>
+                                                            <button
+                                                                type="button"
+                                                                className="flex w-full items-center justify-between gap-3 text-left hover:opacity-75 focus-visible:outline-2 focus-visible:outline-offset-1"
+                                                                style={{ outlineColor: canvasTheme.node.activeStroke }}
+                                                                onClick={() =>
+                                                                    discardPendingPrompt(() => {
+                                                                        onPageChange(run.pageId);
+                                                                        setActiveTakeId(run.takeId);
+                                                                    })
+                                                                }
+                                                            >
+                                                                <span>
+                                                                    第 {runPage?.page.index ?? "?"} 页 · 方案 {(runTake?.index ?? 0) + 1}
+                                                                </span>
+                                                                <span>{runStatusLabel[run.status]}</span>
+                                                            </button>
+                                                            <div className="mt-1 space-y-1 border-t pt-1" style={{ borderColor: canvasTheme.node.stroke }}>
+                                                                {requests.length ? (
+                                                                    requests.map((request) => (
+                                                                        <div key={request.requestId} className="flex items-start justify-between gap-3">
+                                                                            <span>
+                                                                                请求 {request.slotIndex + 1} · {requestStatusLabel[request.status]}
+                                                                            </span>
+                                                                            <span className="max-w-[220px] truncate font-mono text-[10px]" style={{ color: canvasTheme.node.muted }} title={request.remoteTaskId}>
+                                                                                {request.remoteTaskId || "暂无 task ID"}
+                                                                            </span>
+                                                                        </div>
+                                                                    ))
+                                                                ) : (
+                                                                    <span style={{ color: canvasTheme.node.muted }}>请求槽缺失</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </section>
+                                        ))}
+                                    </div>
+                                }
+                            >
+                                <Button size="small" type="text" icon={<ScanSearch className="size-3.5" />}>
+                                    生成记录 {generationRuns.length}
+                                </Button>
+                            </Popover>
+                        ) : null}
                         {!controls.batchHidden ? (
                             <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled || Boolean(newTakeDraft)} onClick={controls.onBatchAction}>
                                 {controls.batchLabel}
@@ -528,14 +781,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                 <main className="thin-scrollbar grid min-h-0 flex-1 gap-2 overflow-y-auto border-y p-2.5 xl:grid-cols-[96px_minmax(320px,0.8fr)_minmax(480px,1.2fr)] xl:overflow-hidden" style={{ borderColor: canvasTheme.node.stroke }}>
                     <nav className="flex min-h-0 flex-col gap-0.5 xl:overflow-y-auto" aria-label="PPT 页面导航">
                         {workspaces.map((item) => {
-                            const selected = item.page.index === page.index;
+                            const selected = item.page.pageId === page.pageId;
                             const confirmed = item.confirmationIssues.length === 0;
                             const generating = item.takes.some((take) => take.generating);
                             // #33：状态用徽记表达（✓ 已确认 / spinner 生成中 / ○ 待确认），去掉「待确认/正在精修」文字行，行高收紧。
                             const statusLabel = generating ? "生成中" : confirmed ? "已确认" : "待确认";
                             return (
                                 <button
-                                    key={item.page.index}
+                                    key={item.page.pageId}
                                     type="button"
                                     className={`flex items-center gap-2 rounded-md py-1 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 ${selected ? "bg-foreground/[0.06]" : "hover:bg-foreground/5"}`}
                                     style={{
@@ -544,7 +797,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                     }}
                                     aria-current={selected ? "page" : undefined}
                                     aria-label={`第 ${item.page.index} 页，${statusLabel}`}
-                                    onClick={() => changePage(item.page.index)}
+                                    onClick={() => changePage(item.page.pageId)}
                                 >
                                     {generating ? (
                                         <LoaderCircle className="size-3.5 shrink-0 animate-spin" style={{ color: canvasTheme.node.muted }} aria-hidden="true" />
@@ -567,10 +820,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 方案分支
                             </span>
                             {visibleTakes.map((take) => {
-                                const selected = take.key === activeTake?.key;
+                                const selected = take.takeId === activeTake?.takeId;
                                 return (
                                     <div
-                                        key={take.key}
+                                        key={take.takeId}
                                         className="group flex min-w-0 items-center overflow-hidden rounded-md border"
                                         style={{ background: selected ? canvasTheme.toolbar.activeBg : "transparent", borderColor: selected ? canvasTheme.node.activeStroke : canvasTheme.node.stroke, borderLeftWidth: 3 }}
                                     >
@@ -579,21 +832,21 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                             className="flex min-w-0 items-center gap-1.5 px-2 py-1 text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
                                             style={{ outlineColor: canvasTheme.node.activeStroke }}
                                             aria-current={selected ? "true" : undefined}
-                                            onClick={() => selectTake(take.key)}
+                                            onClick={() => selectTake(take.takeId)}
                                         >
                                             <span>方案 {take.index + 1}</span>
                                             <span className="font-mono text-[10px] tabular-nums" style={{ color: canvasTheme.node.muted }}>
-                                                {take.generating ? "生成中" : `${take.candidates.length} 稿`}
+                                                {take.generating ? "生成中" : take.unresolvedGeneration ? "待处理" : `${take.candidates.length} 稿`}
                                             </span>
                                         </button>
-                                        <Tooltip title={take.generating ? "生成中，暂不能删除" : `删除方案 ${take.index + 1}`}>
+                                        <Tooltip title={take.generating ? "生成中，暂不能删除" : take.unresolvedGeneration ? "请先处理待处理请求" : `删除方案 ${take.index + 1}`}>
                                             <span className="mr-1 shrink-0 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
                                                 <button
                                                     type="button"
                                                     className="grid size-6 place-items-center rounded hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed dark:hover:bg-white/10"
-                                                    style={{ color: take.generating ? canvasTheme.node.faint : token.colorError, outlineColor: canvasTheme.node.activeStroke }}
+                                                    style={{ color: take.generating || take.unresolvedGeneration ? canvasTheme.node.faint : token.colorError, outlineColor: canvasTheme.node.activeStroke }}
                                                     aria-label={`删除方案 ${take.index + 1}`}
-                                                    disabled={take.generating}
+                                                    disabled={take.generating || take.unresolvedGeneration}
                                                     onClick={() => confirmDeleteTake(take)}
                                                 >
                                                     <Trash2 className="size-3.5" aria-hidden="true" />
@@ -607,7 +860,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                 <Dropdown
                                     trigger={["click"]}
                                     menu={{
-                                        items: overflowTakes.map((take) => ({ key: take.key, label: `方案 ${take.index + 1} · ${take.generating ? "生成中" : `${take.candidates.length} 稿`}` })),
+                                        items: overflowTakes.map((take) => ({ key: take.takeId, label: `方案 ${take.index + 1} · ${take.generating ? "生成中" : take.unresolvedGeneration ? "待处理" : `${take.candidates.length} 稿`}` })),
                                         onClick: ({ key }) => selectTake(key),
                                     }}
                                 >
@@ -691,7 +944,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                             调整
                                         </Button>
                                     </div>
-                                    <UpstreamInputsPanel take={activeTake} canvasTheme={canvasTheme} muted={canvasTheme.node.muted} canEdit={Boolean(canvasContext)} onSaveStyle={saveStyleNode} onSaveLayout={saveLayoutPrompt} />
+                                    <UpstreamInputsPanel
+                                        take={activeTake}
+                                        canvasTheme={canvasTheme}
+                                        muted={canvasTheme.node.muted}
+                                        canEdit={Boolean(canvasContext) && !activeTake.unresolvedGeneration}
+                                        onSaveStyle={saveStyleNode}
+                                        onSaveLayout={saveLayoutPrompt}
+                                    />
                                 </>
                             ) : (
                                 <div className="py-4 text-center" style={{ color: canvasTheme.node.muted }}>
@@ -703,7 +963,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
 
                         <section className="thin-scrollbar min-h-0 flex-1 overflow-y-auto rounded-xl border p-2.5" style={{ borderColor: canvasTheme.node.stroke }} aria-label="当前方案候选稿">
                             {activeTake ? (
-                                <div key={activeTake.key}>
+                                <div key={activeTake.takeId}>
                                     <div className="flex items-center justify-between gap-2">
                                         <h3 className="text-sm font-semibold">
                                             候选稿 · <span className="font-mono tabular-nums">{activeTake.candidates.length}</span>
@@ -716,7 +976,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                                 </span>
                                             ) : null}
                                             <Popover
-                                                key={activeTake.key}
+                                                key={activeTake.takeId}
                                                 open={configPopoverOpen}
                                                 onOpenChange={updateConfigPopover}
                                                 trigger="click"
@@ -746,7 +1006,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                                     type="button"
                                                     className="max-w-[280px] truncate rounded-md px-2 py-1 font-mono text-[11px] tabular-nums hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10"
                                                     style={{ color: canvasTheme.node.muted, outlineColor: canvasTheme.node.activeStroke }}
-                                                    disabled={!activeTake.configNode || activeTake.generating}
+                                                    disabled={!activeTake.configNode || activeTake.generating || activeTake.unresolvedGeneration}
                                                     aria-label={`编辑生成配置：${configSummary}`}
                                                 >
                                                     {configSummary}
@@ -755,9 +1015,75 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                         </div>
                                     </div>
 
+                                    {latestGenerationRun ? (
+                                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                            <Popover
+                                                trigger="click"
+                                                placement="bottomLeft"
+                                                content={
+                                                    <div className="w-[360px] max-w-[70vw] space-y-2 text-xs">
+                                                        <div className="font-medium">
+                                                            Run {latestGenerationRun.runId} · {runStatusLabel[latestGenerationRun.status]}
+                                                        </div>
+                                                        {latestGenerationRequests.length ? (
+                                                            latestGenerationRequests.map((request) => (
+                                                                <div key={request.requestId} className="border-t pt-2" style={{ borderColor: canvasTheme.node.stroke }}>
+                                                                    <div className="flex items-center justify-between gap-3">
+                                                                        <span>请求 {request.slotIndex + 1}</span>
+                                                                        <span>{requestStatusLabel[request.status]}</span>
+                                                                    </div>
+                                                                    <div className="mt-1 break-all font-mono text-[10px]" style={{ color: canvasTheme.node.muted }} title={request.remoteTaskId}>
+                                                                        task: {request.remoteTaskId || "暂无"}
+                                                                    </div>
+                                                                    {request.resultIdentity ? (
+                                                                        <div className="mt-0.5 break-all font-mono text-[10px]" style={{ color: canvasTheme.node.muted }}>
+                                                                            result: {request.resultIdentity}
+                                                                        </div>
+                                                                    ) : null}
+                                                                </div>
+                                                            ))
+                                                        ) : (
+                                                            <div style={{ color: canvasTheme.node.muted }}>没有找到本轮请求槽，生成台账需要处理。</div>
+                                                        )}
+                                                    </div>
+                                                }
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className="rounded px-1.5 py-1 text-[11px] hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
+                                                    style={{ color: canvasTheme.node.muted, outlineColor: canvasTheme.node.activeStroke }}
+                                                >
+                                                    本轮 {runStatusLabel[latestGenerationRun.status]} · 返回 {returnedRequestCount}/{latestGenerationRun.plannedCount} · 回填 {completedRequestCount}/{latestGenerationRun.plannedCount}
+                                                    {activeTake.generating ? ` · ${formatElapsed(generatingElapsed)}` : ""}
+                                                </button>
+                                            </Popover>
+                                            <Button type="text" size="small" className="!h-7 !px-1.5" onClick={copyGenerationDiagnostic}>
+                                                复制诊断
+                                            </Button>
+                                        </div>
+                                    ) : activeTake.generationRequests.length ? (
+                                        <Button type="text" size="small" className="mt-2 !h-7 !px-1.5" onClick={copyGenerationDiagnostic}>
+                                            复制生成诊断
+                                        </Button>
+                                    ) : null}
+
                                     {activeTake.issues.length ? (
                                         <div className="mt-3 rounded-lg border px-3 py-2 text-xs" style={{ background: token.colorErrorBg, borderColor: token.colorErrorBorder, color: token.colorErrorText }} role="alert">
-                                            {activeTake.issues.join("；")}
+                                            <div>{activeTake.issues.join("；")}</div>
+                                            {retrievableRequest || abandonableRequest ? (
+                                                <div className="mt-1.5 flex gap-1">
+                                                    {retrievableRequest ? (
+                                                        <Button type="text" size="small" className="!h-7 !px-1.5" onClick={() => void retrieveExisting()}>
+                                                            重新获取
+                                                        </Button>
+                                                    ) : null}
+                                                    {abandonableRequest ? (
+                                                        <Button type="text" size="small" className="!h-7 !px-1.5" onClick={abandonPendingRequest}>
+                                                            标记放弃
+                                                        </Button>
+                                                    ) : null}
+                                                </div>
+                                            ) : null}
                                         </div>
                                     ) : null}
 
@@ -781,7 +1107,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                                         }}
                                                         aria-pressed={viewing}
                                                         aria-label={`第 ${page.index} 页，方案 ${activeTake.index + 1}，第 ${versionIndex + 1} 稿${confirmed ? "，已选最终版" : ""}`}
-                                                        onClick={() => selectCandidate(activeTake.key, node.id)}
+                                                        onClick={() => selectCandidate(activeTake.takeId, node.id)}
                                                     >
                                                         <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md" style={{ background: canvasTheme.node.fill }}>
                                                             {node.metadata?.content ? (
@@ -925,7 +1251,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
                                     {activeConfirmed ? (
                                         <>
                                             <Button type="primary" icon={<ArrowRight className="size-4" />} onClick={goToNextUnconfirmed}>
-                                                {workspaces.some((item) => item.page.index !== page.index && item.confirmationIssues.length > 0) ? "下一未确认页" : "最终检视"}
+                                                {workspaces.some((item) => item.page.pageId !== page.pageId && item.confirmationIssues.length > 0) ? "下一未确认页" : "最终检视"}
                                             </Button>
                                             <Button icon={<CheckCircle2 className="size-4" />} onClick={() => setConfirmed(undefined)}>
                                                 取消确认
@@ -944,7 +1270,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageIndex, onPageChang
             </div>
             {promptEditorOpen && activeTake ? (
                 <CanvasPptPromptEditor
-                    key={activeTake.key}
+                    key={activeTake.takeId}
                     open
                     initialValue={activeTake.prompt}
                     lockedTake={!activeTake.canEditPrompt}
@@ -1044,7 +1370,7 @@ function UpstreamInputsPanel({
         setEditingStyleNodeId(null);
         setEditingLayout(false);
         setLayoutDraft(take.layoutPrompt);
-    }, [take.key, take.layoutPrompt]);
+    }, [take.takeId, take.layoutPrompt]);
 
     if (take.composerContent) {
         return (

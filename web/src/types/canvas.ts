@@ -25,6 +25,56 @@ export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 
+export type PptGenerationRequestStatus = "draft" | "persisted" | "submitting" | "submitted" | "running" | "submission_unknown" | "succeeded" | "materializing" | "completed" | "recoverable_error" | "failed" | "abandoned";
+export type PptGenerationRunStatus = "preparing" | "running" | "needs_attention" | "completed" | "partial" | "failed" | "abandoned";
+export type PptGenerationRequestEventSummary = {
+    status: PptGenerationRequestStatus;
+    at: string;
+    error?: string;
+};
+
+export type PptGenerationProviderIdentity = {
+    channelId: string;
+    baseUrl: string;
+    apiFormat: "openai" | "gemini" | "maolao";
+    model: string;
+};
+
+export type PptGenerationRequestTrace = {
+    requestId: string;
+    runId: string;
+    batchId: string;
+    pageId: string;
+    takeId: string;
+    slotIndex: number;
+    requestType: "textToImage" | "imageToImage";
+    model: string;
+    providerIdentity: PptGenerationProviderIdentity;
+    status: PptGenerationRequestStatus;
+    remoteTaskId?: string;
+    remoteTaskExpiresAt?: number;
+    resultIdentity?: string;
+    billingRisk?: boolean;
+    error?: string;
+    createdAt: string;
+    updatedAt: string;
+    recentEvents: PptGenerationRequestEventSummary[];
+};
+
+export type PptGenerationRunSummary = {
+    runId: string;
+    batchId: string;
+    pageId: string;
+    takeId: string;
+    requestIds: string[];
+    plannedCount: number;
+    status: PptGenerationRunStatus;
+    createdAt: string;
+    updatedAt: string;
+    notifiedAt?: string;
+    notifiedTerminalStatus?: PptGenerationRunStatus;
+};
+
 export type CanvasNodeMetadata = {
     content?: string;
     composerContent?: string;
@@ -65,8 +115,14 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean; // 插件节点「交互 ⇄ 移动」开关状态(见 CanvasNodeDefinition.interactionToggle)
+    pptPageId?: string;
+    pptTakeId?: string;
     pptPageIndex?: number;
     pptRole?: "outline" | "style" | "page" | "source";
+    /** PPT 生成运行摘要；count>1 只放在 root，count=1 与 request trace 同节点。 */
+    pptGenerationRun?: PptGenerationRunSummary;
+    /** PPT 实际请求槽的持久化 trace；成功后仍保留在同一候选节点。 */
+    pptGenerationRequest?: PptGenerationRequestTrace;
     /** 异步生图任务句柄（猫佬渠道）。持久化后，页面重载可凭此恢复轮询而非丢弃任务。 */
     imageTask?: { taskId: string; model: string; expiresAt?: number };
 };

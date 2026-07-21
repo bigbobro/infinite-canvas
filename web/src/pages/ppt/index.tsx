@@ -6,6 +6,7 @@ import { ArrowLeft, ArrowRight, FolderOpen, Pencil, Plus, Sparkles, Trash2, Uplo
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
+import { hasUnresolvedPptGeneration } from "@/lib/ppt/generation-ledger";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
 import { extractPptPages, generatePptOutline, previewExtractPages, previewOutlinePages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
 import { buildPptDeckProject, type BuildPptDeckParams } from "@/lib/ppt/deck-builder";
@@ -59,6 +60,10 @@ export default function PptPage() {
     const deletingDeckIdRef = useRef<string | null>(null);
 
     const confirmDeleteDeck = (deck: CanvasProject) => {
+        if (hasUnresolvedPptGeneration(deck.nodes)) {
+            message.warning("该 PPT 仍有生成请求待处理，暂不能删除");
+            return;
+        }
         // 防重入:连点删除会让 modal.confirm 排队弹出第二个同款确认框(实测)。
         if (deletingDeckIdRef.current === deck.id) return;
         deletingDeckIdRef.current = deck.id;
@@ -72,6 +77,11 @@ export default function PptPage() {
                 deletingDeckIdRef.current = null;
             },
             onOk: () => {
+                const latest = useCanvasStore.getState().projects.find((project) => project.id === deck.id);
+                if (latest && hasUnresolvedPptGeneration(latest.nodes)) {
+                    message.warning("该 PPT 仍有生成请求待处理，暂不能删除");
+                    return;
+                }
                 deleteProjects([deck.id]);
                 cleanupImages();
                 message.success("已删除");

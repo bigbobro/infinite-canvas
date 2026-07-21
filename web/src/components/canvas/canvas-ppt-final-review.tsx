@@ -7,7 +7,7 @@ import { exportPptDeckImages, inspectPptDeckExport } from "@/lib/ppt/deck-export
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { cn } from "@/lib/utils";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStore, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 type Inspection = Awaited<ReturnType<typeof inspectPptDeckExport>>;
 
@@ -29,12 +29,12 @@ function pad2(value: number) {
     return String(value).padStart(2, "0");
 }
 
-export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: { open: boolean; projectId: string; onClose: () => void; onEditPage: (pageIndex: number) => void }) {
+export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: { open: boolean; projectId: string; onClose: () => void; onEditPage: (pageId: string) => void }) {
     const { message } = App.useApp();
     const project = useCanvasStore((state) => state.projects.find((item) => item.id === projectId));
     const updateProject = useCanvasStore((state) => state.updateProject);
     const [inspection, setInspection] = useState<Inspection | null>(null);
-    const [activePageIndex, setActivePageIndex] = useState<number | null>(null);
+    const [activePageId, setActivePageId] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [exporting, setExporting] = useState(false);
     const [loadError, setLoadError] = useState("");
@@ -57,9 +57,9 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
             .then((result) => {
                 if (cancelled) return;
                 setInspection(result);
-                setActivePageIndex((current) => {
-                    if (result.pages.some((item) => item.page.index === current)) return current;
-                    return result.pages.find((item) => item.issues.length)?.page.index ?? result.pages[0]?.page.index ?? null;
+                setActivePageId((current) => {
+                    if (result.pages.some((item) => item.page.pageId === current)) return current;
+                    return result.pages.find((item) => item.issues.length)?.page.pageId ?? result.pages[0]?.page.pageId ?? null;
                 });
             })
             .catch((error) => {
@@ -85,33 +85,44 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
     }, [project]);
     const activePosition = Math.max(
         0,
-        pages.findIndex((item) => item.page.index === activePageIndex),
+        pages.findIndex((item) => item.page.pageId === activePageId),
     );
     const activePage = pages[activePosition];
-    const activeWorkspace = activePage ? pageWorkspaces.find((item) => item.page.index === activePage.page.index) : undefined;
+    const activeWorkspace = activePage ? pageWorkspaces.find((item) => item.page.pageId === activePage.page.pageId) : undefined;
     const problemCount = pages.filter((item) => item.issues.length > 0).length;
 
     const changePage = (position: number) => {
         const target = pages[position];
-        if (target) setActivePageIndex(target.page.index);
+        if (target) setActivePageId(target.page.pageId);
     };
 
-    const advanceToNextUnconfirmed = (currentPageIndex: number) => {
-        const currentPos = pages.findIndex((item) => item.page.index === currentPageIndex);
+    const advanceToNextUnconfirmed = (currentPageId: string) => {
+        const currentPos = pages.findIndex((item) => item.page.pageId === currentPageId);
         const rotated = [...pages.slice(currentPos + 1), ...pages.slice(0, currentPos + 1)];
-        const next = rotated.find((item) => item.page.index !== currentPageIndex && item.issues.length > 0);
-        if (next) setActivePageIndex(next.page.index);
+        const next = rotated.find((item) => item.page.pageId !== currentPageId && item.issues.length > 0);
+        if (next) setActivePageId(next.page.pageId);
     };
 
-    const selectCandidate = (pageIndex: number, nodeId: string) => {
+    const selectCandidate = async (pageId: string, nodeId: string) => {
         if (!project?.ppt) return;
-        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageIndex, nodeId) });
-        advanceToNextUnconfirmed(pageIndex);
+        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageId, nodeId) });
+        try {
+            await flushCanvasStore();
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "确认状态保存失败");
+            return;
+        }
+        advanceToNextUnconfirmed(pageId);
     };
 
-    const cancelConfirm = (pageIndex: number) => {
+    const cancelConfirm = async (pageId: string) => {
         if (!project?.ppt) return;
-        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageIndex, undefined) });
+        updateProject(project.id, { ppt: setPptPageConfirmedNode(project.ppt, pageId, undefined) });
+        try {
+            await flushCanvasStore();
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "确认状态保存失败");
+        }
     };
 
     const handleExport = async () => {
@@ -190,11 +201,11 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                             </div>
                             <nav className="thin-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto py-1" aria-label="PPT 页面终检导航">
                                 {pages.map((item) => {
-                                    const selected = item.page.index === activePage?.page.index;
+                                    const selected = item.page.pageId === activePage?.page.pageId;
                                     const ready = item.issues.length === 0;
                                     return (
                                         <button
-                                            key={item.page.index}
+                                            key={item.page.pageId}
                                             type="button"
                                             className={cn(
                                                 "w-[88px] shrink-0 rounded-md border border-white/10 bg-white/5 p-1 text-left transition-all duration-150 hover:bg-white/10",
@@ -203,7 +214,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                             )}
                                             aria-current={selected ? "page" : undefined}
                                             aria-label={`第 ${item.page.index} 页，${ready ? "已定稿" : "需要处理"}`}
-                                            onClick={() => setActivePageIndex(item.page.index)}
+                                            onClick={() => setActivePageId(item.page.pageId)}
                                         >
                                             <span className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded bg-black/40" aria-hidden="true">
                                                 {item.previewUrl ? <img src={item.previewUrl} alt="" className="size-full object-contain" /> : <ImageOff className="size-4 text-white/30" />}
@@ -225,7 +236,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                     </div>
                                 ) : activePage?.previewUrl ? (
                                     <div
-                                        key={activePage.page.index}
+                                        key={activePage.page.pageId}
                                         className="relative flex aspect-video h-full max-h-full w-fit max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg shadow-artwork duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none"
                                         onClick={() => setLightboxSrc(activePage.previewUrl || null)}
                                     >
@@ -235,7 +246,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                         </span>
                                     </div>
                                 ) : (
-                                    <div key={activePage?.page.index ?? "empty"} className="flex flex-col items-center gap-3 text-center text-white/70 duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none">
+                                    <div key={activePage?.page.pageId ?? "empty"} className="flex flex-col items-center gap-3 text-center text-white/70 duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none">
                                         <ImageOff className="size-10" aria-hidden="true" />
                                         <div>
                                             <div className="text-sm font-semibold text-white/85">暂无可预览的确认页</div>
@@ -291,7 +302,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                                         <button
                                                             type="button"
                                                             className="rounded text-[11px] text-white/70 underline underline-offset-2 hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-                                                            onClick={() => cancelConfirm(activePage.page.index)}
+                                                            onClick={() => cancelConfirm(activePage.page.pageId)}
                                                         >
                                                             取消确认
                                                         </button>
@@ -313,7 +324,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                                                         )}
                                                                         aria-pressed={confirmed}
                                                                         aria-label={`第 ${activePage.page.index} 页，方案 ${take.index + 1}，第 ${versionIndex + 1} 稿${confirmed ? "，已选为最终版" : "，选定为最终版"}`}
-                                                                        onClick={() => selectCandidate(activePage.page.index, node.id)}
+                                                                        onClick={() => selectCandidate(activePage.page.pageId, node.id)}
                                                                     >
                                                                         <span className="flex aspect-video items-center justify-center overflow-hidden rounded-md bg-black/40">
                                                                             {node.metadata?.content ? <img src={node.metadata.content} alt="" className="size-full object-contain" /> : <ImageOff className="size-4 text-white/30" aria-hidden="true" />}
@@ -336,7 +347,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                             </section>
                                         ) : null}
 
-                                        <Button ghost icon={<Pencil className="size-4" />} onClick={() => onEditPage(activePage.page.index)}>
+                                        <Button ghost icon={<Pencil className="size-4" />} onClick={() => onEditPage(activePage.page.pageId)}>
                                             返回精修第 {activePage.page.index} 页
                                         </Button>
                                     </>

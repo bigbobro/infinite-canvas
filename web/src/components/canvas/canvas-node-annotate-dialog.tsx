@@ -7,8 +7,12 @@ import { requestEdit } from "@/services/api/image";
 import { uploadImage } from "@/services/image-storage";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { buildAnnotatePrompt, type AnnotatePin } from "@/lib/canvas/annotate-prompt";
+import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
+import { createPptCandidateEditPlan } from "@/lib/ppt/generation-plan";
+import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { buildImageGenerationMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -56,8 +60,8 @@ function drawMarkedImage(image: HTMLImageElement, pins: AnnotatePin[]) {
     return canvas.toDataURL("image/png");
 }
 
-export function CanvasNodeAnnotateDialog() {
-    const { message } = App.useApp();
+export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGenerationModule?: PptGenerationModule }) {
+    const { message, modal } = App.useApp();
     const { token } = theme.useToken();
     const annotateNodeId = useAnnotateStore((state) => state.annotateNodeId);
     const close = useAnnotateStore((state) => state.close);
@@ -124,6 +128,26 @@ export function CanvasNodeAnnotateDialog() {
             const skipped = pins.length - validPins.length;
             const prompt = buildAnnotatePrompt(validPins);
             const source: ReferenceImage = { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata?.mimeType || "image/png", dataUrl, storageKey: node.metadata?.storageKey };
+            const markedReference: ReferenceImage = { id: `${node.id}-annotate`, name: "annotate.png", type: "image/png", dataUrl: markedDataUrl };
+            if (node.metadata?.pptGenerationRequest || node.metadata?.pptGenerationRun) {
+                const pageId = node.metadata.pptPageId;
+                const takeId = node.metadata.pptTakeId;
+                const project = useCanvasStore.getState().projects.find((item) => item.id === canvasContext.snapshot.projectId);
+                if (!pptGenerationModule || !project || !pageId || !takeId) {
+                    message.error("PPT 标注改图暂时无法建立可靠生成记录");
+                    return;
+                }
+                try {
+                    const result = await pptGenerationModule.start(createPptCandidateEditPlan({ project, effectiveConfig, pageId, takeId, sourceNodeId: node.id, prompt, reference: markedReference }));
+                    void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "标注改图状态保存失败"));
+                    close();
+                    if (skipped > 0) message.info(`已忽略 ${skipped} 个未填写的标记`);
+                    message.info("已按 1 次图生图请求开始标注改图");
+                } catch (error) {
+                    message.error(error instanceof Error ? error.message : "标注改图启动失败");
+                }
+                return;
+            }
             const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
             const childId = nanoid();
 
@@ -143,7 +167,6 @@ export function CanvasNodeAnnotateDialog() {
             close();
             if (skipped > 0) message.info(`已忽略 ${skipped} 个未填写的标记`);
 
-            const markedReference: ReferenceImage = { id: `${node.id}-annotate`, name: "annotate.png", type: "image/png", dataUrl: markedDataUrl };
             try {
                 const generated = await requestEdit(generationConfig, prompt, [markedReference], undefined, {
                     // [二开] maolao 异步渠道：任务创建后立刻落盘句柄，否则此刻刷新就再也找不回
@@ -183,6 +206,23 @@ export function CanvasNodeAnnotateDialog() {
         } finally {
             setSubmitting(false);
         }
+    };
+
+    const confirmSubmit = () => {
+        if (!pins.some((pin) => pin.text.trim())) {
+            message.warning("请至少填写一个标记的修改内容");
+            return;
+        }
+        const project = useCanvasStore.getState().projects.find((item) => item.id === canvasContext?.snapshot.projectId);
+        const page = project?.ppt?.pages.find((item) => item.pageId === node?.metadata?.pptPageId);
+        const take = project && page ? buildPptPageWorkspace(project, page).takes.find((item) => item.takeId === node?.metadata?.pptTakeId) : undefined;
+        modal.confirm({
+            title: take?.requiresRepeatBillingConfirmation ? "仍要执行标注改图？" : "执行标注改图？",
+            content: take?.requiresRepeatBillingConfirmation ? "上一次请求可能已经产生费用且结果无法取回。本次将新建 1 个图生图请求，可能重复计费；旧运行与候选稿会保留。" : "本次将发起 1 个图生图请求，生成结果会作为新的候选稿保留。",
+            okText: "确认生成",
+            cancelText: "取消",
+            onOk: () => void submit(),
+        });
     };
 
     return (
@@ -228,14 +268,17 @@ export function CanvasNodeAnnotateDialog() {
                         </div>
 
                         <div className="mt-auto flex items-center justify-between gap-2">
-                            <Button icon={<RotateCcw className="size-4" />} disabled={submitting || !pins.length} onClick={clearPins}>
-                                清空
-                            </Button>
+                            <div className="flex items-center gap-2">
+                                <Button icon={<RotateCcw className="size-4" />} disabled={submitting || !pins.length} onClick={clearPins}>
+                                    清空
+                                </Button>
+                                <span className="text-xs opacity-60">将调用 1 次图生图 API</span>
+                            </div>
                             <div className="flex items-center gap-2">
                                 <Button icon={<X className="size-4" />} disabled={submitting} onClick={handleClose}>
                                     取消
                                 </Button>
-                                <Button type="primary" loading={submitting} icon={<WandSparkles className="size-4" />} onClick={() => void submit()}>
+                                <Button type="primary" loading={submitting} icon={<WandSparkles className="size-4" />} onClick={confirmSubmit}>
                                     AI 修改
                                 </Button>
                             </div>

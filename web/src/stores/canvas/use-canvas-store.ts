@@ -7,33 +7,20 @@ import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
 export type CanvasProjectPptTake = {
+    takeId: string;
     anchorNodeId: string;
     configNodeId: string;
 };
 
 export type CanvasProjectPptPage = {
+    pageId: string;
     index: number;
     title: string;
     outline: string;
     visualHint: string;
     confirmedNodeId?: string;
-    takes?: CanvasProjectPptTake[];
-    /** @deprecated 用 takes；存量数据读时经 pageTakes() 视作 takes[0] */
-    anchorNodeId?: string;
-    /** @deprecated 用 takes；存量数据读时经 pageTakes() 视作 takes[0] */
-    configNodeId?: string;
+    takes: CanvasProjectPptTake[];
 };
-
-/**
- * 归一读取某页的全部线路（take）。存量数据只有单值 anchorNodeId/configNodeId，
- * 读时视作单元素数组；不写迁移脚本、不做一次性升级（design §2.1，纯前端 localforage，
- * 存量 PPT 工程躺在用户浏览器里，不可破坏）。
- */
-export function pageTakes(page: CanvasProjectPptPage): CanvasProjectPptTake[] {
-    if (page.takes?.length) return page.takes;
-    if (page.anchorNodeId && page.configNodeId) return [{ anchorNodeId: page.anchorNodeId, configNodeId: page.configNodeId }];
-    return [];
-}
 
 export type CanvasProjectPpt = {
     sourceMaterial: string;
@@ -79,12 +66,19 @@ type PersistedCanvasState = Pick<CanvasStore, "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let pendingWrite: { name: string; value: StorageValue<CanvasStore> } | null = null;
+let activeWrite: Promise<void> = Promise.resolve();
 
 function writePendingNow() {
     const write = pendingWrite;
     pendingWrite = null;
-    if (!write) return Promise.resolve();
-    return localForageStorage.setItem(write.name, JSON.stringify(write.value));
+    if (!write) return activeWrite;
+    const nextWrite = activeWrite
+        .catch(() => undefined)
+        .then(async () => {
+            await localForageStorage.setItem(write.name, JSON.stringify(write.value));
+        });
+    activeWrite = nextWrite;
+    return nextWrite;
 }
 
 /**
@@ -98,6 +92,15 @@ export async function flushCanvasStore() {
         saveTimer = null;
     }
     await writePendingNow();
+    while (pendingWrite) await writePendingNow();
+}
+
+/** 从与 Zustand persist 相同的 adapter 读回已落盘工程，供付费请求前做 durable gate。 */
+export async function readPersistedCanvasProject(projectId: string): Promise<CanvasProject | null> {
+    const value = await localForageStorage.getItem(CANVAS_STORE_KEY);
+    if (!value) return null;
+    const persisted = JSON.parse(value) as StorageValue<CanvasStore>;
+    return (persisted.state as PersistedCanvasState).projects.find((project) => project.id === projectId) || null;
 }
 
 const canvasStorage: PersistStorage<CanvasStore> = {

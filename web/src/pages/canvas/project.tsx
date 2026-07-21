@@ -46,6 +46,16 @@ import { useAgentStore } from "@/stores/use-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
+import { usePptGenerationModule } from "@/pages/canvas/hooks/use-ppt-generation-module"; // [二开] PPT 付费生成的持久化门禁与恢复入口
+import {
+    connectionTouchesPptGenerationLedger,
+    hasPptGenerationLedger,
+    hasUnresolvedPptGeneration,
+    historyEntryTouchesPptGenerationLedger,
+    nodeIdsTouchPptGenerationLedger,
+    nodeIdsTouchUnresolvedPptGeneration,
+    sanitizeCopiedCanvasMetadata,
+} from "@/lib/ppt/generation-ledger";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
@@ -227,6 +237,7 @@ function InfiniteCanvasPage() {
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -248,6 +259,7 @@ function InfiniteCanvasPage() {
     const [openingBatchIds, setOpeningBatchIds] = useState<Set<string>>(new Set());
     const [isNodeDragging, setIsNodeDragging] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
+    const projectReady = projectLoaded && loadedProjectId === projectId;
 
     const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);
@@ -295,7 +307,7 @@ function InfiniteCanvasPage() {
     // [二开] maolao 异步生图：落盘 task 句柄 + 重载续轮询
     const { persistImageTask } = useCanvasImageTasks({
         projectId,
-        projectLoaded,
+        projectLoaded: projectReady,
         effectiveConfig,
         nodesRef,
         setNodes,
@@ -303,6 +315,18 @@ function InfiniteCanvasPage() {
         finishGenerationRequest,
         isGenerationCanceled,
         imageMetadata,
+    });
+    // [二开] PPT 生成只通过该 project-local module 下发，不复用通用 run_generation。
+    const pptGenerationModule = usePptGenerationModule({
+        projectId,
+        projectLoaded: projectReady,
+        effectiveConfig,
+        isAiConfigReady,
+        openConfigDialog,
+        nodesRef,
+        connectionsRef,
+        setNodes,
+        setConnections,
     });
 
     const stopGenerationByRunningId = useCallback((runningId: string) => {
@@ -343,15 +367,18 @@ function InfiniteCanvasPage() {
     useEffect(() => {
         if (!hydrated) return;
         setProjectLoaded(false);
+        setLoadedProjectId(null);
         const project = openProject(projectId);
         if (!project) {
             navigate("/canvas", { replace: true });
             return;
         }
 
+        let cancelled = false;
         const restore = async () => {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
+            if (cancelled) return;
             setNodes(restoredNodes);
             setConnections(project.connections);
             setChatSessions(restoredSessions);
@@ -373,18 +400,22 @@ function InfiniteCanvasPage() {
                 showImageInfo: project.showImageInfo || false,
             };
             setHistoryState({ canUndo: false, canRedo: false });
+            setLoadedProjectId(projectId);
             setProjectLoaded(true);
         };
         void restore();
+        return () => {
+            cancelled = true;
+        };
     }, [hydrated, navigate, openProject, projectId]);
 
     useEffect(() => {
-        if (!projectLoaded || !["new", "recent", "choose"].includes(searchParams.get("mode") || "")) return;
+        if (!projectReady || !["new", "recent", "choose"].includes(searchParams.get("mode") || "")) return;
         if (!searchParams.has("agentUrl")) openAgentPanel();
-    }, [openAgentPanel, projectLoaded, searchParams]);
+    }, [openAgentPanel, projectReady, searchParams]);
 
     useEffect(() => {
-        if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
+        if (!projectReady || applyingHistoryRef.current || historyPausedRef.current) return;
         const next = createHistoryEntry();
         const previous = lastHistoryRef.current;
         if (
@@ -415,19 +446,19 @@ function InfiniteCanvasPage() {
                 historyCommitTimerRef.current = null;
             }
         };
-    }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded, showImageInfo]);
+    }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectReady, showImageInfo]);
 
     useEffect(() => {
-        if (!projectLoaded || historyPausedRef.current) return;
+        if (!projectReady || historyPausedRef.current) return;
         updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
-    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectReady, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);
     }, [dialogNodeId]);
 
     useEffect(() => {
-        if (!projectLoaded) return;
+        if (!projectReady) return;
         if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
         viewportSaveTimerRef.current = setTimeout(() => {
             updateProject(projectId, { viewport: viewportRef.current });
@@ -436,7 +467,7 @@ function InfiniteCanvasPage() {
         return () => {
             if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
         };
-    }, [projectId, projectLoaded, updateProject, viewport]);
+    }, [projectId, projectReady, updateProject, viewport]);
 
     useLayoutEffect(() => {
         nodesRef.current = nodes;
@@ -517,6 +548,19 @@ function InfiniteCanvasPage() {
                 return;
             }
             const { fromNodeId, toNodeId } = connection;
+            const fromNode = nodesRef.current.find((node) => node.id === fromNodeId);
+            const toNode = nodesRef.current.find((node) => node.id === toNodeId);
+            if (
+                fromNode?.metadata?.pptGenerationRun ||
+                fromNode?.metadata?.pptGenerationRequest ||
+                (fromNode?.metadata?.pptPageId && fromNode.metadata.pptTakeId) ||
+                toNode?.metadata?.pptGenerationRun ||
+                toNode?.metadata?.pptGenerationRequest ||
+                nodeIdsTouchUnresolvedPptGeneration(nodesRef.current, new Set([fromNodeId, toNodeId]))
+            ) {
+                message.warning("PPT 方案的生成连线由工作台管理");
+                return;
+            }
             const exists = connectionsRef.current.some((conn) => conn.fromNodeId === fromNodeId && conn.toNodeId === toNodeId);
             if (!exists) {
                 setConnections((prev) => [...prev, { id: `conn-${Date.now()}`, fromNodeId, toNodeId }]);
@@ -533,6 +577,19 @@ function InfiniteCanvasPage() {
             const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
             if (!connection) {
                 message.warning("配置节点之间不能连接");
+                return;
+            }
+            const fromNode = [...nodesRef.current, newNode].find((node) => node.id === connection.fromNodeId);
+            const toNode = [...nodesRef.current, newNode].find((node) => node.id === connection.toNodeId);
+            if (
+                fromNode?.metadata?.pptGenerationRun ||
+                fromNode?.metadata?.pptGenerationRequest ||
+                (fromNode?.metadata?.pptPageId && fromNode.metadata.pptTakeId) ||
+                toNode?.metadata?.pptGenerationRun ||
+                toNode?.metadata?.pptGenerationRequest ||
+                nodeIdsTouchUnresolvedPptGeneration(nodesRef.current, new Set([connection.fromNodeId, connection.toNodeId]))
+            ) {
+                message.warning("PPT 方案的生成连线由工作台管理");
                 return;
             }
             setNodes((prev) => [...prev, newNode]);
@@ -687,6 +744,7 @@ function InfiniteCanvasPage() {
         viewportRef,
         generateNodeRef,
         deleteCanvasNodesWithEffects,
+        onBlockedPptMutation: () => message.warning("该操作会改动 PPT 生成台账，请在 PPT 工作台中处理对应方案"),
         setNodes,
         setConnections,
         setSelectedNodeIds,
@@ -740,12 +798,16 @@ function InfiniteCanvasPage() {
     );
 
     const deleteNodes = useCallback(
-        (ids: Set<string>) => {
+        (ids: Set<string>, options?: { allowPptLedger?: boolean }) => {
             if (!ids.size) return;
             const allIds = new Set(ids);
             nodesRef.current.forEach((node) => {
                 if (ids.has(node.id)) node.metadata?.batchChildIds?.forEach((childId) => allIds.add(childId));
             });
+            if (!options?.allowPptLedger && nodeIdsTouchPptGenerationLedger(nodesRef.current, allIds)) {
+                message.warning("该节点属于 PPT 生成记录，请在 PPT 工作台中删除对应方案");
+                return;
+            }
             setNodes((prev) => {
                 const next = prev.filter((node) => !allIds.has(node.id));
                 return next.map((node) => {
@@ -784,7 +846,7 @@ function InfiniteCanvasPage() {
             setContextMenu((current) => (current?.type === "node" && allIds.has(current.nodeId) ? null : current));
             cleanupCanvasFiles({ projectId, nodes: nodesRef.current.filter((node) => !allIds.has(node.id)), chatSessions });
         },
-        [chatSessions, cleanupCanvasFiles, projectId],
+        [chatSessions, cleanupCanvasFiles, message, projectId],
     );
 
     // [二开] PPT 方案不在画布历史中；同步剪掉节点快照，避免撤销复活孤儿节点并阻塞图片清理。
@@ -809,14 +871,26 @@ function InfiniteCanvasPage() {
             if (targetIds.has(request.targetNodeId) || targetIds.has(request.originNodeId) || targetIds.has(request.runningNodeId)) runningIds.add(request.runningNodeId);
         });
         runningIds.forEach(stopGenerationByRunningId);
-        deleteNodes(targetIds);
+        deleteNodes(targetIds, { allowPptLedger: true });
     }
 
-    const deleteConnection = useCallback((connectionId: string) => {
-        setConnections((prev) => prev.filter((conn) => conn.id !== connectionId));
-        setSelectedConnectionId((current) => (current === connectionId ? null : current));
-        setContextMenu((current) => (current?.type === "connection" && current.connectionId === connectionId ? null : current));
-    }, []);
+    const deleteConnection = useCallback(
+        (connectionId: string) => {
+            if (
+                connectionTouchesPptGenerationLedger(
+                    nodesRef.current,
+                    connectionsRef.current.find((connection) => connection.id === connectionId),
+                )
+            ) {
+                message.warning("该连线属于 PPT 生成记录，请在 PPT 工作台中处理对应方案");
+                return;
+            }
+            setConnections((prev) => prev.filter((conn) => conn.id !== connectionId));
+            setSelectedConnectionId((current) => (current === connectionId ? null : current));
+            setContextMenu((current) => (current?.type === "connection" && current.connectionId === connectionId ? null : current));
+        },
+        [message],
+    );
 
     const deselectCanvas = useCallback(() => {
         cancelPendingConnectionCreate();
@@ -831,6 +905,11 @@ function InfiniteCanvasPage() {
     }, [cancelPendingConnectionCreate]);
 
     const clearCanvas = useCallback(() => {
+        if (hasPptGenerationLedger(nodesRef.current)) {
+            message.warning("画布包含 PPT 生成记录，请先在 PPT 工作台中删除对应方案");
+            setClearConfirmOpen(false);
+            return;
+        }
         setNodes([]);
         setConnections([]);
         setInfoNodeId(null);
@@ -842,7 +921,7 @@ function InfiniteCanvasPage() {
         deselectCanvas();
         setClearConfirmOpen(false);
         cleanupCanvasFiles({ projectId, nodes: [], chatSessions: [] });
-    }, [cleanupCanvasFiles, deselectCanvas, projectId]);
+    }, [cleanupCanvasFiles, deselectCanvas, message, projectId]);
 
     const duplicateNode = useCallback((nodeId: string) => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
@@ -854,6 +933,7 @@ function InfiniteCanvasPage() {
             id,
             title: `${source.title} Copy`,
             position: { x: source.position.x + 36, y: source.position.y + 36 },
+            metadata: sanitizeCopiedCanvasMetadata(source.metadata),
         };
 
         setNodes((prev) => [...prev, next]);
@@ -871,7 +951,7 @@ function InfiniteCanvasPage() {
             .map((node) => ({
                 ...node,
                 position: { ...node.position },
-                metadata: node.metadata ? { ...node.metadata } : undefined,
+                metadata: sanitizeCopiedCanvasMetadata(node.metadata),
             }));
 
         if (!copiedNodes.length) return;
@@ -910,7 +990,7 @@ function InfiniteCanvasPage() {
                     x: node.position.x + dx,
                     y: node.position.y + dy,
                 },
-                metadata: node.metadata ? { ...node.metadata } : undefined,
+                metadata: sanitizeCopiedCanvasMetadata(node.metadata),
             };
         });
 
@@ -1015,20 +1095,30 @@ function InfiniteCanvasPage() {
     }, []);
 
     const undoCanvas = useCallback(() => {
-        const previous = historyRef.current.past.pop();
+        const previous = historyRef.current.past.at(-1);
         const current = lastHistoryRef.current;
         if (!previous || !current) return;
+        if (historyEntryTouchesPptGenerationLedger(nodesRef.current, previous.nodes, connectionsRef.current, previous.connections)) {
+            message.warning("该撤销会改写 PPT 生成记录，已停止操作");
+            return;
+        }
+        historyRef.current.past.pop();
         historyRef.current.future.push(current);
         applyHistory(previous);
-    }, [applyHistory]);
+    }, [applyHistory, message]);
 
     const redoCanvas = useCallback(() => {
-        const next = historyRef.current.future.pop();
+        const next = historyRef.current.future.at(-1);
         const current = lastHistoryRef.current;
         if (!next || !current) return;
+        if (historyEntryTouchesPptGenerationLedger(nodesRef.current, next.nodes, connectionsRef.current, next.connections)) {
+            message.warning("该重做会改写 PPT 生成记录，已停止操作");
+            return;
+        }
+        historyRef.current.future.pop();
         historyRef.current.past.push(current);
         applyHistory(next);
-    }, [applyHistory]);
+    }, [applyHistory, message]);
 
     const createAndOpenProject = useCallback(() => {
         const id = createProject(`无限画布 ${useCanvasStore.getState().projects.length + 1}`);
@@ -1036,12 +1126,20 @@ function InfiniteCanvasPage() {
     }, [createProject, navigate]);
 
     const deleteCurrentProject = useCallback(() => {
+        if (hasUnresolvedPptGeneration(nodesRef.current)) {
+            message.warning("仍有 PPT 生成请求待处理，暂不能删除画布");
+            return;
+        }
         deleteProjects([projectId]);
         cleanupAssetImages();
         navigate("/canvas");
-    }, [cleanupAssetImages, deleteProjects, navigate, projectId]);
+    }, [cleanupAssetImages, deleteProjects, message, navigate, projectId]);
 
     const confirmDeleteCurrentProject = useCallback(() => {
+        if (hasUnresolvedPptGeneration(nodesRef.current)) {
+            message.warning("仍有 PPT 生成请求待处理，暂不能删除画布");
+            return;
+        }
         modal.confirm({
             title: "删除画布？",
             content: "将删除当前画布，里面的节点和连线也会一起移除。",
@@ -1050,7 +1148,7 @@ function InfiniteCanvasPage() {
             okButtonProps: { danger: true },
             onOk: () => deleteCurrentProject(),
         });
-    }, [deleteCurrentProject, modal]);
+    }, [deleteCurrentProject, message, modal]);
 
     const exportCurrentProject = useCallback(async () => {
         const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
@@ -1537,9 +1635,32 @@ function InfiniteCanvasPage() {
         );
     }, []);
 
-    const handleNodeContentChange = useCallback((nodeId: string, content: string) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, content } } : node)));
-    }, []);
+    const blockPptInputMutation = useCallback(
+        (nodeId: string) => {
+            const node = nodesRef.current.find((item) => item.id === nodeId);
+            const blocked = Boolean(node?.metadata?.pptGenerationRun || node?.metadata?.pptGenerationRequest || nodeIdsTouchUnresolvedPptGeneration(nodesRef.current, new Set([nodeId])));
+            if (blocked) message.warning({ key: "ppt-generation-input-locked", content: "该操作会改动 PPT 生成记录，请先在 PPT 工作台处理当前方案" });
+            return blocked;
+        },
+        [message],
+    );
+
+    const blockPptLedgerDerivation = useCallback(
+        (nodeId: string) => {
+            const blocked = nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([nodeId]));
+            if (blocked) message.warning({ key: "ppt-generation-derivation-locked", content: "该工具不会写入 PPT 生成记录；请先复制为普通画布图片再使用" });
+            return blocked;
+        },
+        [message],
+    );
+
+    const handleNodeContentChange = useCallback(
+        (nodeId: string, content: string) => {
+            if (blockPptInputMutation(nodeId)) return;
+            setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, content } } : node)));
+        },
+        [blockPptInputMutation],
+    );
 
     const handleNodeTitleChange = useCallback((nodeId: string, title: string) => {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, title } : node)));
@@ -1607,13 +1728,21 @@ function InfiniteCanvasPage() {
         setEditRequestNonce((value) => value + 1);
     }, []);
 
-    const handleNodePromptChange = useCallback((nodeId: string, prompt: string) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt } } : node)));
-    }, []);
+    const handleNodePromptChange = useCallback(
+        (nodeId: string, prompt: string) => {
+            if (blockPptInputMutation(nodeId)) return;
+            setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt } } : node)));
+        },
+        [blockPptInputMutation],
+    );
 
-    const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
-    }, []);
+    const handleConfigNodeChange = useCallback(
+        (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => {
+            if (blockPptInputMutation(nodeId)) return;
+            setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
+        },
+        [blockPptInputMutation],
+    );
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
@@ -1668,6 +1797,7 @@ function InfiniteCanvasPage() {
 
     const createImageReversePromptNodes = useCallback(
         (node: CanvasNodeData) => {
+            if (blockPptLedgerDerivation(node.id)) return;
             if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
                 message.warning("图片节点为空，无法反推提示词");
                 return;
@@ -1702,36 +1832,41 @@ function InfiniteCanvasPage() {
             setDialogNodeId(configNode.id);
             setContextMenu(null);
         },
-        [effectiveConfig.model, effectiveConfig.textModel, message],
+        [blockPptLedgerDerivation, effectiveConfig.model, effectiveConfig.textModel, message],
     );
 
-    const cropImageNode = useCallback(async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
-        if (!node.metadata?.content) return;
-        const cropped = await cropDataUrl(node.metadata.content, crop);
-        const image = await uploadImage(cropped);
-        const width = Math.min(node.width, Math.max(220, image.width));
-        const childId = nanoid();
-        const child: CanvasNodeData = {
-            id: childId,
-            type: CanvasNodeType.Image,
-            title: "Cropped Image",
-            position: { x: node.position.x + node.width + 96, y: node.position.y },
-            width,
-            height: width * (image.height / image.width),
-            metadata: {
-                ...imageMetadata(image),
-                prompt: node.metadata?.prompt,
-            },
-        };
-        setNodes((prev) => [...prev, child]);
-        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-        setCropNodeId(null);
-    }, []);
+    const cropImageNode = useCallback(
+        async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
+            if (blockPptLedgerDerivation(node.id)) return;
+            if (!node.metadata?.content) return;
+            const cropped = await cropDataUrl(node.metadata.content, crop);
+            const image = await uploadImage(cropped);
+            const width = Math.min(node.width, Math.max(220, image.width));
+            const childId = nanoid();
+            const child: CanvasNodeData = {
+                id: childId,
+                type: CanvasNodeType.Image,
+                title: "Cropped Image",
+                position: { x: node.position.x + node.width + 96, y: node.position.y },
+                width,
+                height: width * (image.height / image.width),
+                metadata: {
+                    ...imageMetadata(image),
+                    prompt: node.metadata?.prompt,
+                },
+            };
+            setNodes((prev) => [...prev, child]);
+            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+            setCropNodeId(null);
+        },
+        [blockPptLedgerDerivation],
+    );
 
     const splitImageNode = useCallback(
         async (node: CanvasNodeData, params: CanvasImageSplitParams) => {
+            if (blockPptLedgerDerivation(node.id)) return;
             if (!node.metadata?.content) return;
             setSplitNodeId(null);
             const pieces = await splitDataUrl(node.metadata.content, params);
@@ -1765,11 +1900,12 @@ function InfiniteCanvasPage() {
             setDialogNodeId(null);
             message.success(`已切分为 ${childNodes.length} 个子节点`);
         },
-        [message],
+        [blockPptLedgerDerivation, message],
     );
 
     const maskEditImageNode = useCallback(
         async (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => {
+            if (blockPptLedgerDerivation(node.id)) return;
             if (!node.metadata?.content) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
@@ -1801,10 +1937,16 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, {
-                    signal: controller.signal,
-                    onTaskCreated: (handle) => persistImageTask(childId, handle, generationConfig.model),
-                }).then((items) => items[0]);
+                const image = await requestEdit(
+                    generationConfig,
+                    prompt,
+                    [source],
+                    { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl },
+                    {
+                        signal: controller.signal,
+                        onTaskCreated: (handle) => persistImageTask(childId, handle, generationConfig.model),
+                    },
+                ).then((items) => items[0]);
                 const uploaded = await uploadImage(image.dataUrl);
                 const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
@@ -1818,36 +1960,41 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistImageTask, startGenerationRequest],
+        [blockPptLedgerDerivation, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistImageTask, startGenerationRequest],
     );
 
-    const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
-        if (!node.metadata?.content) return;
-        setUpscaleNodeId(null);
-        const upscaled = await upscaleDataUrl(node.metadata.content, params);
-        const image = await uploadImage(upscaled);
-        const size = fitNodeSize(image.width, image.height);
-        const childId = nanoid();
-        const child: CanvasNodeData = {
-            id: childId,
-            type: CanvasNodeType.Image,
-            title: "Upscaled Image",
-            position: { x: node.position.x + node.width + 96, y: node.position.y },
-            width: size.width,
-            height: size.height,
-            metadata: {
-                ...imageMetadata(image),
-                prompt: node.metadata?.prompt,
-            },
-        };
-        setNodes((prev) => [...prev, child]);
-        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-    }, []);
+    const upscaleImageNode = useCallback(
+        async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
+            if (blockPptLedgerDerivation(node.id)) return;
+            if (!node.metadata?.content) return;
+            setUpscaleNodeId(null);
+            const upscaled = await upscaleDataUrl(node.metadata.content, params);
+            const image = await uploadImage(upscaled);
+            const size = fitNodeSize(image.width, image.height);
+            const childId = nanoid();
+            const child: CanvasNodeData = {
+                id: childId,
+                type: CanvasNodeType.Image,
+                title: "Upscaled Image",
+                position: { x: node.position.x + node.width + 96, y: node.position.y },
+                width: size.width,
+                height: size.height,
+                metadata: {
+                    ...imageMetadata(image),
+                    prompt: node.metadata?.prompt,
+                },
+            };
+            setNodes((prev) => [...prev, child]);
+            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+        },
+        [blockPptLedgerDerivation],
+    );
 
     const generateAngleNode = useCallback(
         async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
+            if (blockPptLedgerDerivation(node.id)) return;
             if (!node.metadata?.content) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
@@ -1880,11 +2027,17 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const image = await requestEdit(generationConfig, prompt, [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }], undefined, {
-                    signal: controller.signal,
-                    // [二开] 多角度生成同样是猫佬异步渠道的节点归属生成入口，任务创建后立即落盘句柄
-                    onTaskCreated: (handle) => persistImageTask(childId, handle, generationConfig.model),
-                }).then((items) => items[0]);
+                const image = await requestEdit(
+                    generationConfig,
+                    prompt,
+                    [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }],
+                    undefined,
+                    {
+                        signal: controller.signal,
+                        // [二开] 多角度生成同样是猫佬异步渠道的节点归属生成入口，任务创建后立即落盘句柄
+                        onTaskCreated: (handle) => persistImageTask(childId, handle, generationConfig.model),
+                    },
+                ).then((items) => items[0]);
                 const uploaded = await uploadImage(image.dataUrl);
                 const size = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
                 setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
@@ -1897,23 +2050,36 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, openConfigDialog, persistImageTask, startGenerationRequest],
+        [blockPptLedgerDerivation, effectiveConfig, finishGenerationRequest, openConfigDialog, persistImageTask, startGenerationRequest],
     );
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, fontSize } } : node)));
     }, []);
 
-    const handleUploadRequest = useCallback((nodeId?: string, position?: Position) => {
-        uploadTargetRef.current = { nodeId, position };
-        imageInputRef.current?.click();
-    }, []);
+    const handleUploadRequest = useCallback(
+        (nodeId?: string, position?: Position) => {
+            if (nodeId && nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([nodeId]))) {
+                message.warning({ key: "ppt-generation-replace-locked", content: "PPT 生成稿不能原位替换，请在工作台中派生或删除对应方案" });
+                return;
+            }
+            uploadTargetRef.current = { nodeId, position };
+            imageInputRef.current?.click();
+        },
+        [message],
+    );
 
     const handleImageInputChange = useCallback(
         async (event: ReactChangeEvent<HTMLInputElement>) => {
             const file = event.target.files?.[0];
             const target = uploadTargetRef.current;
             if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/") && !isAudioFile(file))) return;
+            if (target?.nodeId && nodeIdsTouchPptGenerationLedger(nodesRef.current, new Set([target.nodeId]))) {
+                message.warning({ key: "ppt-generation-replace-locked", content: "PPT 生成稿不能原位替换，请在工作台中派生或删除对应方案" });
+                uploadTargetRef.current = null;
+                event.target.value = "";
+                return;
+            }
 
             if (target?.nodeId) {
                 if (isAudioFile(file)) {
@@ -2009,7 +2175,7 @@ function InfiniteCanvasPage() {
             uploadTargetRef.current = null;
             event.target.value = "";
         },
-        [createAudioFileNode, createImageFileNode, createVideoFileNode, screenToCanvas, size.height, size.width],
+        [createAudioFileNode, createImageFileNode, createVideoFileNode, message, screenToCanvas, size.height, size.width],
     );
 
     const handleDrop = useCallback(
@@ -2044,6 +2210,10 @@ function InfiniteCanvasPage() {
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+            if (sourceNode?.metadata?.pptPageId && sourceNode.metadata.pptTakeId) {
+                message.warning("请在 PPT 工作台中生成，确保请求状态可保存、可恢复");
+                return;
+            }
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
@@ -2115,10 +2285,7 @@ function InfiniteCanvasPage() {
                 return;
             }
             let pendingChildIds: string[] = [];
-            if (markSourceStatus)
-                setNodes((prev) =>
-                    prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, imageTask: undefined } } : node)),
-                );
+            if (markSourceStatus) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, imageTask: undefined } } : node)));
 
             try {
                 if (mode === "image") {
@@ -2471,6 +2638,10 @@ function InfiniteCanvasPage() {
     const handleRetryNode = useCallback(
         async (node: CanvasNodeData) => {
             const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
+            if (node.metadata?.pptGenerationRequest || (node.metadata?.pptPageId && node.metadata.pptTakeId) || (sourceNode.metadata?.pptPageId && sourceNode.metadata.pptTakeId)) {
+                message.warning("请在 PPT 工作台中重试，确保请求状态可保存、可恢复");
+                return;
+            }
             const batchRoot = node.metadata?.batchRootId ? nodesRef.current.find((item) => item.id === node.metadata?.batchRootId) : null;
             const savedImageMetadata = node.type === CanvasNodeType.Image ? { ...batchRoot?.metadata, ...node.metadata } : undefined;
             const hasSavedImageMetadata = Boolean(savedImageMetadata?.generationType);
@@ -2563,7 +2734,9 @@ function InfiniteCanvasPage() {
 
                 // [二开] 节点重试（文生图/图生图共用）：任务创建后立即落盘句柄，供刷新续轮询
                 const retryRequestOptions = { signal: controller.signal, onTaskCreated: (handle: ImageTaskHandle) => persistImageTask(node.id, handle, generationConfig.model) };
-                const image = useReferenceImages ? await requestEdit(generationConfig, prompt, retryImages, undefined, retryRequestOptions).then((items) => items[0]) : await requestGeneration(generationConfig, prompt, retryRequestOptions).then((items) => items[0]);
+                const image = useReferenceImages
+                    ? await requestEdit(generationConfig, prompt, retryImages, undefined, retryRequestOptions).then((items) => items[0])
+                    : await requestGeneration(generationConfig, prompt, retryRequestOptions).then((items) => items[0]);
                 const uploadedImage = await uploadImage(image.dataUrl);
                 const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
                 const imageSize = fitNodeSize(uploadedImage.width, uploadedImage.height, imageConfig.width, imageConfig.height);
@@ -2778,7 +2951,7 @@ function InfiniteCanvasPage() {
         [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
     );
 
-    if (!projectLoaded) return <CanvasRefreshShell />;
+    if (!projectReady) return <CanvasRefreshShell />;
 
     return (
         <main className="flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
@@ -2808,7 +2981,6 @@ function InfiniteCanvasPage() {
                     compactAgentStatus={{ connected: localAgentConnected, enabled: localAgentEnabled, activity: localAgentActivity }}
                     onToggleAgent={toggleAgentPanel}
                 />
-
                 <InfiniteCanvas
                     containerRef={containerRef}
                     viewport={viewport}
@@ -2929,7 +3101,6 @@ function InfiniteCanvasPage() {
                         />
                     ) : null}
                 </InfiniteCanvas>
-
                 <CanvasNodeHoverToolbar
                     node={isNodeDragging || nodeImageSettingsOpen || pptOverlayOpen ? null : toolbarNode}
                     viewport={viewport}
@@ -2945,19 +3116,18 @@ function InfiniteCanvasPage() {
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
-                    onMaskEdit={(node) => setMaskEditNodeId(node.id)}
-                    onCrop={(node) => setCropNodeId(node.id)}
-                    onSplit={(node) => setSplitNodeId(node.id)}
-                    onUpscale={(node) => setUpscaleNodeId(node.id)}
-                    onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
-                    onAngle={(node) => setAngleNodeId(node.id)}
+                    onMaskEdit={(node) => !blockPptLedgerDerivation(node.id) && setMaskEditNodeId(node.id)}
+                    onCrop={(node) => !blockPptLedgerDerivation(node.id) && setCropNodeId(node.id)}
+                    onSplit={(node) => !blockPptLedgerDerivation(node.id) && setSplitNodeId(node.id)}
+                    onUpscale={(node) => !blockPptLedgerDerivation(node.id) && setUpscaleNodeId(node.id)}
+                    onSuperResolve={(node) => !blockPptLedgerDerivation(node.id) && setSuperResolveNodeId(node.id)}
+                    onAngle={(node) => !blockPptLedgerDerivation(node.id) && setAngleNodeId(node.id)}
                     onViewImage={(node) => setPreviewNodeId(node.id)}
                     onReversePrompt={createImageReversePromptNodes}
                     onRetry={(node) => void handleRetryNode(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                 />
-
                 <CanvasToolbar
                     selectedCount={selectedNodeIds.size}
                     canUndo={historyState.canUndo}
@@ -2980,15 +3150,10 @@ function InfiniteCanvasPage() {
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}
                 />
-
                 {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={setViewport} /> : null}
-
                 <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onReset={resetViewport} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
-
-                <CanvasPptPanel />
-
-                <CanvasNodeAnnotateDialog /> {/* [二开] annotate */}
-
+                <CanvasPptPanel generationModule={pptGenerationModule} />
+                <CanvasNodeAnnotateDialog pptGenerationModule={pptGenerationModule} /> {/* [二开] annotate */}
                 {contextMenu ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}
@@ -3008,30 +3173,21 @@ function InfiniteCanvasPage() {
                         }}
                     />
                 ) : null}
-
                 <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
-
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
                 <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
-
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
-
                 {maskEditNode?.metadata?.content ? (
                     <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
                 ) : null}
-
                 {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
-
                 {upscaleNode?.metadata?.content ? (
                     <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open={Boolean(upscaleNode)} onClose={() => setUpscaleNodeId(null)} onConfirm={(params) => void upscaleImageNode(upscaleNode!, params)} />
                 ) : null}
-
                 <Modal title="AI 超分" open={Boolean(superResolveNode?.metadata?.content)} centered footer={null} onCancel={() => setSuperResolveNodeId(null)}>
                     <div className="py-8 text-center text-base font-medium">暂未实现</div>
                 </Modal>
-
                 {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
-
                 <Modal
                     title="图片详情"
                     open={Boolean(previewNode?.metadata?.content)}
@@ -3043,7 +3199,6 @@ function InfiniteCanvasPage() {
                 >
                     {previewNode?.metadata?.content ? <img src={previewNode.metadata.content} alt={previewNode.title || "图片"} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
                 </Modal>
-
                 <Modal
                     title="清空画布？"
                     open={clearConfirmOpen}
@@ -3060,7 +3215,6 @@ function InfiniteCanvasPage() {
                 >
                     <p className="text-sm opacity-60">这会删除当前画布上的所有节点和连线。</p>
                 </Modal>
-
                 <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={() => setAssetPickerOpen(false)} />
             </section>
         </main>
