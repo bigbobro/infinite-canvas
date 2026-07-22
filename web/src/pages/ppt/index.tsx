@@ -9,6 +9,25 @@ import { useCanvasStore, type CanvasProject, type CanvasProjectPptDeckBrief, typ
 import { useAssetStore } from "@/stores/use-asset-store";
 import { hasUnresolvedPptGeneration } from "@/lib/ppt/generation-ledger";
 import { getImageBlob, resolveImageUrl } from "@/services/image-storage";
+import {
+    buildPptCreationDraftSnapshot,
+    clearPptCreationDraft,
+    createPptCreationDraftAutosaveScheduler,
+    describePptCreationClearFailure,
+    getPptListCreateAction,
+    hasPptCreationDraftProgress,
+    loadPptCreationDraft,
+    resolvePptCreationDraftAutosaveDecision,
+    resolvePptCreationDraftUnmountFlush,
+    runPptCreationDraftLeaveSequence,
+    savePptCreationDraft,
+    nextSuppressMountInterruptedStyle,
+    shouldAutoGeneratePptStyleDirections,
+    shouldSuppressMountAutoStyleFromSnapshot,
+    type PptCreationDraftSnapshot,
+    type PptListCreateAction,
+    type PptWizardMode,
+} from "@/services/ppt-creation-draft";
 import { extractPptPages, previewExtractPages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
 import { buildPptDeckProject, createPptVerbatimSpecs } from "@/lib/ppt/deck-builder";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
@@ -20,8 +39,8 @@ import { usePptContentPlanning, type FinalizedPptContent } from "@/pages/ppt/use
 import { usePptStylePlanning } from "@/pages/ppt/use-ppt-style-planning";
 import type { CanvasNodeData } from "@/types/canvas";
 
-type PptWizardMode = "outline" | "extract";
 type PptDeck = CanvasProject & { ppt: NonNullable<CanvasProject["ppt"]> };
+type WizardSession = { key: number; snapshot: PptCreationDraftSnapshot | null; resumed: boolean };
 
 const { TextArea } = Input;
 
@@ -62,9 +81,60 @@ export default function PptPage() {
 
     const decks = useMemo(() => projects.filter((project): project is PptDeck => Boolean(project.ppt)), [projects]);
 
-    const [wizardOpen, setWizardOpen] = useState(false);
+    const [wizardSession, setWizardSession] = useState<WizardSession | null>(null);
+    const [wizardOpening, setWizardOpening] = useState(false);
+    const [listCreateAction, setListCreateAction] = useState<PptListCreateAction>(() => getPptListCreateAction(null));
     const [renameTarget, setRenameTarget] = useState<{ id: string; title: string } | null>(null);
     const deletingDeckIdRef = useRef<string | null>(null);
+
+    const refreshListCreateAction = async () => {
+        try {
+            const snapshot = await loadPptCreationDraft();
+            setListCreateAction(getPptListCreateAction(snapshot));
+        } catch {
+            setListCreateAction(getPptListCreateAction(null));
+        }
+    };
+
+    useEffect(() => {
+        void refreshListCreateAction();
+    }, []);
+
+    const openWizard = async () => {
+        if (wizardOpening) return;
+        setWizardOpening(true);
+        try {
+            // Load snapshot before mounting PptWizard so empty defaults cannot race autosave.
+            const snapshot = await loadPptCreationDraft();
+            setWizardSession({
+                key: Date.now(),
+                snapshot,
+                resumed: hasPptCreationDraftProgress(snapshot),
+            });
+        } catch {
+            message.warning("草稿恢复失败，已打开空白向导");
+            setWizardSession({ key: Date.now(), snapshot: null, resumed: false });
+        } finally {
+            setWizardOpening(false);
+        }
+    };
+
+    const closeWizard = () => {
+        setWizardSession(null);
+        void refreshListCreateAction();
+    };
+
+    const restartWizard = async () => {
+        try {
+            await clearPptCreationDraft();
+            setWizardSession({ key: Date.now(), snapshot: null, resumed: false });
+            setListCreateAction(getPptListCreateAction(null));
+        } catch (error) {
+            // Explicit restart clear failure must not falsely reset UI.
+            message.error(describePptCreationClearFailure("restart"));
+            throw error instanceof Error ? error : new Error(describePptCreationClearFailure("restart"));
+        }
+    };
 
     const confirmDeleteDeck = (deck: CanvasProject) => {
         if (hasUnresolvedPptGeneration(deck.nodes)) {
@@ -101,13 +171,17 @@ export default function PptPage() {
         setRenameTarget(null);
     };
 
-    if (wizardOpen) {
+    if (wizardSession) {
         return (
             <PptWizard
+                key={wizardSession.key}
                 effectiveConfig={effectiveConfig}
-                onCancel={() => setWizardOpen(false)}
+                initialSnapshot={wizardSession.snapshot}
+                resumed={wizardSession.resumed}
+                onCancel={closeWizard}
+                onRestart={restartWizard}
                 onCreated={(id) => {
-                    setWizardOpen(false);
+                    closeWizard();
                     navigate(`/canvas/${id}`);
                 }}
                 importProject={importProject}
@@ -124,9 +198,10 @@ export default function PptPage() {
                         <p className="text-xs text-stone-500">PPT 工作台</p>
                         <h1 className="mt-3 text-3xl font-semibold">我的 PPT</h1>
                         <p className="mt-2 text-sm text-stone-500">材料生成分页大纲，确定视觉方向后批量出图，交付页面图片或图片版 PPT。</p>
+                        {listCreateAction.supportingCue ? <p className="mt-1 text-xs text-stone-500">{listCreateAction.supportingCue}</p> : null}
                     </div>
-                    <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setWizardOpen(true)}>
-                        新建 PPT
+                    <Button type="primary" icon={<Plus className="size-4" />} loading={wizardOpening} onClick={() => void openWizard()}>
+                        {listCreateAction.primaryLabel}
                     </Button>
                 </header>
 
@@ -138,9 +213,9 @@ export default function PptPage() {
                     </div>
                 ) : (
                     <section className="flex min-h-[360px] flex-col items-center justify-center gap-4 border-y border-stone-200 text-center dark:border-stone-800">
-                        <p className="text-sm text-stone-500">从一份材料开始你的第一份 deck</p>
-                        <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setWizardOpen(true)}>
-                            新建 PPT
+                        <p className="text-sm text-stone-500">{listCreateAction.kind === "resume" ? listCreateAction.supportingCue : "从一份材料开始你的第一份 deck"}</p>
+                        <Button type="primary" icon={<Plus className="size-4" />} loading={wizardOpening} onClick={() => void openWizard()}>
+                            {listCreateAction.primaryLabel}
                         </Button>
                     </section>
                 )}
@@ -208,40 +283,53 @@ type MessageApi = ReturnType<typeof App.useApp>["message"];
 
 function PptWizard({
     effectiveConfig,
+    initialSnapshot,
+    resumed,
     onCancel,
+    onRestart,
     onCreated,
     importProject,
     message,
 }: {
     effectiveConfig: ReturnType<typeof useEffectiveConfig>;
+    initialSnapshot: PptCreationDraftSnapshot | null;
+    resumed: boolean;
     onCancel: () => void;
+    onRestart: () => void | Promise<void>;
     onCreated: (id: string) => void;
     importProject: (project: Partial<CanvasProject>) => string;
     message: MessageApi;
 }) {
-    const [step, setStep] = useState(0);
-    const [mode, setMode] = useState<PptWizardMode>("outline");
-    const [deckTitle, setDeckTitle] = useState("");
-    const [material, setMaterial] = useState("");
-    const [requirements, setRequirements] = useState("");
+    const seed = initialSnapshot;
+    // One-shot: block only the initial restored interrupted step2 auto-effect; clear when leaving step 2.
+    const suppressMountInterruptedStyleRef = useRef(shouldSuppressMountAutoStyleFromSnapshot(seed));
+    const [step, setStep] = useState(seed?.step ?? 0);
+    const [mode, setMode] = useState<PptWizardMode>(seed?.mode ?? "outline");
+    const [deckTitle, setDeckTitle] = useState(seed?.deckTitle ?? "");
+    const [material, setMaterial] = useState(seed?.material ?? "");
+    const [requirements, setRequirements] = useState(seed?.requirements ?? "");
     const [extractLoading, setExtractLoading] = useState(false);
     const [extractError, setExtractError] = useState("");
     const [extractReceivedCharacters, setExtractReceivedCharacters] = useState(0);
-    const [pages, setPages] = useState<PptOutlinePage[]>([]);
-    const [extractedDirectionHint, setExtractedDirectionHint] = useState("");
-    const [extractGlobalDecision, setExtractGlobalDecision] = useState<"include" | "exclude" | null>(null);
-    const [finalizedContent, setFinalizedContent] = useState<FinalizedPptContent | null>(null);
+    const [pages, setPages] = useState<PptOutlinePage[]>(() => seed?.pages ?? []);
+    const [extractedDirectionHint, setExtractedDirectionHint] = useState(seed?.extractedDirectionHint ?? "");
+    const [extractGlobalDecision, setExtractGlobalDecision] = useState<"include" | "exclude" | null>(seed?.extractGlobalDecision ?? null);
+    const [finalizedContent, setFinalizedContent] = useState<FinalizedPptContent | null>(() => seed?.finalizedContent ?? null);
     const [brokenReferenceKeys, setBrokenReferenceKeys] = useState<string[]>([]);
     const [building, setBuilding] = useState(false);
     const extractControllerRef = useRef<AbortController | null>(null);
     const extractTokenRef = useRef(0);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
-    const contentPlanning = usePptContentPlanning(effectiveConfig, {
-        title: deckTitle,
-        sourceMaterial: material,
-        requirements,
-    });
+    const contentPlanning = usePptContentPlanning(
+        effectiveConfig,
+        {
+            title: deckTitle,
+            sourceMaterial: material,
+            requirements,
+        },
+        { initialDraft: seed?.contentDraft ?? null },
+    );
     const styleInput = useMemo(
         () =>
             finalizedContent
@@ -253,7 +341,11 @@ function PptWizard({
                   },
         [deckTitle, finalizedContent],
     );
-    const stylePlanning = usePptStylePlanning(effectiveConfig, styleInput, { brokenReferenceKeys });
+    const stylePlanning = usePptStylePlanning(effectiveConfig, styleInput, {
+        brokenReferenceKeys,
+        initialContract: seed?.styleContract ?? null,
+        initialPageSpecs: seed?.stylePageSpecs ?? null,
+    });
 
     const cancelExtract = () => {
         extractControllerRef.current?.abort();
@@ -270,10 +362,144 @@ function PptWizard({
         [],
     );
 
+    // Latest committed snapshot for debounced save + immediate unmount flush (route leave).
+    const pendingDraftRef = useRef<PptCreationDraftSnapshot | null>(null);
+    // Restart / successful finalize must not let unmount recreate a just-cleared draft.
+    const suppressUnmountFlushRef = useRef(false);
+    // Distinguish initial empty mount (no-op) from progress→empty (must clear durable draft).
+    const hadMeaningfulProgressRef = useRef(hasPptCreationDraftProgress(seed));
+    // Hold debounce timer outside the effect local so restart/finalize can cancel before clear.
+    const autosaveSchedulerRef = useRef(
+        createPptCreationDraftAutosaveScheduler({
+            save: savePptCreationDraft,
+        }),
+    );
+
+    // Persist committed progress only (skip mid-request / building). 400ms debounce; leave/unmount flushes pending.
     useEffect(() => {
-        if (mode !== "outline" || step !== 2 || !finalizedContent || stylePlanning.recommendation.status !== "idle" || stylePlanning.candidates.length) return;
+        if (extractLoading || contentPlanning.loading || stylePlanning.loading || building) {
+            autosaveSchedulerRef.current.cancel();
+            return;
+        }
+        const snapshot = buildPptCreationDraftSnapshot({
+            mode,
+            step,
+            deckTitle,
+            material,
+            requirements,
+            pages,
+            extractedDirectionHint,
+            extractGlobalDecision,
+            contentDraft: contentPlanning.draft,
+            finalizedContent,
+            styleContract: stylePlanning.contract,
+            stylePageSpecs: stylePlanning.contract ? stylePlanning.pageSpecs : null,
+        });
+        const decision = resolvePptCreationDraftAutosaveDecision({
+            snapshot,
+            hadMeaningfulProgress: hadMeaningfulProgressRef.current,
+        });
+        hadMeaningfulProgressRef.current = decision.hadMeaningfulProgress;
+
+        if (decision.kind === "noop") {
+            pendingDraftRef.current = null;
+            autosaveSchedulerRef.current.cancel();
+            return;
+        }
+        if (decision.kind === "clear") {
+            // Progress → empty: cancel armed save then clear durable storage (save ignores empty).
+            pendingDraftRef.current = null;
+            autosaveSchedulerRef.current.cancel();
+            void clearPptCreationDraft().catch(() => undefined);
+            return;
+        }
+        pendingDraftRef.current = decision.snapshot;
+        autosaveSchedulerRef.current.schedule(decision.snapshot, 400);
+        return () => autosaveSchedulerRef.current.cancel();
+    }, [
+        building,
+        contentPlanning.draft,
+        contentPlanning.loading,
+        deckTitle,
+        extractGlobalDecision,
+        extractLoading,
+        extractedDirectionHint,
+        finalizedContent,
+        material,
+        mode,
+        pages,
+        requirements,
+        step,
+        stylePlanning.contract,
+        stylePlanning.loading,
+        stylePlanning.pageSpecs,
+    ]);
+
+    useEffect(
+        () => () => {
+            autosaveSchedulerRef.current.cancel();
+            const toFlush = resolvePptCreationDraftUnmountFlush({
+                suppressUnmountFlush: suppressUnmountFlushRef.current,
+                pendingSnapshot: pendingDraftRef.current,
+            });
+            if (toFlush) void savePptCreationDraft(toFlush).catch(() => undefined);
+        },
+        [],
+    );
+
+    /** Explicit leave: flush before parent close/list refresh so CTA is not stale. */
+    const handleCancel = async () => {
+        autosaveSchedulerRef.current.cancel();
+        const leave = await runPptCreationDraftLeaveSequence({
+            suppressUnmountFlush: suppressUnmountFlushRef.current,
+            pendingSnapshot: pendingDraftRef.current,
+            save: savePptCreationDraft,
+        });
+        suppressUnmountFlushRef.current = leave.suppressUnmountFlush;
+        if (leave.flushed) pendingDraftRef.current = null;
+        onCancel();
+    };
+
+    const handleRestart = () => {
+        // Cancel armed debounce BEFORE clear — a post-clear timer fire captures the new epoch and can resurrect.
+        autosaveSchedulerRef.current.cancel();
+        // Suppress unmount flush only while restart clear + remount proceeds.
+        // If clear fails, re-enable so later route leave can still persist.
+        suppressUnmountFlushRef.current = true;
+        const snapshotBeforeRestart = pendingDraftRef.current;
+        pendingDraftRef.current = null;
+        void Promise.resolve(onRestart()).catch(() => {
+            suppressUnmountFlushRef.current = false;
+            pendingDraftRef.current = snapshotBeforeRestart;
+        });
+    };
+
+    // Clear one-shot suppress when user leaves the initial restored interrupted step2 (e.g. back to content).
+    useEffect(() => {
+        suppressMountInterruptedStyleRef.current = nextSuppressMountInterruptedStyle({
+            suppress: suppressMountInterruptedStyleRef.current,
+            step,
+        });
+    }, [step]);
+
+    // Auto style generation only when there is no restored/current Contract yet.
+    // Initial interrupted resume (step2 + content, no Contract) one-shot blocked; UI retry still works.
+    useEffect(() => {
+        if (
+            !shouldAutoGeneratePptStyleDirections({
+                mode,
+                step,
+                hasFinalizedContent: Boolean(finalizedContent),
+                hasStyleContract: Boolean(stylePlanning.contract),
+                recommendationStatus: stylePlanning.recommendation.status,
+                candidateCount: stylePlanning.candidates.length,
+                suppressMountInterruptedStyle: suppressMountInterruptedStyleRef.current,
+            })
+        ) {
+            return;
+        }
         void stylePlanning.generate();
-    }, [finalizedContent, mode, step, stylePlanning.candidates.length, stylePlanning.generate, stylePlanning.recommendation.status]);
+    }, [finalizedContent, mode, step, stylePlanning.candidates.length, stylePlanning.contract, stylePlanning.generate, stylePlanning.recommendation.status]);
 
     const textModelReady = () => {
         const model = effectiveConfig.textModel || effectiveConfig.model;
@@ -398,7 +624,18 @@ function PptWizard({
                       ...(extractGlobalDecision === "include" && extractedDirectionHint ? { confirmedGlobalSpec: extractedDirectionHint } : {}),
                   });
             const id = importProject(deck);
-            message.success("画布已创建");
+            // Cancel debounce timer before clear — do not rely on setBuilding effect scheduling.
+            autosaveSchedulerRef.current.cancel();
+            // Suppress unmount flush so clear is not undone when the wizard unmounts after navigate.
+            suppressUnmountFlushRef.current = true;
+            pendingDraftRef.current = null;
+            // Project creation already succeeded; clear failure must not report「建图失败」or invite a duplicate import.
+            try {
+                await clearPptCreationDraft();
+                message.success("画布已创建");
+            } catch {
+                message.warning(describePptCreationClearFailure("finalize"));
+            }
             onCreated(id);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "建图失败，请重试");
@@ -411,11 +648,18 @@ function PptWizard({
         <main className="h-full overflow-auto bg-background text-stone-950 dark:text-stone-100">
             <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-10">
                 <header className="flex items-center gap-3 border-b border-stone-200 pb-6 dark:border-stone-800">
-                    <Button type="text" icon={<ArrowLeft className="size-4" />} onClick={onCancel}>
+                    <Button type="text" icon={<ArrowLeft className="size-4" />} onClick={() => void handleCancel()}>
                         返回列表
                     </Button>
                     <h1 className="text-xl font-semibold">新建 PPT</h1>
+                    <div className="ml-auto">
+                        <Popconfirm title="重新开始？" description="将清除未完成的创建草稿并回到初始步骤。" okText="重新开始" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={handleRestart}>
+                            <Button type="text">重新开始</Button>
+                        </Popconfirm>
+                    </div>
                 </header>
+
+                {resumed ? <Alert type="info" showIcon message="已恢复上次未完成内容" className="border-stone-200 dark:border-stone-800" /> : null}
 
                 <Steps
                     current={step}

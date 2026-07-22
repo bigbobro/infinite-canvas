@@ -15,6 +15,8 @@ import type { AiConfig } from "@/stores/use-config-store";
 
 type PptStylePlanningOptions = {
     initialContract?: CanvasProjectPptStyleContract | null;
+    /** Restored page specs when style review edited them beyond finalized content. */
+    initialPageSpecs?: CanvasProjectPptPageSpec[] | null;
     requester?: PptStyleTextRequester;
     brokenReferenceKeys?: string[];
 };
@@ -30,6 +32,38 @@ type PageSpecEntry = { inputKey: string; pageSpecs: CanvasProjectPptPageSpec[] }
 
 export type PptStylePlanningController = ReturnType<typeof usePptStylePlanning>;
 
+/**
+ * Idempotent restored PageSpecs hydration across StrictMode double-setup.
+ * Keep restored specs for every setup at the initial inputKey; stop only after the hook
+ * genuinely leaves that key (and never re-apply restored after returning).
+ */
+export function resolvePptStyleRestoredPageSpecsHydration(input: {
+    inputKey: string;
+    restoredInitialKey: string | null;
+    leftRestoredInitialKey: boolean;
+    restoredPageSpecs: CanvasProjectPptPageSpec[] | null | undefined;
+    plannerPageSpecs: CanvasProjectPptPageSpec[];
+}): {
+    pageSpecs: CanvasProjectPptPageSpec[];
+    restoredInitialKey: string | null;
+    leftRestoredInitialKey: boolean;
+    usedRestored: boolean;
+} {
+    let restoredInitialKey = input.restoredInitialKey;
+    let leftRestoredInitialKey = input.leftRestoredInitialKey;
+    if (restoredInitialKey != null && input.inputKey !== restoredInitialKey) {
+        leftRestoredInitialKey = true;
+        restoredInitialKey = null;
+    }
+    const usedRestored = Boolean(input.restoredPageSpecs?.length) && restoredInitialKey != null && input.inputKey === restoredInitialKey && !leftRestoredInitialKey;
+    return {
+        pageSpecs: usedRestored ? structuredClone(input.restoredPageSpecs!) : structuredClone(input.plannerPageSpecs),
+        restoredInitialKey,
+        leftRestoredInitialKey,
+        usedRestored,
+    };
+}
+
 export function usePptStylePlanning(config: AiConfig, input: PptStyleDirectionPlannerInput, options: PptStylePlanningOptions = {}) {
     const plannerInput = useMemo<PptStyleDirectionPlannerInput>(
         () => ({
@@ -44,6 +78,8 @@ export function usePptStylePlanning(config: AiConfig, input: PptStyleDirectionPl
     const inputKey = useMemo(() => createPptStyleDirectionInputKey(plannerInput), [plannerInput]);
     const requestConfigKey = `${config.textModel || config.model}\u0000${config.baseUrl}\u0000${config.apiFormat}`;
     const initialContract = useMemo(() => canonicalContract(options.initialContract), []);
+    const restoredPageSpecs = useMemo(() => (options.initialPageSpecs?.length ? structuredClone(options.initialPageSpecs) : null), []);
+    const seedPageSpecs = restoredPageSpecs ?? structuredClone(input.pageSpecs);
 
     const cacheRef = useRef(new Map<string, PptStyleDirectionCandidate[]>());
     const controllerRef = useRef<AbortController | null>(null);
@@ -54,22 +90,33 @@ export function usePptStylePlanning(config: AiConfig, input: PptStyleDirectionPl
     const requestConfigKeyRef = useRef(requestConfigKey);
     const requesterRef = useRef(options.requester);
     const brokenReferenceKeysRef = useRef(options.brokenReferenceKeys || []);
-    const interactedRef = useRef(false);
+    const interactedRef = useRef(Boolean(initialContract));
     const contractRef = useRef<CanvasProjectPptStyleContract | null>(initialContract);
     const selectedCandidateIdRef = useRef<string | null>(null);
     const draftRevisionRef = useRef(initialContract ? 1 : 0);
     const reviewedContentRevisionRef = useRef(initialContract ? input.contentRevision : "");
-    const pageSpecsRef = useRef(structuredClone(input.pageSpecs));
+    const pageSpecsRef = useRef(structuredClone(seedPageSpecs));
+    // StrictMode-safe: do not consume restored eligibility on first setup; only leave after real key change.
+    const restoredHydrationRef = useRef({
+        restoredInitialKey: restoredPageSpecs ? inputKey : (null as string | null),
+        leftRestoredInitialKey: false,
+    });
 
     const [candidates, setCandidates] = useState<PptStyleDirectionCandidate[]>([]);
     const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
     const [contract, setContract] = useState<CanvasProjectPptStyleContract | null>(initialContract);
     const [draftRevision, setDraftRevision] = useState(initialContract ? 1 : 0);
     const [reviewedContentRevision, setReviewedContentRevision] = useState(initialContract ? input.contentRevision : "");
-    const [pageSpecEntry, setPageSpecEntry] = useState<PageSpecEntry>({ inputKey, pageSpecs: structuredClone(input.pageSpecs) });
+    const [pageSpecEntry, setPageSpecEntry] = useState<PageSpecEntry>({ inputKey, pageSpecs: structuredClone(seedPageSpecs) });
     const [repairPreview, setRepairPreview] = useState<PptStyleRepairPatch | null>(null);
-    const [interacted, setInteracted] = useState(false);
-    const [recommendation, setRecommendation] = useState<RecommendationState>({ inputKey, status: "idle", error: "", receivedCharacters: 0 });
+    const [interacted, setInteracted] = useState(Boolean(initialContract));
+    // Restored Contract must not look "idle" so page auto-generate does not re-request models.
+    const [recommendation, setRecommendation] = useState<RecommendationState>({
+        inputKey,
+        status: initialContract ? "ready" : "idle",
+        error: "",
+        receivedCharacters: 0,
+    });
 
     inputRef.current = plannerInput;
     inputKeyRef.current = inputKey;
@@ -89,14 +136,29 @@ export function usePptStylePlanning(config: AiConfig, input: PptStyleDirectionPl
 
     useEffect(() => {
         cancel();
-        const nextPageSpecs = structuredClone(plannerInput.pageSpecs);
-        pageSpecsRef.current = nextPageSpecs;
-        setPageSpecEntry({ inputKey, pageSpecs: nextPageSpecs });
+        const resolved = resolvePptStyleRestoredPageSpecsHydration({
+            inputKey,
+            restoredInitialKey: restoredHydrationRef.current.restoredInitialKey,
+            leftRestoredInitialKey: restoredHydrationRef.current.leftRestoredInitialKey,
+            restoredPageSpecs,
+            plannerPageSpecs: plannerInput.pageSpecs,
+        });
+        restoredHydrationRef.current = {
+            restoredInitialKey: resolved.restoredInitialKey,
+            leftRestoredInitialKey: resolved.leftRestoredInitialKey,
+        };
+        pageSpecsRef.current = resolved.pageSpecs;
+        setPageSpecEntry({ inputKey, pageSpecs: resolved.pageSpecs });
         setRepairPreview(null);
         const cached = cacheRef.current.get(inputKey);
         setCandidates(cached || []);
-        setRecommendation({ inputKey, status: cached ? "ready" : "idle", error: "", receivedCharacters: 0 });
-    }, [cancel, inputKey]);
+        setRecommendation({
+            inputKey,
+            status: cached ? "ready" : contractRef.current ? "ready" : "idle",
+            error: "",
+            receivedCharacters: 0,
+        });
+    }, [cancel, inputKey, plannerInput.pageSpecs, restoredPageSpecs]);
 
     useEffect(() => {
         if (requestConfigKeyRef.current === requestConfigKey) return;

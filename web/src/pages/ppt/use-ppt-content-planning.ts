@@ -30,19 +30,30 @@ const EMPTY_STREAM_PROGRESS: PptContentStreamProgress = { completedPages: [] };
 export type PptContentPlanningController = ReturnType<typeof usePptContentPlanning>;
 export type FinalizedPptContent = ReturnType<typeof finalizePptContentDraft>;
 
-export function usePptContentPlanning(config: AiConfig, input: PptContentPlanRequest) {
+type PptContentPlanningOptions = {
+    /** Restored committed draft for the current input; seeded once into the session cache. */
+    initialDraft?: PptContentDraft | null;
+};
+
+export function usePptContentPlanning(config: AiConfig, input: PptContentPlanRequest, options: PptContentPlanningOptions = {}) {
     const inputSnapshot = useMemo(() => ({ title: input.title, sourceMaterial: input.sourceMaterial, requirements: input.requirements }), [input.requirements, input.sourceMaterial, input.title]);
     const inputKey = useMemo(() => createPptContentInputKey(inputSnapshot), [inputSnapshot]);
     const requestConfigKey = `${config.textModel || config.model}\u0000${config.baseUrl}\u0000${config.apiFormat}`;
     const cacheRef = useRef(new Map<string, PptContentDraft>());
+    const seededInitialRef = useRef(false);
+    if (!seededInitialRef.current && options.initialDraft) {
+        cacheRef.current.set(inputKey, options.initialDraft);
+        seededInitialRef.current = true;
+    }
     const controllerRef = useRef<AbortController | null>(null);
     const requestTokenRef = useRef(0);
     const inputRef = useRef(inputSnapshot);
     const inputKeyRef = useRef(inputKey);
     const configRef = useRef(config);
-    const draftRef = useRef<PptContentDraft | null>(null);
+    const initialDraft = seededInitialRef.current ? (cacheRef.current.get(inputKey) ?? options.initialDraft ?? null) : null;
+    const draftRef = useRef<PptContentDraft | null>(initialDraft);
     const draftKeyRef = useRef(inputKey);
-    const [draftEntry, setDraftEntry] = useState<DraftEntry>({ inputKey, draft: null });
+    const [draftEntry, setDraftEntry] = useState<DraftEntry>({ inputKey, draft: initialDraft });
     const [requestState, setRequestState] = useState<RequestState>({ inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
     const [pageRequestState, setPageRequestState] = useState<PageRequestState>({ inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
     const [repairPreview, setRepairPreview] = useState<PptContentRepairPreview | null>(null);
