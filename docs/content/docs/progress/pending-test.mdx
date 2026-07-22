@@ -9,6 +9,14 @@ description: 当前版本已实现但仍需人工验证的变更项
 > 上游自身功能（顶部导航、Agent、部署方式等）我们没有改动，不在此列 —— 合并上游时**不要把上游的待测清单带进来**。
 > 确认通过后移到 `overview/features.mdx`。
 
+## PPT 内容来源与归纳 Contract SHA-26
+
+- **derived 归纳**：模型对材料压缩/改写并声明 `relation=derived` 且行号合法、数字/大写术语落在引用行时，页面只显示一次正文，来源为「基于材料/补充要求 Lx–Ly 归纳」，不出现「引用范围无效」、同文 AI 建议，也不形成 blocking gap。
+- **verbatim 重绑**：逐字内容仍严格匹配；错误行号但原文存在时自动重绑为 `relation=verbatim`。
+- **新增硬事实**：derived 引入材料未支持的数字/大写术语时仍阻断，问题为短句（如「请确认本页核心信息中的新增表述」）；若建议与页面已显示正文相同，不渲染第二份「AI 建议」，提供「确认采用当前内容」。
+- **Deck Brief**：受众/目标/叙事主线是作者侧归纳；字段非空即可进入草稿，空字段才产生 missing_detail。
+- **验证边界**：`node --test tests/ppt-content-plan.test.mjs tests/ppt-content-plan-step.test.mjs tests/ppt-content-request.test.mjs`；localhost 仅用假 Provider，真实模型调用为 0。
+
 ## PPT 信息缺口与来源状态 SHA-22 / SHA-23 / SHA-24 / SHA-25
 
 - **来源重绑（SHA-22 / SHA-24）**：正文完整存在于原材料但模型行号错误或缺失时，应自动绑回最小支持行范围；不得再生成与原文相同的「请确认或补充」及 AI 建议。
