@@ -1628,3 +1628,186 @@ test("页级修复目标：选中问题并保留同页 blocking", () => {
     assert.ok(all.length >= onlyTarget.length);
     assert.equal(pptPageRepairActionLabel({ code: "noise_text" }), "修复本页");
 });
+
+// --- SHA-22 / SHA-23 / SHA-24 / SHA-25 gap provenance ---
+
+test("SHA-22：错误行号在材料中可定位时自动重绑，不生成同文 unsupported_claim", () => {
+    const claim = "安全决策：SSH 22端口不收紧来源，仅限制 root 登录";
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "运维同事", goal: "对齐安全边界", narrative: "从决策到落地" },
+            pages: [
+                {
+                    title: "安全决策",
+                    titleSource: { source: "material", startLine: 1, endLine: 1 },
+                    purpose: "说明安全边界",
+                    primaryClaim: claim,
+                    primaryClaimSource: { source: "material", startLine: 99, endLine: 99 },
+                    contentForm: "narrative",
+                    blocks: [],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        {
+            title: "安全决策",
+            sourceMaterial: `安全决策\n${claim}\n运维同事\n对齐安全边界\n从决策到落地`,
+            requirements: "",
+        },
+    );
+    const page = draft.pageSpecs[0];
+    const claimBlock = page.contentBlocks.find((block) => block.kind === "primary_claim");
+    const source = page.sourceRefs.find((item) => claimBlock.sourceRefIds.includes(item.id));
+    assert.ok(source);
+    assert.equal(source.startLine, 2);
+    assert.equal(source.endLine, 2);
+    assert.equal(source.excerpt, claim);
+    assert.equal(
+        draft.audit.gaps.some((gap) => gap.kind === "unsupported_claim" && gap.proposedAnswer === claim),
+        false,
+    );
+    assert.doesNotMatch(draft.audit.gaps.map((gap) => gap.question).join("\n"), /请确认或补充：安全决策/);
+});
+
+test("SHA-24：多条正文错误行号各自重绑到支持它们的最小连续行", () => {
+    const panel = "面板使用 3x-ui 管理入站";
+    const cert = "证书续期：x-ui x25519";
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "运维", goal: "落地", narrative: "步骤" },
+            pages: [
+                {
+                    title: "部署要点",
+                    titleSource: { source: "material", startLine: 1, endLine: 1 },
+                    purpose: "部署步骤",
+                    primaryClaim: "按顺序完成面板与证书",
+                    primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                    contentForm: "process",
+                    blocks: [
+                        { key: "panel", kind: "list", text: panel, source: { source: "material", startLine: 88, endLine: 88 } },
+                        { key: "cert", kind: "list", text: cert, source: { source: "material", startLine: 77, endLine: 77 } },
+                    ],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        {
+            title: "部署要点",
+            sourceMaterial: `部署要点\n按顺序完成面板与证书\n${panel}\n${cert}\n运维\n落地\n步骤`,
+            requirements: "",
+        },
+    );
+    const page = draft.pageSpecs[0];
+    const panelBlock = page.contentBlocks.find((block) => block.text === panel);
+    const certBlock = page.contentBlocks.find((block) => block.text === cert);
+    const panelSource = page.sourceRefs.find((item) => panelBlock.sourceRefIds.includes(item.id));
+    const certSource = page.sourceRefs.find((item) => certBlock.sourceRefIds.includes(item.id));
+    assert.equal(panelSource?.startLine, 3);
+    assert.equal(certSource?.startLine, 4);
+    assert.equal(
+        draft.audit.gaps.some((gap) => gap.kind === "unsupported_claim" && (gap.proposedAnswer === panel || gap.proposedAnswer === cert)),
+        false,
+    );
+});
+
+test("SHA-23：空核心信息只产生请补充本页核心信息，不出现本页内容", () => {
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "读者", goal: "理解", narrative: "主线" },
+            pages: [
+                {
+                    title: "空核心页",
+                    titleSource: { source: "material", startLine: 1, endLine: 1 },
+                    purpose: "待写核心",
+                    primaryClaim: "",
+                    contentForm: "narrative",
+                    blocks: [],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        { title: "空核心页", sourceMaterial: "空核心页\n读者\n理解\n主线", requirements: "" },
+    );
+    const claimGaps = draft.audit.gaps.filter((gap) => gap.pageId === draft.pageSpecs[0].pageId && draft.pageSpecs[0].contentBlocks.some((block) => block.kind === "primary_claim" && block.gapId === gap.id));
+    assert.ok(claimGaps.some((gap) => gap.kind === "missing_detail" && gap.question === "请补充本页核心信息"));
+    assert.equal(
+        draft.audit.gaps.some((gap) => /本页内容/.test(gap.question)),
+        false,
+    );
+    assert.equal(
+        draft.audit.gaps.some((gap) => gap.kind === "unsupported_claim" && !gap.proposedAnswer),
+        false,
+    );
+});
+
+test("SHA-23：真正空标题保留第N页展示回退，并产生请补充本页标题", () => {
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "读者", goal: "理解", narrative: "主线" },
+            pages: [
+                {
+                    title: "",
+                    purpose: "待写标题",
+                    primaryClaim: "已有核心信息",
+                    primaryClaimSource: { source: "material", startLine: 1, endLine: 1 },
+                    contentForm: "narrative",
+                    blocks: [],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        { title: "材料标题", sourceMaterial: "已有核心信息\n读者\n理解\n主线", requirements: "" },
+    );
+    const page = draft.pageSpecs[0];
+    const titleBlock = page.contentBlocks.find((block) => block.kind === "title");
+    assert.equal(titleBlock?.text, "第1页");
+    const titleGap = draft.audit.gaps.find((gap) => gap.id === titleBlock?.gapId);
+    assert.ok(titleGap);
+    assert.equal(titleGap.kind, "missing_detail");
+    assert.equal(titleGap.question, "请补充本页标题");
+    assert.equal(titleGap.proposedAnswer, undefined);
+    assert.equal(
+        draft.audit.gaps.some((gap) => /本页内容|请确认或补充：第1页/.test(gap.question)),
+        false,
+    );
+});
+
+test("SHA-25：纯占位列表归一为 placeholder + 具体 missing_detail，且无同文建议", () => {
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "读者", goal: "理解", narrative: "主线" },
+            pages: [
+                {
+                    title: "占位页",
+                    titleSource: { source: "material", startLine: 1, endLine: 1 },
+                    purpose: "说明占位",
+                    primaryClaim: "先列清单",
+                    primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                    contentForm: "narrative",
+                    blocks: [{ key: "todo", kind: "list", text: "待补充" }],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        { title: "占位页", sourceMaterial: "占位页\n先列清单\n读者\n理解\n主线", requirements: "" },
+    );
+    const page = draft.pageSpecs[0];
+    const block = page.contentBlocks.find((item) => item.kind === "placeholder" || item.text === "待补充");
+    assert.ok(block);
+    assert.equal(block.kind, "placeholder");
+    assert.equal(block.sourceRefIds.length, 0);
+    const gap = draft.audit.gaps.find((item) => item.id === block.gapId);
+    assert.ok(gap);
+    assert.equal(gap.kind, "missing_detail");
+    assert.equal(gap.question, "请补充本页列表内容");
+    assert.equal(gap.proposedAnswer, undefined);
+    assert.equal(
+        draft.audit.gaps.some((item) => item.question === "请确认或补充：待补充"),
+        false,
+    );
+});

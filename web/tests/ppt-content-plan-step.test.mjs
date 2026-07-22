@@ -53,6 +53,22 @@ test("SHA-19/21：内容检查按钮按问题显示压缩本页或修复封面",
     assert.doesNotMatch(html, /重新生成本页/);
 });
 
+test("SHA-25：块已绑定未解决 gap 且无来源时只显示信息缺口，不并列来源待确认", () => {
+    const html = renderPlan([gap("g-list", "请补充本页列表内容", { pageId: "page-1" })], {
+        contentBlocks: [
+            { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
+            { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: ["src-claim"] },
+            { id: "list", kind: "placeholder", text: "待补充", sourceRefIds: [], gapId: "g-list" },
+        ],
+        sourceRefs: [{ id: "src-claim", source: "material", excerpt: "核心信息", startLine: 1, endLine: 1 }],
+    });
+    const gapSection = sectionStartingAt(html, "信息缺口");
+    assert.match(gapSection, /请补充本页列表内容/);
+    assert.match(gapSection, /ppt-gap-g-list/);
+    assert.doesNotMatch(html, /来源待确认/);
+    assert.doesNotMatch(html, /等待你补充/);
+});
+
 test("SHA-20：页级修复可见 loading、success、error 终态且进行中禁用重复提交", () => {
     const loading = renderPlan([], {
         pageRequest: { pageId: "page-1", loading: true, status: "loading", error: "", successMessage: "" },
@@ -96,8 +112,8 @@ function createPlanning(gaps, overrides = {}) {
                     contentForm: overrides.contentForm || "narrative",
                     layoutIntent: [],
                     visualEncoding: [],
-                    sourceRefs: [],
-                    contentBlocks: [
+                    sourceRefs: overrides.sourceRefs || [],
+                    contentBlocks: overrides.contentBlocks || [
                         { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
                         { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: [] },
                     ],

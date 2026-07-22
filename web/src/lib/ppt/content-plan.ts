@@ -137,6 +137,7 @@ const DECK_CREATION_INTENT_PATTERN = /^(?:我)?(?:想|希望|准备|需要|要)(
 const DECK_SELF_REFERENCE_PATTERN =
     /^(?:(?:我做)?(?:这份|本份)(?:材料|PPT|演示)|(?:这个|本)\s*(?:PPT|演示))[^。！？\n]{0,100}(?:(?:不是[^。！？\n]{0,40}罗列)|(?:(?:需要|要|希望)[^。！？\n]{0,60}(?:让|讲清|说明|介绍|展示|回答|包含|覆盖|理解|传达))|(?:用于|目的是?|目的|受众|内容(?:包括|包含)|核心受众))/i;
 const COVER_TARGET_QUESTION_PATTERN = /(?:为什么|好在哪里|解决(?:了)?什么(?:问题)?|为谁(?:去)?服务|面向谁|怎么(?:使用|做)|如何(?:使用|落地)|是什么)/g;
+const PURE_PLACEHOLDER_TEXT_PATTERN = /^(?:待补充|请补充)[。.!！…]*$/;
 
 export function normalizePptContentDraft(rawInput: unknown, sourceInput: PptContentSourceInput): PptContentDraft {
     const raw = asRecord(rawInput) as RawDraft;
@@ -642,43 +643,63 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
     const consumedPreviousBlockIds = new Set<string>();
     const addBlock = (key: string, identity: string, kind: CanvasProjectPptContentBlock["kind"], value: string, rawSource?: RawSourceRange, gapKey?: string) => {
         if (blockByKey.has(key)) throw new Error(`页面内容 key 重复：${key}`);
-        const previousMatch = resolvePreviousConfirmedBlock(previousPageSpec, kind, value, consumedPreviousBlockIds);
+        const purePlaceholder = isPurePlaceholderText(value);
+        const isRequired = kind === "title" || kind === "primary_claim";
+        const effectiveKind: CanvasProjectPptContentBlock["kind"] = purePlaceholder && !isRequired ? "placeholder" : kind;
+        const effectiveValue = purePlaceholder && isRequired ? "" : value;
+        const previousMatch = resolvePreviousConfirmedBlock(previousPageSpec, effectiveKind, effectiveValue, consumedPreviousBlockIds);
         const blockId = previousMatch?.blockId || `${pageId}:block:${identity}`;
-        const inputSourceRef = previousMatch ? undefined : resolveSourceRef(pageId, key, value, rawSource, sourceInput);
+        const shouldResolveSource = !previousMatch && Boolean(effectiveValue) && effectiveKind !== "placeholder" && !purePlaceholder;
+        const inputSourceRef = shouldResolveSource ? resolveSourceRef(pageId, key, effectiveValue, rawSource, sourceInput) : undefined;
         const blockSourceRefs = previousMatch?.sourceRefs || (inputSourceRef ? [inputSourceRef] : []);
         for (const sourceRef of blockSourceRefs) {
             if (!sourceRefs.some((item) => item.id === sourceRef.id)) sourceRefs.push(sourceRef);
         }
         let gap = gapKey ? gapByKey.get(gapKey) : undefined;
-        if (!blockSourceRefs.length && kind !== "placeholder" && !gap) {
+        if (!blockSourceRefs.length && !gap) {
             const generatedKey = `source-${key}`;
             const autoGapKey = generatedKey === "source-title" || generatedKey === "source-primary_claim" ? generatedKey : `source-${identity}`;
-            gap = {
-                id: `${pageId}:gap:auto:${encodeURIComponent(autoGapKey)}`,
-                lineageKey: gapLineageKey("unsupported_claim", `请确认或补充：${value || "本页内容"}`),
-                pageId,
-                kind: "unsupported_claim",
-                question: `请确认或补充：${value || "本页内容"}`,
-                reason: rawSource ? "引用范围无效或与内容无关" : "该内容无法从原始输入中定位",
-                blocking: true,
-                ...(value ? { proposedAnswer: value } : {}),
-            };
-            gaps.push(gap);
+            if (!effectiveValue || purePlaceholder) {
+                const question = missingDetailQuestion(key, kind);
+                gap = {
+                    id: `${pageId}:gap:auto:${encodeURIComponent(autoGapKey)}`,
+                    lineageKey: gapLineageKey("missing_detail", question),
+                    pageId,
+                    kind: "missing_detail",
+                    question,
+                    reason: "本页缺少所需信息",
+                    blocking: true,
+                };
+                gaps.push(gap);
+            } else if (effectiveKind !== "placeholder") {
+                gap = {
+                    id: `${pageId}:gap:auto:${encodeURIComponent(autoGapKey)}`,
+                    lineageKey: gapLineageKey("unsupported_claim", `请确认或补充：${effectiveValue}`),
+                    pageId,
+                    kind: "unsupported_claim",
+                    question: `请确认或补充：${effectiveValue}`,
+                    reason: rawSource ? "引用范围无效或与内容无关" : "该内容无法从原始输入中定位",
+                    blocking: true,
+                    proposedAnswer: effectiveValue,
+                };
+                gaps.push(gap);
+            }
         }
         const block: CanvasProjectPptContentBlock = {
             id: blockId,
-            kind,
-            text: value,
+            kind: effectiveKind,
+            text: effectiveValue,
             sourceRefIds: blockSourceRefs.map((sourceRef) => sourceRef.id),
             ...(gap ? { gapId: gap.id } : {}),
         };
         blockByKey.set(key, block);
         return block;
     };
-    const blocks: CanvasProjectPptContentBlock[] = [
-        addBlock("title", "title", "title", text(rawPage.title) || `第${index + 1}页`, rawPage.titleSource),
-        addBlock("primary_claim", "primary_claim", "primary_claim", text(rawPage.primaryClaim), rawPage.primaryClaimSource),
-    ];
+    const rawTitle = text(rawPage.title);
+    const titleBlock = addBlock("title", "title", "title", rawTitle, rawPage.titleSource);
+    // 空标题仍建「请补充本页标题」缺口，展示文案保留第 N 页回退
+    if (!rawTitle) titleBlock.text = `第${index + 1}页`;
+    const blocks: CanvasProjectPptContentBlock[] = [titleBlock, addBlock("primary_claim", "primary_claim", "primary_claim", text(rawPage.primaryClaim), rawPage.primaryClaimSource)];
     const rawBlocks = Array.isArray(rawPage.blocks) ? (rawPage.blocks as RawBlock[]) : [];
     for (const [blockIndex, rawBlock] of rawBlocks.entries()) {
         const key = text(rawBlock.key) || `content-${blockIndex + 1}`;
@@ -765,16 +786,66 @@ function normalizeVisualEncodings(rawValue: unknown, pageId: string, blockByKey:
 }
 
 function resolveSourceRef(pageId: string, key: string, value: string, raw: RawSourceRange | undefined, sourceInput: PptContentSourceInput) {
-    const source = raw?.source;
-    if (source !== "material" && source !== "requirements") return undefined;
-    const startLine = Number(raw?.startLine);
-    const endLine = Number(raw?.endLine);
-    const sourceText = source === "material" ? sourceInput.sourceMaterial : sourceInput.requirements;
+    if (!normalize(value)) return undefined;
+    const declared = raw?.source === "material" || raw?.source === "requirements" ? raw.source : undefined;
+    if (declared) {
+        const sourceText = declared === "material" ? sourceInput.sourceMaterial : sourceInput.requirements;
+        const startLine = Number(raw?.startLine);
+        const endLine = Number(raw?.endLine);
+        const lines = sourceText.split("\n");
+        if (Number.isInteger(startLine) && Number.isInteger(endLine) && startLine >= 1 && endLine >= startLine && endLine <= lines.length) {
+            const excerpt = lines.slice(startLine - 1, endLine).join("\n");
+            if (sourceSupportsText(excerpt, value)) {
+                return { id: `${pageId}:source:${stableKey(key)}:${declared}:${startLine}-${endLine}`, source: declared, excerpt, startLine, endLine } satisfies CanvasProjectPptSourceRef;
+            }
+        }
+        const rebound = findSmallestSupportingRange(sourceText, value);
+        if (rebound) {
+            return { id: `${pageId}:source:${stableKey(key)}:${declared}:${rebound.startLine}-${rebound.endLine}`, source: declared, excerpt: rebound.excerpt, startLine: rebound.startLine, endLine: rebound.endLine } satisfies CanvasProjectPptSourceRef;
+        }
+    }
+    for (const source of ["material", "requirements"] as const) {
+        if (source === declared) continue;
+        const sourceText = source === "material" ? sourceInput.sourceMaterial : sourceInput.requirements;
+        const rebound = findSmallestSupportingRange(sourceText, value);
+        if (rebound) {
+            return { id: `${pageId}:source:${stableKey(key)}:${source}:${rebound.startLine}-${rebound.endLine}`, source, excerpt: rebound.excerpt, startLine: rebound.startLine, endLine: rebound.endLine } satisfies CanvasProjectPptSourceRef;
+        }
+    }
+    return undefined;
+}
+
+function findSmallestSupportingRange(sourceText: string, value: string) {
+    if (!normalize(value) || !sourceText) return undefined;
+    // 全文都不支持时直接返回，避免常见无匹配路径的 O(n²) 窗口扫描
+    if (!sourceSupportsText(sourceText, value)) return undefined;
     const lines = sourceText.split("\n");
-    if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine || endLine > lines.length) return undefined;
-    const excerpt = lines.slice(startLine - 1, endLine).join("\n");
-    if (!sourceSupportsText(excerpt, value)) return undefined;
-    return { id: `${pageId}:source:${stableKey(key)}:${source}:${startLine}-${endLine}`, source, excerpt, startLine, endLine } satisfies CanvasProjectPptSourceRef;
+    let best: { startLine: number; endLine: number; excerpt: string; length: number } | undefined;
+    for (let startLine = 1; startLine <= lines.length; startLine++) {
+        for (let endLine = startLine; endLine <= lines.length; endLine++) {
+            const excerpt = lines.slice(startLine - 1, endLine).join("\n");
+            if (!sourceSupportsText(excerpt, value)) continue;
+            const length = endLine - startLine + 1;
+            if (!best || length < best.length) best = { startLine, endLine, excerpt, length };
+            break;
+        }
+    }
+    return best ? { startLine: best.startLine, endLine: best.endLine, excerpt: best.excerpt } : undefined;
+}
+
+function isPurePlaceholderText(value: string) {
+    return PURE_PLACEHOLDER_TEXT_PATTERN.test(normalize(value));
+}
+
+function missingDetailQuestion(key: string, kind: CanvasProjectPptContentBlock["kind"]) {
+    if (key === "title" || kind === "title") return "请补充本页标题";
+    if (key === "primary_claim" || kind === "primary_claim") return "请补充本页核心信息";
+    if (kind === "supporting_claim") return "请补充本页支撑观点";
+    if (kind === "body") return "请补充本页正文";
+    if (kind === "list") return "请补充本页列表内容";
+    if (kind === "table") return "请补充本页表格内容";
+    if (kind === "chart_data") return "请补充本页图表数据";
+    return "请补充本页所需信息";
 }
 
 function resolvePreviousConfirmedBlock(previousPageSpec: CanvasProjectPptPageSpec | undefined, kind: CanvasProjectPptContentBlock["kind"], value: string, consumedBlockIds: Set<string>) {

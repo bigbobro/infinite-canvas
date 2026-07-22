@@ -390,7 +390,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                 <section>
                     <p className="text-xs font-medium text-stone-400">核心信息</p>
                     <EditableText value={primaryClaim?.text || "待补充"} className="mt-2 text-[15px] font-medium leading-6" ariaLabel="编辑核心信息" multiline onSave={(value) => primaryClaim && planning.editBlock(page.pageId, primaryClaim.id, value)} />
-                    {primaryClaim ? <BlockSources block={primaryClaim} sourceById={sourceById} /> : null}
+                    {primaryClaim ? <BlockSources block={primaryClaim} sourceById={sourceById} unresolvedGapIds={unresolvedGaps.map((gap) => gap.id)} /> : null}
                 </section>
 
                 {contentBlocks.length ? (
@@ -408,7 +408,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                                             multiline
                                             onSave={(value) => planning.editBlock(page.pageId, block.id, value)}
                                         />
-                                        <BlockSources block={block} sourceById={sourceById} />
+                                        <BlockSources block={block} sourceById={sourceById} unresolvedGapIds={unresolvedGaps.map((gap) => gap.id)} />
                                     </div>
                                 </div>
                             ))}
@@ -494,9 +494,13 @@ function EditableText({ value, className, ariaLabel, multiline = false, onSave }
     );
 }
 
-function BlockSources({ block, sourceById }: { block: CanvasProjectPptContentBlock; sourceById: Map<string, CanvasProjectPptSourceRef> }) {
+function BlockSources({ block, sourceById, unresolvedGapIds }: { block: CanvasProjectPptContentBlock; sourceById: Map<string, CanvasProjectPptSourceRef>; unresolvedGapIds: string[] }) {
     const sources = block.sourceRefIds.map((id) => sourceById.get(id)).filter((source): source is CanvasProjectPptSourceRef => Boolean(source));
-    if (!sources.length) return <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">{block.kind === "placeholder" ? "等待你补充" : "来源待确认"}</p>;
+    if (!sources.length) {
+        // 已有未解决信息缺口时，缺口区是唯一可行动状态，不再并列「来源待确认」
+        if (block.gapId && unresolvedGapIds.includes(block.gapId)) return null;
+        return <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-300">{block.kind === "placeholder" ? "等待你补充" : "来源待确认"}</p>;
+    }
     return <p className="mt-1 text-[11px] text-stone-400">{sources.map(sourceLabel).join(" · ")}</p>;
 }
 
