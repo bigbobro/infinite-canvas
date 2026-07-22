@@ -1,21 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { App, Button, Empty, Input, Modal, Popconfirm, Progress, Segmented, Steps } from "antd";
+import { Alert, App, Button, Empty, Input, Modal, Popconfirm, Progress, Segmented, Skeleton, Steps } from "antd";
 import { ArrowLeft, ArrowRight, FolderOpen, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 
 import { PptVisualDirectionEditor } from "@/components/ppt-visual-direction-editor";
-import { useEffectiveConfig } from "@/stores/use-config-store";
-import { useCanvasStore, type CanvasProject, type CanvasProjectPptStyleContract } from "@/stores/canvas/use-canvas-store";
+import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
+import { useCanvasStore, type CanvasProject, type CanvasProjectPptDeckBrief, type CanvasProjectPptStyleContract } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { hasUnresolvedPptGeneration } from "@/lib/ppt/generation-ledger";
 import { resolveImageUrl } from "@/services/image-storage";
-import { extractPptPages, generatePptOutline, previewExtractPages, previewOutlinePages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
-import { buildPptDeckProject, type BuildPptDeckParams } from "@/lib/ppt/deck-builder";
+import { extractPptPages, previewExtractPages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
+import { buildPptDeckProject, createPptVerbatimSpecs } from "@/lib/ppt/deck-builder";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
-import { createPptVisualDirectionPresetContract, findPptVisualDirectionInstructions } from "@/lib/ppt/style-contract";
+import { createPptVisualDirectionPresetContract, derivePptVisualDirectionRules, normalizePptStyleContract } from "@/lib/ppt/style-contract";
+import { selectPptPageDescriptor } from "@/lib/ppt/page-descriptor";
+import { PptContentPlanStep } from "@/pages/ppt/components/ppt-content-plan-step";
+import { usePptContentPlanning, type FinalizedPptContent } from "@/pages/ppt/use-ppt-content-planning";
 import type { CanvasNodeData } from "@/types/canvas";
 
-type PptWizardMode = NonNullable<BuildPptDeckParams["mode"]>;
+type PptWizardMode = "outline" | "extract";
 type PptDeck = CanvasProject & { ppt: NonNullable<CanvasProject["ppt"]> };
 
 const { TextArea } = Input;
@@ -154,7 +157,9 @@ function DeckCard({ deck, onOpen, onRename, onDelete }: { deck: PptDeck; onOpen:
     const confirmedWorkspaces = workspaces.filter((workspace) => workspace.confirmationIssues.length === 0);
     const confirmed = confirmedWorkspaces.length;
     const { cover, onCoverError } = useDeckCover(confirmedWorkspaces[0]?.confirmedNode ?? null);
-    const headline = [...deck.ppt.pages].sort((a, b) => a.index - b.index)[0]?.title || deck.title;
+    const firstPage = [...deck.ppt.pages].sort((a, b) => a.index - b.index)[0];
+    const firstPageDescriptor = firstPage ? selectPptPageDescriptor(deck.ppt, firstPage.pageId) : null;
+    const headline = firstPageDescriptor?.title || deck.title;
     const iconButtonClass =
         "flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors duration-150 hover:bg-black/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white/70 motion-reduce:transition-none";
 
@@ -191,7 +196,7 @@ function DeckCard({ deck, onOpen, onRename, onDelete }: { deck: PptDeck; onOpen:
                         {confirmed}/{total}
                     </span>
                 </div>
-                <Progress percent={total ? Math.round((confirmed / total) * 100) : 0} size="small" showInfo={false} strokeWidth={2} />
+                <Progress percent={total ? Math.round((confirmed / total) * 100) : 0} size={[-1, 2]} showInfo={false} />
             </div>
         </article>
     );
@@ -217,95 +222,147 @@ function PptWizard({
     const [deckTitle, setDeckTitle] = useState("");
     const [material, setMaterial] = useState("");
     const [requirements, setRequirements] = useState("");
-    const [outlineRaw, setOutlineRaw] = useState("");
-    const [outlineLoading, setOutlineLoading] = useState(false);
+    const [extractLoading, setExtractLoading] = useState(false);
+    const [extractError, setExtractError] = useState("");
+    const [extractReceivedCharacters, setExtractReceivedCharacters] = useState(0);
     const [pages, setPages] = useState<PptOutlinePage[]>([]);
     const [styleContract, setStyleContract] = useState<CanvasProjectPptStyleContract>(() => createPptVisualDirectionPresetContract());
     const [extractedDirectionHint, setExtractedDirectionHint] = useState("");
+    const [extractGlobalDecision, setExtractGlobalDecision] = useState<"include" | "exclude" | null>(null);
+    const [finalizedContent, setFinalizedContent] = useState<FinalizedPptContent | null>(null);
     const [building, setBuilding] = useState(false);
+    const extractControllerRef = useRef<AbortController | null>(null);
+    const extractTokenRef = useRef(0);
+    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
+    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const contentPlanning = usePptContentPlanning(effectiveConfig, {
+        title: deckTitle,
+        sourceMaterial: material,
+        requirements,
+    });
 
-    const runOutline = async () => {
+    const cancelExtract = () => {
+        extractControllerRef.current?.abort();
+        extractControllerRef.current = null;
+        extractTokenRef.current += 1;
+        setExtractLoading(false);
+    };
+
+    useEffect(
+        () => () => {
+            extractControllerRef.current?.abort();
+            extractTokenRef.current += 1;
+        },
+        [],
+    );
+
+    const textModelReady = () => {
+        const model = effectiveConfig.textModel || effectiveConfig.model;
+        if (isAiConfigReady(effectiveConfig, model)) return true;
+        message.warning("请先配置可用的文本模型");
+        openConfigDialog(true, "channels");
+        return false;
+    };
+
+    const runExtract = async () => {
         if (!material.trim()) {
             message.error("请先粘贴材料内容");
             return;
         }
+        if (!textModelReady()) return;
         const previousPages = pages;
-        setOutlineLoading(true);
-        setOutlineRaw("");
+        cancelExtract();
+        const controller = new AbortController();
+        const token = extractTokenRef.current + 1;
+        extractTokenRef.current = token;
+        extractControllerRef.current = controller;
+        setExtractLoading(true);
+        setExtractError("");
+        setExtractReceivedCharacters(0);
         try {
-            if (mode === "extract") {
-                const result = await extractPptPages(effectiveConfig, material, (text) => {
-                    setOutlineRaw(text);
+            const result = await extractPptPages(
+                effectiveConfig,
+                material,
+                (text) => {
+                    if (controller.signal.aborted || extractTokenRef.current !== token) return;
+                    setExtractReceivedCharacters(text.length);
                     setPages(previewExtractPages(text, material));
-                });
-                setPages(result.pages);
-                const extractedDirection = result.globalStyle.trim();
-                setExtractedDirectionHint(extractedDirection);
-                setStyleContract(extractedDirection ? { source: { kind: "custom" }, direction: extractedDirection, references: [] } : createPptVisualDirectionPresetContract());
-                if (result.droppedCount > 0) {
-                    const shown = result.droppedTitles.slice(0, 3).join("、");
-                    const suffix = result.droppedTitles.length > 3 ? ` 等 ${result.droppedTitles.length} 页` : "";
-                    message.warning(`以下内容因边界识别失败被丢弃：${shown}${suffix}，请检查材料或手动补齐`);
-                }
-                message.success(`已展开 ${result.pages.length} 页`);
-            } else {
-                const result = await generatePptOutline(effectiveConfig, material, requirements, (text) => {
-                    setOutlineRaw(text);
-                    setPages(previewOutlinePages(text));
-                });
-                setPages(result.pages);
-                message.success(`已生成 ${result.pages.length} 页大纲`);
+                },
+                { signal: controller.signal },
+            );
+            if (controller.signal.aborted || extractTokenRef.current !== token) return;
+            setPages(result.pages);
+            setExtractedDirectionHint(result.globalStyle.trim());
+            setExtractGlobalDecision(null);
+            if (result.droppedCount > 0) {
+                const shown = result.droppedTitles.slice(0, 3).join("、");
+                const suffix = result.droppedTitles.length > 3 ? ` 等 ${result.droppedTitles.length} 页` : "";
+                message.warning(`以下内容因边界识别失败被丢弃：${shown}${suffix}，请检查材料`);
             }
+            message.success(`已展开 ${result.pages.length} 页`);
         } catch (error) {
+            if (controller.signal.aborted || extractTokenRef.current !== token) return;
             setPages(previousPages);
-            message.error(error instanceof Error ? error.message : mode === "extract" ? "展开分页失败，请重试" : "大纲生成失败，请重试");
+            setExtractError(error instanceof Error ? error.message : "展开分页失败，请重试");
         } finally {
-            setOutlineLoading(false);
+            if (extractTokenRef.current === token) {
+                extractControllerRef.current = null;
+                setExtractLoading(false);
+            }
         }
     };
 
-    const updatePage = (index: number, patch: Partial<PptOutlinePage>) => setPages((prev) => prev.map((page, i) => (i === index ? { ...page, ...patch, ...(patch.outline === undefined ? {} : { sourceRange: undefined }) } : page)));
+    const updateExtractPage = (index: number, patch: Pick<PptOutlinePage, "title"> | Pick<PptOutlinePage, "outline">) =>
+        setPages((prev) => prev.map((page, pageIndex) => (pageIndex === index ? { ...page, ...patch, ...(Object.hasOwn(patch, "outline") ? { sourceRange: undefined } : {}) } : page)));
     const removePage = (index: number) => setPages((prev) => prev.filter((_, i) => i !== index));
     const addPage = () => setPages((prev) => [...prev, { title: `第${prev.length + 1}页`, outline: "", visualHint: "" }]);
 
-    const continueToOutline = () => {
-        const visualRequirement = mode === "outline" ? findPptVisualDirectionInstructions(requirements)[0] : undefined;
-        if (visualRequirement) {
-            message.warning(`请把视觉描述移到第三步“视觉方向”：${visualRequirement}`);
+    const startPlanning = () => {
+        if (!material.trim()) {
+            message.error("请先粘贴材料内容");
             return;
         }
+        if (!textModelReady()) return;
         setStep(1);
+        if (mode === "extract") void runExtract();
+        else void contentPlanning.generate();
     };
 
-    const continueToVisualDirection = () => {
-        const pageWithVisualOverride = pages.find((page) => findPptVisualDirectionInstructions(page.visualHint)[0]);
-        if (pageWithVisualOverride) {
-            message.warning(`“${pageWithVisualOverride.title}”的构图建议包含视觉风格，请移到整套“视觉方向”`);
+    const continueExtract = () => {
+        if (!pages.length) {
+            setExtractError("分页内容为空，请先展开或手动添加分页");
             return;
         }
+        if (pages.some((page) => !page.title.trim() || !page.outline.trim())) {
+            setExtractError("每页都需要标题和完整规格");
+            return;
+        }
+        setExtractError("");
         setStep(2);
     };
 
     const confirmBuild = async () => {
-        if (!pages.length) {
-            message.error(mode === "extract" ? "分页内容为空，请先展开或手动添加分页" : "大纲为空，请先生成或手动添加分页");
-            return;
-        }
-        if (pages.some((page) => !page.title.trim())) {
-            message.error("每页需要有标题");
-            return;
-        }
         setBuilding(true);
         try {
             const title = deckTitle.trim() || `PPT-${new Date().toLocaleDateString()}`;
-            const deck = buildPptDeckProject({
-                title,
-                sourceMaterial: material,
-                requirements,
-                styleContract,
-                pages,
-                mode,
-            });
+            const content = mode === "outline" ? finalizedContent || contentPlanning.finalize() : null;
+            const deck = content
+                ? buildPptDeckProject({
+                      title,
+                      sourceMaterial: material,
+                      requirements,
+                      compilePolicy: "structured",
+                      deckBrief: createDeckBrief(content, styleContract, requirements),
+                      pageSpecs: content.pageSpecs,
+                  })
+                : buildPptDeckProject({
+                      title,
+                      sourceMaterial: material,
+                      requirements: "",
+                      compilePolicy: "verbatim",
+                      verbatimSpecs: createPptVerbatimSpecs(pages, material),
+                      ...(extractGlobalDecision === "include" && extractedDirectionHint ? { confirmedGlobalSpec: extractedDirectionHint } : {}),
+                  });
             const id = importProject(deck);
             message.success("画布已创建");
             onCreated(id);
@@ -326,7 +383,12 @@ function PptWizard({
                     <h1 className="text-xl font-semibold">新建 PPT</h1>
                 </header>
 
-                <Steps current={step} size="small" className="[&_.ant-steps-item-icon-number]:font-mono [&_.ant-steps-item-icon-number]:tabular-nums" items={[{ title: "材料与要求" }, { title: "大纲编辑" }, { title: "视觉方向" }]} />
+                <Steps
+                    current={step}
+                    size="small"
+                    className="[&_.ant-steps-item-icon-number]:font-mono [&_.ant-steps-item-icon-number]:tabular-nums"
+                    items={[{ title: "材料与目标" }, { title: mode === "outline" ? "内容方案" : "分页规格" }, { title: mode === "outline" ? "视觉方向" : "整套说明" }]}
+                />
 
                 {step === 0 ? (
                     <div className="flex flex-col gap-4">
@@ -335,7 +397,16 @@ function PptWizard({
                             <Segmented
                                 block
                                 value={mode}
-                                onChange={(value) => setMode(value as PptWizardMode)}
+                                onChange={(value) => {
+                                    contentPlanning.cancel();
+                                    cancelExtract();
+                                    setMode(value as PptWizardMode);
+                                    setPages([]);
+                                    setFinalizedContent(null);
+                                    setExtractedDirectionHint("");
+                                    setExtractGlobalDecision(null);
+                                    setExtractError("");
+                                }}
                                 options={[
                                     {
                                         value: "outline",
@@ -378,102 +449,62 @@ function PptWizard({
                             </label>
                         ) : null}
                         <div className="flex justify-end">
-                            <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" onClick={continueToOutline}>
-                                下一步
+                            <Button type="primary" icon={<Sparkles className="size-4" />} onClick={startPlanning}>
+                                {mode === "outline" ? "生成内容方案" : "展开分页规格"}
                             </Button>
                         </div>
                     </div>
                 ) : null}
 
-                {step === 1 ? (
-                    <div className="flex flex-col gap-4">
-                        <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-medium">{mode === "extract" ? "分页内容" : "分页大纲"}</span>
-                            {pages.length ? (
-                                <Button size="small" icon={<Sparkles className="size-3.5" />} loading={outlineLoading} onClick={() => void runOutline()}>
-                                    {mode === "extract" ? "重新展开" : "重新生成"}
-                                </Button>
-                            ) : null}
-                        </div>
+                {step === 1 && mode === "outline" ? (
+                    <PptContentPlanStep
+                        planning={contentPlanning}
+                        onBack={() => setStep(0)}
+                        onConfirmed={(content) => {
+                            setFinalizedContent(content);
+                            setStep(2);
+                        }}
+                    />
+                ) : null}
 
-                        {outlineLoading ? (
-                            <div className="thin-scrollbar max-h-96 overflow-y-auto rounded-lg border border-dashed border-stone-300 p-3 font-mono text-xs text-stone-500 dark:border-stone-700 dark:text-stone-400">{outlineRaw || "生成中..."}</div>
-                        ) : null}
-
-                        {pages.length ? (
-                            <div className="flex flex-col gap-3">
-                                {pages.map((page, index) => (
-                                    <div
-                                        key={index}
-                                        style={{ animationDelay: revealDelay(index) }}
-                                        className="group animate-in fade-in-0 slide-in-from-bottom-2 duration-200 ease-out motion-reduce:animate-none rounded-lg border border-stone-200 p-3 dark:border-stone-800"
-                                    >
-                                        <div className="mb-2 flex items-center justify-between gap-2">
-                                            <span className="font-mono text-xs font-medium tabular-nums text-stone-500">{String(index + 1).padStart(2, "0")}</span>
-                                            <Popconfirm title="删除该页？" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removePage(index)}>
-                                                <Button
-                                                    size="small"
-                                                    type="text"
-                                                    danger
-                                                    icon={<Trash2 className="size-3.5" />}
-                                                    className="opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none"
-                                                    aria-label="删除该页"
-                                                />
-                                            </Popconfirm>
-                                        </div>
-                                        <div className="grid gap-2">
-                                            <Input value={page.title} onChange={(event) => updatePage(index, { title: event.target.value })} placeholder="页标题" />
-                                            <TextArea
-                                                value={page.outline}
-                                                onChange={(event) => updatePage(index, { outline: event.target.value })}
-                                                placeholder={mode === "extract" ? "该页完整提示词" : "该页要点"}
-                                                autoSize={mode === "extract" ? { minRows: 4, maxRows: 12 } : { minRows: 2, maxRows: 4 }}
-                                            />
-                                            {mode === "outline" ? <Input value={page.visualHint} onChange={(event) => updatePage(index, { visualHint: event.target.value })} placeholder="页面构图或素材建议（可选）" /> : null}
-                                        </div>
-                                    </div>
-                                ))}
-                                <Button icon={<Plus className="size-3.5" />} onClick={addPage}>
-                                    增加一页
-                                </Button>
-                            </div>
-                        ) : (
-                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={mode === "extract" ? "先展开分页，或直接手动添加分页" : "先生成大纲，或直接手动添加分页"}>
-                                <div className="flex flex-col items-center gap-2">
-                                    <Button type="primary" icon={<Sparkles className="size-3.5" />} loading={outlineLoading} onClick={() => void runOutline()}>
-                                        {mode === "extract" ? "展开分页" : "生成大纲"}
-                                    </Button>
-                                    <Button type="text" icon={<Plus className="size-3.5" />} onClick={addPage}>
-                                        手动添加一页
-                                    </Button>
-                                </div>
-                            </Empty>
-                        )}
-
-                        <div className="flex justify-between">
-                            <Button icon={<ArrowLeft className="size-4" />} onClick={() => setStep(0)}>
-                                上一步
-                            </Button>
-                            <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" disabled={!pages.length} onClick={continueToVisualDirection}>
-                                下一步
-                            </Button>
-                        </div>
-                    </div>
+                {step === 1 && mode === "extract" ? (
+                    <ExtractSpecStep
+                        pages={pages}
+                        loading={extractLoading}
+                        error={extractError}
+                        receivedCharacters={extractReceivedCharacters}
+                        onBack={() => {
+                            cancelExtract();
+                            setStep(0);
+                        }}
+                        onRetry={() => void runExtract()}
+                        onCancel={cancelExtract}
+                        onUpdate={updateExtractPage}
+                        onRemove={removePage}
+                        onAdd={addPage}
+                        onContinue={continueExtract}
+                    />
                 ) : null}
 
                 {step === 2 ? (
                     <div className="flex flex-col gap-4">
-                        <div>
-                            <h2 className="text-base font-semibold">选择整套 PPT 的视觉方向</h2>
-                            <p className="mt-1 text-sm text-stone-500">先从一个清晰方向开始，之后仍可在工作台调整。</p>
-                        </div>
-                        <PptVisualDirectionEditor value={styleContract} onChange={setStyleContract} extractedDirectionHint={mode === "extract" ? extractedDirectionHint : undefined} />
+                        {mode === "outline" ? (
+                            <>
+                                <div>
+                                    <h2 className="text-base font-semibold">选择整套 PPT 的视觉方向</h2>
+                                    <p className="mt-1 text-sm text-stone-500">内容已经定稿，这一步只决定整套的视觉规则。</p>
+                                </div>
+                                <PptVisualDirectionEditor value={styleContract} onChange={setStyleContract} extractedDirectionHint={finalizedContent?.brief.visualSignals.join("\n") || undefined} />
+                            </>
+                        ) : (
+                            <ExtractGlobalSpecDecision value={extractedDirectionHint} decision={extractGlobalDecision} onChange={setExtractGlobalDecision} />
+                        )}
 
                         <div className="flex justify-between">
                             <Button icon={<ArrowLeft className="size-4" />} onClick={() => setStep(1)}>
                                 上一步
                             </Button>
-                            <Button type="primary" icon={<Sparkles className="size-4" />} loading={building} onClick={() => void confirmBuild()}>
+                            <Button type="primary" icon={<Sparkles className="size-4" />} loading={building} disabled={mode === "extract" && Boolean(extractedDirectionHint) && extractGlobalDecision === null} onClick={() => void confirmBuild()}>
                                 生成画布
                             </Button>
                         </div>
@@ -481,5 +512,156 @@ function PptWizard({
                 ) : null}
             </div>
         </main>
+    );
+}
+
+function createDeckBrief(content: FinalizedPptContent, styleContract: CanvasProjectPptStyleContract, requirements: string): CanvasProjectPptDeckBrief {
+    const normalizedContract = normalizePptStyleContract(styleContract);
+    const styleRules = derivePptVisualDirectionRules(requirements, normalizedContract.direction);
+    return {
+        version: 1,
+        sourceHash: content.brief.sourceHash,
+        audience: content.brief.audience,
+        goal: content.brief.goal,
+        narrative: content.brief.narrative,
+        styleContract: normalizedContract,
+        globalRules: [],
+        forbiddenRules: styleRules.forbiddenRules,
+        lockedDeckFacts: [],
+    };
+}
+
+function ExtractSpecStep({
+    pages,
+    loading,
+    error,
+    receivedCharacters,
+    onBack,
+    onRetry,
+    onCancel,
+    onUpdate,
+    onRemove,
+    onAdd,
+    onContinue,
+}: {
+    pages: PptOutlinePage[];
+    loading: boolean;
+    error: string;
+    receivedCharacters: number;
+    onBack: () => void;
+    onRetry: () => void;
+    onCancel: () => void;
+    onUpdate: (index: number, patch: Pick<PptOutlinePage, "title"> | Pick<PptOutlinePage, "outline">) => void;
+    onRemove: (index: number) => void;
+    onAdd: () => void;
+    onContinue: () => void;
+}) {
+    return (
+        <section className="flex flex-col gap-4" aria-busy={loading}>
+            <div className="flex items-start justify-between gap-3">
+                <div>
+                    <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-stone-400">逐字模式</p>
+                    <h2 className="mt-2 text-lg font-semibold">分页规格</h2>
+                    <p className="mt-1 text-sm text-stone-500">只定位每页原文，不改写、不补充内容。</p>
+                </div>
+                {pages.length && !loading ? (
+                    <Button size="small" icon={<Sparkles className="size-3.5" />} onClick={onRetry}>
+                        重新展开
+                    </Button>
+                ) : null}
+            </div>
+
+            {error ? <Alert type="error" showIcon message={error} description={pages.length ? "当前分页仍已保留。" : "原始材料已保留，可以直接重试。"} /> : null}
+
+            {loading && !pages.length ? (
+                <div className="border-y border-stone-200 py-6 dark:border-stone-800">
+                    <Skeleton active title={{ width: "35%" }} paragraph={{ rows: 5 }} />
+                    <p className="mt-3 text-center text-xs text-stone-500">{receivedCharacters ? "正在按原文定位分页…" : "正在读取分页结构…"}</p>
+                </div>
+            ) : null}
+
+            {loading && pages.length ? (
+                <div className="flex items-center justify-between border-l-2 border-stone-300 py-1 pl-3 text-sm text-stone-500 dark:border-stone-700">
+                    <span>正在展开新分页，已识别 {pages.length} 页</span>
+                    <Button type="text" danger size="small" onClick={onCancel}>
+                        取消
+                    </Button>
+                </div>
+            ) : null}
+
+            {pages.length ? (
+                <div className="flex flex-col gap-3">
+                    {pages.map((page, index) => (
+                        <article
+                            key={`${page.sourceRange?.startLine ?? "edited"}:${index}`}
+                            style={{ animationDelay: revealDelay(index) }}
+                            className="group animate-in fade-in-0 slide-in-from-bottom-2 border border-stone-200 p-3 duration-200 ease-out motion-reduce:animate-none dark:border-stone-800"
+                        >
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                    <span className="font-mono text-xs font-medium tabular-nums text-stone-500">{String(index + 1).padStart(2, "0")}</span>
+                                    <span className="text-[11px] text-stone-400">{page.sourceRange ? `原稿 L${page.sourceRange.startLine}–${page.sourceRange.endLine}` : "用户编辑"}</span>
+                                </div>
+                                <Popconfirm title="删除该页？" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => onRemove(index)}>
+                                    <Button size="small" type="text" danger icon={<Trash2 className="size-3.5" />} aria-label="删除该页" />
+                                </Popconfirm>
+                            </div>
+                            <div className="grid gap-2">
+                                <Input value={page.title} onChange={(event) => onUpdate(index, { title: event.target.value })} placeholder="页标题" />
+                                <TextArea value={page.outline} onChange={(event) => onUpdate(index, { outline: event.target.value })} placeholder="该页完整提示词" autoSize={{ minRows: 5, maxRows: 14 }} />
+                            </div>
+                        </article>
+                    ))}
+                    <Button type="text" icon={<Plus className="size-3.5" />} onClick={onAdd}>
+                        手动增加一页
+                    </Button>
+                </div>
+            ) : !loading ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未展开分页">
+                    <div className="flex flex-col items-center gap-2">
+                        <Button type="primary" icon={<Sparkles className="size-3.5" />} onClick={onRetry}>
+                            重试展开
+                        </Button>
+                        <Button type="text" icon={<Plus className="size-3.5" />} onClick={onAdd}>
+                            手动添加一页
+                        </Button>
+                    </div>
+                </Empty>
+            ) : null}
+
+            <div className="flex justify-between border-t border-stone-200 pt-4 dark:border-stone-800">
+                <Button icon={<ArrowLeft className="size-4" />} onClick={onBack}>
+                    上一步
+                </Button>
+                <Button type="primary" icon={<ArrowRight className="size-4" />} iconPosition="end" disabled={loading || !pages.length} onClick={onContinue}>
+                    确认分页
+                </Button>
+            </div>
+        </section>
+    );
+}
+
+function ExtractGlobalSpecDecision({ value, decision, onChange }: { value: string; decision: "include" | "exclude" | null; onChange: (value: "include" | "exclude") => void }) {
+    if (!value) {
+        return <Alert type="info" showIcon message="没有待确认的整套说明" description="后续将仅使用每页的逐字规格，不额外添加默认视觉 Contract。" />;
+    }
+    return (
+        <section className="space-y-4">
+            <div>
+                <h2 className="text-base font-semibold">确认原稿中未归入单页的说明</h2>
+                <p className="mt-1 text-sm text-stone-500">这段内容不会自动添加。请明确决定是否逐字附加到每页。</p>
+            </div>
+            <pre className="thin-scrollbar max-h-64 overflow-auto whitespace-pre-wrap border-y border-stone-200 py-4 font-sans text-sm leading-6 text-stone-600 dark:border-stone-800 dark:text-stone-300">{value}</pre>
+            <Segmented
+                block
+                value={decision || undefined}
+                onChange={(next) => onChange(next as "include" | "exclude")}
+                options={[
+                    { label: "附加到每页", value: "include" },
+                    { label: "不附加", value: "exclude" },
+                ]}
+            />
+            {decision === null ? <p className="text-sm text-amber-600 dark:text-amber-300">请选择后再生成画布。</p> : null}
+        </section>
     );
 }

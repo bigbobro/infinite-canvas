@@ -1,8 +1,10 @@
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
+import { derivePptLockedFacts, renderPptPageSpecText, validatePptPageSpec } from "@/lib/ppt/content-plan";
 import { hasPptRepeatBillingRisk } from "@/lib/ppt/generation-ledger";
 import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
-import type { CanvasProject, CanvasProjectPptPage } from "@/stores/canvas/use-canvas-store";
+import { selectPptPageDescriptor, type PptPageDescriptor } from "@/lib/ppt/page-descriptor";
+import { applyPptPageSpecUpdate, type CanvasProject, type CanvasProjectPpt, type CanvasProjectPptContentBlock, type CanvasProjectPptPage, type CanvasProjectPptTake } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type PptGenerationRequestTrace, type PptGenerationRunSummary } from "@/types/canvas";
 
 /** 其余生成输入项：与 buildNodeGenerationInputs 同源，附带 pptRole 用于非视觉方向的上游输入展示。 */
@@ -39,6 +41,10 @@ export type PptPageWorkspaceTake = {
 
 export type PptPageWorkspace = {
     page: CanvasProjectPptPage;
+    descriptor: PptPageDescriptor;
+    /** 由 canonical PageSpec / VerbatimSpec 派生，不从画布节点回退读取。 */
+    canonicalPrompt: string;
+    contentIssues: string[];
     takes: PptPageWorkspaceTake[];
     confirmedNode?: CanvasNodeData;
     /** 通过 Compiler 快照血缘门禁的最终候选稿 ID。 */
@@ -47,6 +53,9 @@ export type PptPageWorkspace = {
 };
 
 export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjectPptPage): PptPageWorkspace {
+    const descriptor = safeSelectPptPageDescriptor(project.ppt, page.pageId);
+    const canonicalPrompt = descriptor.status === "ok" ? getPptCanonicalPageText(project.ppt, page.pageId) : "";
+    const contentIssues = getPptCanonicalPageIssues(project.ppt, page.pageId, descriptor);
     const nodeById = new Map(project.nodes.map((node) => [node.id, node]));
     const downstreamById = new Map<string, string[]>();
     const addDownstream = (fromNodeId: string, toNodeId: string) => {
@@ -61,8 +70,9 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
         if (node.metadata?.batchRootId) addDownstream(node.metadata.batchRootId, node.id);
     });
 
-    const pageTakeList = Array.isArray(page.takes) ? page.takes : [];
-    const takeBoundaryIds = new Set((project.ppt?.pages || [page]).flatMap((projectPage) => (Array.isArray(projectPage.takes) ? projectPage.takes : []).flatMap((take) => [take.anchorNodeId, take.configNodeId])));
+    const pageTakeList = Array.isArray(page.takes) ? page.takes.filter(isValidPptTake) : [];
+    const projectPages = (Array.isArray(project.ppt?.pages) ? project.ppt.pages : [page]).filter((projectPage): projectPage is CanvasProjectPptPage => Boolean(projectPage && typeof projectPage === "object"));
+    const takeBoundaryIds = new Set(projectPages.flatMap((projectPage) => (Array.isArray(projectPage.takes) ? projectPage.takes.filter(isValidPptTake) : []).flatMap((take) => [take.anchorNodeId, take.configNodeId])));
     const seenOutputNodeIds = new Set<string>();
     const takes = pageTakeList.map<PptPageWorkspaceTake>((take, takeIndex) => {
         const anchorNode = nodeById.get(take.anchorNodeId);
@@ -86,7 +96,7 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
         const generating =
             latestRequests.some((request) => ["draft", "persisted", "submitting", "submitted", "running", "succeeded", "materializing"].includes(request.status)) ||
             (!latestRun && (configNode?.metadata?.status === "loading" || ownedOutputs.some((node) => node.metadata?.status === "loading")));
-        const prompt = anchorNode?.type === CanvasNodeType.Text && typeof anchorNode.metadata?.content === "string" ? anchorNode.metadata.content : "";
+        const prompt = canonicalPrompt;
         const composerContent = configNode?.metadata?.composerContent?.trim() ? configNode.metadata.composerContent : undefined;
         const upstreamInputs: PptPageUpstreamInput[] = configNode
             ? buildNodeGenerationInputs(configNode.id, project.nodes, project.connections)
@@ -95,8 +105,9 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             : [];
 
         // #7：技术分支归并为面向用户的两类，不出现「节点」字样，同一问题不重复表述。
-        const issues: string[] = [];
+        const issues: string[] = [...contentIssues];
         if (!anchorNode || anchorNode.type !== CanvasNodeType.Text) issues.push(`第 ${page.index} 页方案 ${takeIndex + 1} 的提示词丢失或异常，请重新创建方案`);
+        else if (anchorNode.metadata?.content !== canonicalPrompt) issues.push("页面内容投影与 canonical 内容规格不一致，请重新同步后生成");
         if (!configNode || configNode.type !== CanvasNodeType.Config) issues.push(`第 ${page.index} 页方案 ${takeIndex + 1} 的生成配置丢失或异常，请重新创建方案`);
         if (anchorNode && configNode && !project.connections.some((connection) => connection.fromNodeId === anchorNode.id && connection.toNodeId === configNode.id)) issues.push(`第 ${page.index} 页方案 ${takeIndex + 1} 的提示词连接缺失，请重新创建方案`);
         const runLedgerIncomplete =
@@ -123,7 +134,7 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             anchorNode,
             configNode,
             prompt,
-            canEditPrompt: Boolean(anchorNode?.type === CanvasNodeType.Text && candidates.length === 0 && !generating && !unresolvedGeneration),
+            canEditPrompt: Boolean(descriptor.status === "ok" && anchorNode?.type === CanvasNodeType.Text && candidates.length === 0 && !generating && !unresolvedGeneration),
             candidates,
             ownedOutputNodeIds,
             failedOutputNodeIds,
@@ -135,7 +146,7 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
             generating,
             issues,
             // 排版要求只读专用字段；metadata.prompt 不是 PPT Compiler 的展示/编辑来源。
-            layoutPrompt: (configNode?.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.mode === "extract" ? "" : PPT_PAGE_PROMPT),
+            layoutPrompt: (configNode?.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.compilePolicy === "structured" ? PPT_PAGE_PROMPT : ""),
             composerContent,
             upstreamInputs,
         };
@@ -158,7 +169,114 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
     const confirmedNode = confirmationIssues.length ? undefined : storedConfirmedNode;
     const resolvedConfirmedNodeId = confirmedNode?.id;
 
-    return { page, takes, confirmedNode, resolvedConfirmedNodeId, confirmationIssues };
+    return { page, descriptor, canonicalPrompt, contentIssues, takes, confirmedNode, resolvedConfirmedNodeId, confirmationIssues };
+}
+
+function isValidPptTake(take: CanvasProjectPptTake | null | undefined): take is CanvasProjectPptTake {
+    return Boolean(take && typeof take.takeId === "string" && take.takeId.trim() && typeof take.anchorNodeId === "string" && take.anchorNodeId.trim() && typeof take.configNodeId === "string" && take.configNodeId.trim());
+}
+
+export function getPptCanonicalPageText(ppt: CanvasProjectPpt | undefined, pageId: string) {
+    const descriptor = safeSelectPptPageDescriptor(ppt, pageId);
+    if (!ppt || descriptor.status === "invalid") return "";
+    if (ppt.compilePolicy === "verbatim") return ppt.verbatimSpecs.find((spec) => spec.pageId === pageId)?.exactText ?? "";
+    const pageSpec = ppt.pageSpecs.find((spec) => spec.pageId === pageId);
+    return pageSpec ? renderPptPageSpecText(pageSpec) : "";
+}
+
+/**
+ * 把工作台的全页文本编辑写回 canonical content source。
+ * structured 编辑会重建可见 ContentBlock 的 user_answer 溯源，并回到 reviewable；
+ * verbatim 编辑只改 exactText，不从文本反推标题。
+ */
+export function applyPptCanonicalPageTextEdit(ppt: CanvasProjectPpt, pageId: string, expectedVersion: number, value: string, approvedAt?: string): CanvasProjectPpt {
+    if (!value.trim()) throw new Error("页面内容不能为空");
+    if (approvedAt !== undefined && !approvedAt.trim()) throw new Error("内容批准时间不能为空");
+    if (ppt.compilePolicy === "verbatim") {
+        const current = ppt.verbatimSpecs.find((spec) => spec.pageId === pageId);
+        if (!current) throw new Error(`页面 ${pageId} 缺少 VerbatimSpec`);
+        if (current.version !== expectedVersion) throw new Error(`页面 ${pageId} 的规格已变更，请刷新后重试`);
+        if (current.exactText === value) return ppt;
+        const firstPageId = [...ppt.pages].sort((left, right) => left.index - right.index)[0]?.pageId;
+        return {
+            ...ppt,
+            ...(pageId === firstPageId ? { anchorConfirmed: false } : {}),
+            verbatimSpecs: ppt.verbatimSpecs.map((spec) => (spec.pageId === pageId ? { ...spec, version: spec.version + 1, exactText: value, origin: { kind: "user_edited" } } : spec)),
+            pages: ppt.pages.map((page) => (page.pageId === pageId && page.confirmedNodeId ? { ...page, confirmedNodeId: undefined } : page)),
+        };
+    }
+
+    const current = ppt.pageSpecs.find((spec) => spec.pageId === pageId);
+    if (!current) throw new Error(`页面 ${pageId} 缺少 PageSpec`);
+    if (renderPptPageSpecText(current) === value) return approvedAt ? approvePptCanonicalPageContent(ppt, pageId, expectedVersion, approvedAt) : ppt;
+    const lines = value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    if (lines.length < 2) throw new Error("结构化页面至少需要标题和核心信息两行");
+    return applyPptPageSpecUpdate(ppt, pageId, expectedVersion, (pageSpec) => {
+        const previousBlocks = pageSpec.contentBlocks.filter((block) => block.kind !== "placeholder");
+        const sourceRefs = lines.map((text, index) => ({ id: `${pageId}:source:user-answer:${pageSpec.version + 1}:${index + 1}`, source: "user_answer" as const, excerpt: text }));
+        const contentBlocks = lines.map<CanvasProjectPptContentBlock>((text, index) => {
+            const previous = previousBlocks[index];
+            const kind = index === 0 ? "title" : index === 1 ? "primary_claim" : previous && previous.kind !== "title" && previous.kind !== "primary_claim" ? previous.kind : "body";
+            return {
+                id: previous?.id || `${pageId}:block:user-answer:${pageSpec.version + 1}:${index + 1}`,
+                kind,
+                text,
+                sourceRefIds: [sourceRefs[index].id],
+            };
+        });
+        const next = {
+            ...pageSpec,
+            sourceRefs,
+            contentBlocks,
+            contentState: approvedAt ? ({ status: "approved", approvedAt } as const) : ({ status: "reviewable" } as const),
+            visualEncoding: [],
+        };
+        next.lockedFacts = derivePptLockedFacts(next);
+        if (approvedAt) {
+            const issues = validatePptPageSpec(next, { sourceMaterial: ppt.sourceMaterial, requirements: ppt.requirements });
+            if (issues.length) throw new Error(`页面内容规格无法批准：${issues.map((issue) => issue.message).join("；")}`);
+        }
+        return next;
+    });
+}
+
+export function approvePptCanonicalPageContent(ppt: CanvasProjectPpt, pageId: string, expectedVersion: number, approvedAt: string): CanvasProjectPpt {
+    if (ppt.compilePolicy !== "structured") return ppt;
+    if (!approvedAt.trim()) throw new Error("内容批准时间不能为空");
+    const current = ppt.pageSpecs.find((spec) => spec.pageId === pageId);
+    if (!current) throw new Error(`页面 ${pageId} 缺少 PageSpec`);
+    if (current.version !== expectedVersion) throw new Error(`页面 ${pageId} 的规格已变更，请刷新后重试`);
+    if (current.contentState.status === "approved") return ppt;
+    if (current.contentState.status === "blocked") throw new Error("页面仍有未解决的信息缺口");
+    const candidate = { ...structuredClone(current), contentState: { status: "approved" as const, approvedAt } };
+    candidate.lockedFacts = derivePptLockedFacts(candidate);
+    const issues = validatePptPageSpec(candidate, { sourceMaterial: ppt.sourceMaterial, requirements: ppt.requirements });
+    if (issues.length) throw new Error(`页面内容规格无法批准：${issues.map((issue) => issue.message).join("；")}`);
+    return applyPptPageSpecUpdate(ppt, pageId, expectedVersion, () => candidate);
+}
+
+function getPptCanonicalPageIssues(ppt: CanvasProjectPpt | undefined, pageId: string, descriptor: PptPageDescriptor) {
+    if (descriptor.status === "invalid") return [`页面内容规格需要修复：${descriptor.reason}`];
+    if (!ppt || ppt.compilePolicy !== "structured") return [];
+    const pageSpec = ppt.pageSpecs.find((spec) => spec.pageId === pageId);
+    if (!pageSpec) return ["页面内容规格需要修复：缺少 PageSpec"];
+    try {
+        return validatePptPageSpec(pageSpec, { sourceMaterial: ppt.sourceMaterial, requirements: ppt.requirements }).map((issue) => issue.message);
+    } catch {
+        return ["页面内容规格需要修复：PageSpec 结构损坏"];
+    }
+}
+
+function safeSelectPptPageDescriptor(ppt: CanvasProjectPpt | undefined, pageId: string): PptPageDescriptor {
+    try {
+        return selectPptPageDescriptor(ppt, pageId);
+    } catch {
+        const ledger = Array.isArray(ppt?.pages) ? ppt.pages.find((page) => page?.pageId === pageId) : undefined;
+        return { status: "invalid", pageId, ...(Number.isInteger(ledger?.index) ? { index: ledger!.index } : {}), title: "内容规格待修复", keyMessage: "", reason: "页面内容规格结构损坏" };
+    }
 }
 
 function isBatchGroup(node: CanvasNodeData) {

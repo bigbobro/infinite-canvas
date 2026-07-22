@@ -2,7 +2,9 @@ import { applyCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
 import { isPptCandidateEditReferenceSnapshot } from "@/lib/ppt/candidate-edit";
 import { applyGenerationPlanPptOps, assertGenerationPlanCompilation, assertGenerationPlanCurrentTargets, isPptCandidateEditSnapshot, type GenerationPlan, type GenerationPlanRequest, type GenerationPlanRun } from "@/lib/ppt/generation-plan";
 import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
+import { selectPptPageDescriptor } from "@/lib/ppt/page-descriptor";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
+import { hashPptContentSource } from "@/lib/ppt/source-lineage";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasNodeData, CanvasNodeMetadata, PptGenerationRequestStatus, PptGenerationRequestTrace, PptGenerationRunStatus, PptGenerationRunSummary } from "@/types/canvas";
 
@@ -508,10 +510,34 @@ function assertGenerationPlanKind(project: CanvasProject, plan: GenerationPlan, 
 
 function assertCompilerInputsCurrent(project: CanvasProject, plan: GenerationPlan) {
     if (!plan.compilation) return;
-    if (!project.ppt || JSON.stringify(project.ppt.deckBrief) !== JSON.stringify(plan.compilation.deckBrief)) throw new Error("PPT 全局规格已变更，请重新确认生成计划");
-    const pendingPageSpecs = new Map(plan.pptOps.flatMap((op) => (op.type === "setPageSpec" ? [[op.pageSpec.pageId, op.pageSpec] as const] : [])));
+    const ppt = project.ppt;
+    if (!ppt || ppt.compilePolicy !== plan.compilation.compilePolicy) throw new Error("PPT 编译策略已变更，请重新确认生成计划");
+    if (plan.compilation.compilePolicy === "verbatim") {
+        if (ppt.compilePolicy !== "verbatim") throw new Error("PPT 编译策略已变更，请重新确认生成计划");
+        if (plan.pptOps.some((op) => op.type === "setPageSpec")) throw new Error("逐字规格生成计划不能包含 PageSpec 更新");
+        if (ppt.confirmedGlobalSpec !== plan.compilation.confirmedGlobalSpec) throw new Error("PPT 全局逐字规格已变更，请重新确认生成计划");
+        for (const snapshotSpec of plan.compilation.verbatimSpecs) {
+            const descriptor = selectPptPageDescriptor(ppt, snapshotSpec.pageId);
+            if (descriptor.status === "invalid") throw new Error(`页面 ${snapshotSpec.pageId} 的逐字规格已失效：${descriptor.reason}`);
+            const currentSpecs = ppt.verbatimSpecs.filter((spec) => spec.pageId === snapshotSpec.pageId);
+            if (currentSpecs.length !== 1 || JSON.stringify(currentSpecs[0]) !== JSON.stringify(snapshotSpec)) throw new Error(`页面 ${snapshotSpec.pageId} 的逐字规格已变更，请重新确认生成计划`);
+        }
+        return;
+    }
+    if (ppt.compilePolicy !== "structured") throw new Error("PPT 编译策略已变更，请重新确认生成计划");
+    if (ppt.deckBrief.sourceHash !== hashPptContentSource(ppt.sourceMaterial, ppt.requirements)) throw new Error("PPT 整套内容定位的原始材料版本已变化，请重新生成内容方案");
+    if (JSON.stringify(ppt.deckBrief) !== JSON.stringify(plan.compilation.deckBrief)) throw new Error("PPT 全局规格已变更，请重新确认生成计划");
+    const pendingPageSpecOps = plan.pptOps.filter((op) => op.type === "setPageSpec");
+    const pendingPageIds = pendingPageSpecOps.map((op) => op.pageSpec.pageId);
+    const snapshotPageIds = new Set(plan.compilation.pageSpecs.map((pageSpec) => pageSpec.pageId));
+    if (new Set(pendingPageIds).size !== pendingPageIds.length || pendingPageIds.some((pageId) => !snapshotPageIds.has(pageId))) throw new Error("生成计划包含未冻结或重复的 PageSpec 更新");
+    const pendingPageSpecs = new Map(pendingPageSpecOps.map((op) => [op.pageSpec.pageId, op.pageSpec] as const));
     for (const snapshotPageSpec of plan.compilation.pageSpecs) {
-        const currentPageSpec = pendingPageSpecs.get(snapshotPageSpec.pageId) || project.ppt.pageSpecs.find((pageSpec) => pageSpec.pageId === snapshotPageSpec.pageId);
+        const descriptor = selectPptPageDescriptor(ppt, snapshotPageSpec.pageId);
+        if (descriptor.status === "invalid") throw new Error(`页面 ${snapshotPageSpec.pageId} 的内容规格已失效：${descriptor.reason}`);
+        const pendingPageSpec = pendingPageSpecs.get(snapshotPageSpec.pageId);
+        const currentPageSpecs = ppt.pageSpecs.filter((pageSpec) => pageSpec.pageId === snapshotPageSpec.pageId);
+        const currentPageSpec = pendingPageSpec || (currentPageSpecs.length === 1 ? currentPageSpecs[0] : undefined);
         if (!currentPageSpec || JSON.stringify(currentPageSpec) !== JSON.stringify(snapshotPageSpec)) throw new Error(`页面 ${snapshotPageSpec.pageId} 的规格已变更，请重新确认生成计划`);
     }
 }

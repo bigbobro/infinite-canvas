@@ -7,6 +7,7 @@ import { getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas
 import { isPptCandidateEditReferenceSnapshot, isPptCandidateEditSnapshot } from "@/lib/ppt/candidate-edit";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
+import { selectPptPageDescriptor } from "@/lib/ppt/page-descriptor";
 import { buildPptPageWorkspace, type PptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { compilePptPromptSnapshot, type PptCompilationTarget } from "@/lib/ppt/prompt-compiler";
 import { isPptStyleContractValid } from "@/lib/ppt/style-contract";
@@ -116,6 +117,8 @@ export type GenerationPlan = {
     readonly compilation?: CanvasProjectPptCompilationSnapshot;
 };
 
+export type GenerationPlanPreview = { plan?: GenerationPlan; error?: string };
+
 type ExistingTarget = { kind: "existing"; pageId: string; pageIndex: number; take?: PptPageWorkspaceTake; plannedCount?: 1 };
 type PendingTarget = {
     kind: "pending";
@@ -142,6 +145,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
     const batchId = nanoid();
     const createdAt = new Date().toISOString();
     if (!project.ppt) return emptyPlan(batchId, createdAt);
+    const compilationPpt = resolveCompilationPpt(project.ppt, intent);
 
     const workspaces = [...project.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(project, page));
     const anchorUpdates: GenerationStructureOp[] = [];
@@ -159,7 +163,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
 
     if (intent.kind === "generateRest") {
         const firstWorkspace = workspaces[0];
-        const skipAnchor = project.ppt.skipAnchor ?? !isPptStyleContractValid(project.ppt.deckBrief.styleContract);
+        const skipAnchor = project.ppt.skipAnchor ?? (project.ppt.compilePolicy !== "structured" || !isPptStyleContractValid(project.ppt.deckBrief.styleContract));
         const selected = workspaces.filter((workspace) => (skipAnchor || workspace.page.pageId !== firstWorkspace?.page.pageId) && isPageUntouched(workspace));
         targets.push(...selected.map((workspace): ExistingTarget => ({ kind: "existing", pageId: workspace.page.pageId, pageIndex: workspace.page.index, take: workspace.takes.at(-1) })));
         // anchorConfirmed 只是流程摘要；每个后来修复/新建的目标仍需幂等确保首页参考图连线。
@@ -212,6 +216,11 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
 
     const validTargets: ValidTarget[] = [];
     for (const target of targets) {
+        const descriptor = selectPptPageDescriptor(compilationPpt, target.pageId);
+        if (descriptor.status === "invalid") {
+            excludedPages.push({ pageIndex: target.pageIndex, reason: descriptor.reason });
+            continue;
+        }
         if (target.kind === "existing") {
             if (!target.take?.anchorNode || target.take.anchorNode.type !== CanvasNodeType.Text) {
                 excludedPages.push({ pageIndex: target.pageIndex, reason: "缺少方案提示词" });
@@ -250,7 +259,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
         const inputs = buildNodeGenerationInputs(target.configNode.id, nodes, connections).filter((input) => nodeById.get(input.nodeId)?.metadata?.pptRole !== "style");
         const extraTexts = inputs.filter((input) => input.type === "text" && input.nodeId !== target.anchorNode.id).map((input) => input.text || "");
         const promptDraft = intent.kind === "generateSingle" && intent.takeId === target.takeId ? intent.promptDraft : undefined;
-        const layoutPrompt = generationPrompt(project, target.configNode);
+        const layoutPrompt = generationPrompt(compilationPpt, target.configNode);
         const override = target.configNode.metadata?.pptCompiledPromptOverride?.trim() || undefined;
         return {
             target,
@@ -258,7 +267,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
             compilationTarget: {
                 pageId: target.pageId,
                 takeId: target.takeId,
-                semanticText: promptDraft ?? String(target.anchorNode.metadata?.content || ""),
+                semanticText: compilationPpt.compilePolicy === "verbatim" ? compilationPpt.verbatimSpecs.find((spec) => spec.pageId === target.pageId)!.exactText : (promptDraft ?? String(target.anchorNode.metadata?.content || "")),
                 layoutIntent: [layoutPrompt].filter(Boolean),
                 layoutConfirmed: !layoutPrompt || layoutPrompt === PPT_PAGE_PROMPT || target.configNode.metadata?.pptLayoutPromptReviewed === layoutPrompt,
                 extraTexts,
@@ -268,14 +277,26 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
         };
     });
     const compilation = targetContexts.length
-        ? compilePptPromptSnapshot({
-              snapshotId: nanoid(),
-              compiledAt: createdAt,
-              deckBrief: project.ppt.deckBrief,
-              pageSpecs: project.ppt.pageSpecs,
-              targets: targetContexts.map((item) => item.compilationTarget),
-          })
+        ? compilationPpt.compilePolicy === "structured"
+            ? compilePptPromptSnapshot({
+                  compilePolicy: "structured",
+                  snapshotId: nanoid(),
+                  compiledAt: createdAt,
+                  deckBrief: compilationPpt.deckBrief,
+                  pageSpecs: compilationPpt.pageSpecs,
+                  targets: targetContexts.map((item) => item.compilationTarget),
+              })
+            : compilePptPromptSnapshot({
+                  compilePolicy: "verbatim",
+                  snapshotId: nanoid(),
+                  compiledAt: createdAt,
+                  verbatimSpecs: compilationPpt.verbatimSpecs,
+                  ...(compilationPpt.confirmedGlobalSpec === undefined ? {} : { confirmedGlobalSpec: compilationPpt.confirmedGlobalSpec }),
+                  targets: targetContexts.map((item) => item.compilationTarget),
+              })
         : undefined;
+    const blockingIssue = compilation?.issues.find((issue) => issue.severity === "blocking");
+    if (blockingIssue) throw new Error(`PPT Compiler 阻断生成：${blockingIssue.message}`);
     if (compilation) pptOps.push({ type: "appendCompilationSnapshot", snapshot: compilation });
     const compiledPromptByTarget = new Map(compilation?.prompts.map((prompt) => [`${prompt.pageId}:${prompt.takeId}`, prompt]));
     const runs = targetContexts.map<GenerationPlanRun>(({ target, inputs }) => {
@@ -286,7 +307,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
             inputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image)),
             [],
         );
-        const referenceImages = mergeReferenceImages(inputImages, contractReferenceImages(project.ppt!.deckBrief.styleContract?.references || []));
+        const referenceImages = mergeReferenceImages(inputImages, contractReferenceImages(compilationPpt.compilePolicy === "structured" ? compilationPpt.deckBrief.styleContract.references : []));
         const requestType: GenerationRequestType = referenceImages.length ? "imageToImage" : "textToImage";
         const inputRefs = inputImages.map<GenerationInputRef>((image) => ({ nodeId: image.id, type: "image" }));
         const plannedCount = target.plannedCount ?? getGenerationCount(config.count);
@@ -334,6 +355,14 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
         excludedPages,
         compilation,
     };
+}
+
+export function previewGenerationPlan(intent: GenerationIntent, context: { project: CanvasProject; effectiveConfig: AiConfig }): GenerationPlanPreview {
+    try {
+        return { plan: createGenerationPlan(intent, context) };
+    } catch (error) {
+        return { error: error instanceof Error ? error.message : "生成计划暂时不可用" };
+    }
 }
 
 export function createPptCandidateEditPlan({
@@ -398,6 +427,7 @@ export function applyGenerationPlanPptOps(ppt: CanvasProjectPpt, ops: readonly G
     return ops.reduce<CanvasProjectPpt>((current, op) => {
         if (op.type === "setFlags") return { ...current, ...op.flags };
         if (op.type === "appendCompilationSnapshot") {
+            if (op.snapshot.compilePolicy !== current.compilePolicy) throw new Error("Compiler 快照的编译策略与当前工程不一致");
             const existing = current.compilationSnapshots.find((snapshot) => snapshot.snapshotId === op.snapshot.snapshotId);
             if (existing) {
                 if (!sameCompilationSnapshot(existing, op.snapshot)) throw new Error(`编译快照 ${op.snapshot.snapshotId} 的内容与已落盘记录不一致`);
@@ -406,6 +436,7 @@ export function applyGenerationPlanPptOps(ppt: CanvasProjectPpt, ops: readonly G
             return { ...current, compilationSnapshots: [...current.compilationSnapshots, structuredClone(op.snapshot)] };
         }
         if (op.type === "setPageSpec") {
+            if (current.compilePolicy !== "structured") throw new Error("逐字规格工程不接受 PageSpec 更新");
             const existing = current.pageSpecs.find((pageSpec) => pageSpec.pageId === op.pageSpec.pageId);
             if (existing && samePageSpec(existing, op.pageSpec)) return current;
             if (existing && existing.version >= op.pageSpec.version) throw new Error(`第 ${current.pages.find((page) => page.pageId === op.pageSpec.pageId)?.index ?? "-"} 页规格已变更，请重新确认生成计划`);
@@ -429,16 +460,30 @@ export function assertGenerationPlanCompilation(plan: GenerationPlan, expectedKi
         return;
     }
     if (expectedKind !== "pageGeneration") throw new Error("候选图编辑计划不应包含 Compiler 快照");
-    const rebuilt = compilePptPromptSnapshot({
-        snapshotId: plan.compilation.snapshotId,
-        compiledAt: plan.compilation.createdAt,
-        deckBrief: plan.compilation.deckBrief,
-        pageSpecs: plan.compilation.pageSpecs,
-        targets: plan.compilation.targets,
-    });
+    const rebuilt =
+        plan.compilation.compilePolicy === "structured"
+            ? compilePptPromptSnapshot({
+                  compilePolicy: "structured",
+                  snapshotId: plan.compilation.snapshotId,
+                  compiledAt: plan.compilation.createdAt,
+                  deckBrief: plan.compilation.deckBrief,
+                  pageSpecs: plan.compilation.pageSpecs,
+                  targets: plan.compilation.targets,
+              })
+            : compilePptPromptSnapshot({
+                  compilePolicy: "verbatim",
+                  snapshotId: plan.compilation.snapshotId,
+                  compiledAt: plan.compilation.createdAt,
+                  verbatimSpecs: plan.compilation.verbatimSpecs,
+                  ...(plan.compilation.confirmedGlobalSpec === undefined ? {} : { confirmedGlobalSpec: plan.compilation.confirmedGlobalSpec }),
+                  targets: plan.compilation.targets,
+              });
     if (!sameCompilationSnapshot(rebuilt, plan.compilation)) throw new Error("Compiler 快照不是由当前编译输入确定性生成");
+    if (rebuilt.issues.some((issue) => issue.severity === "blocking")) throw new Error("Compiler 快照包含未解决的阻断问题");
     const compiledPromptByTarget = new Map(plan.compilation.prompts.map((prompt) => [`${prompt.pageId}:${prompt.takeId}`, prompt]));
-    const contractReferenceKeys = (plan.compilation.deckBrief.styleContract?.references || []).flatMap((reference) => (typeof reference?.storageKey === "string" && reference.storageKey.trim() ? [reference.storageKey.trim()] : []));
+    const contractReferenceKeys = (plan.compilation.compilePolicy === "structured" ? plan.compilation.deckBrief.styleContract.references : []).flatMap((reference) =>
+        typeof reference?.storageKey === "string" && reference.storageKey.trim() ? [reference.storageKey.trim()] : [],
+    );
     for (const run of plan.runs) {
         for (const request of run.requests) {
             if (!request.compilationSnapshotId || request.compilationSnapshotId !== plan.compilation.snapshotId) throw new Error(`请求槽 ${request.requestId} 的编译快照绑定不一致`);
@@ -460,21 +505,23 @@ export function assertGenerationPlanCompilation(plan: GenerationPlan, expectedKi
 
 export function assertGenerationPlanCurrentTargets(project: CanvasProject, plan: GenerationPlan) {
     if (!plan.compilation) return;
+    if (!project.ppt || project.ppt.compilePolicy !== plan.compilation.compilePolicy) throw new Error("PPT Compiler 的编译策略已变更，请重新确认生成计划");
     const expected = new Map(plan.compilation.targets.map((target) => [`${target.pageId}:${target.takeId}`, target]));
     for (const run of plan.runs) {
         const page = project.ppt?.pages.find((item) => item.pageId === run.pageId);
         if (!page) throw new Error(`页面 ${run.pageId} 的 Compiler 输入已变更`);
         const workspace = buildPptPageWorkspace(project, page);
+        if (workspace.descriptor.status === "invalid") throw new Error(`页面 ${run.pageId} 的内容规格已失效：${workspace.descriptor.reason}`);
         const take = workspace.takes.find((item) => item.takeId === run.takeId);
         if (!take?.anchorNode || !take.configNode) throw new Error(`页面 ${run.pageId} 的 Compiler 输入节点已变更`);
         const inputs = buildNodeGenerationInputs(take.configNode.id, project.nodes, project.connections);
         const nodeById = new Map(project.nodes.map((node) => [node.id, node]));
-        const layoutPrompt = generationPrompt(project, take.configNode);
+        const layoutPrompt = generationPrompt(project.ppt, take.configNode);
         const override = take.configNode.metadata?.pptCompiledPromptOverride?.trim() || undefined;
         const current: PptCompilationTarget = {
             pageId: run.pageId,
             takeId: run.takeId,
-            semanticText: String(take.anchorNode.metadata?.content || ""),
+            semanticText: project.ppt.compilePolicy === "verbatim" ? project.ppt.verbatimSpecs.find((spec) => spec.pageId === run.pageId)?.exactText || "" : String(take.anchorNode.metadata?.content || ""),
             layoutIntent: [layoutPrompt].filter(Boolean),
             layoutConfirmed: !layoutPrompt || layoutPrompt === PPT_PAGE_PROMPT || take.configNode.metadata?.pptLayoutPromptReviewed === layoutPrompt,
             extraTexts: inputs.filter((input) => input.type === "text" && input.nodeId !== take.anchorNode!.id && nodeById.get(input.nodeId)?.metadata?.pptRole !== "style").map((input) => input.text || ""),
@@ -545,8 +592,21 @@ function isPageUntouched(workspace: PptPageWorkspace) {
     return !workspace.takes.some((take) => take.candidates.length || take.generating || take.unresolvedGeneration);
 }
 
-function generationPrompt(project: CanvasProject, configNode: CanvasNodeData) {
-    return (configNode.metadata?.pptLayoutPrompt ?? "").trim() || (project.ppt?.mode === "extract" ? "" : PPT_PAGE_PROMPT);
+function generationPrompt(ppt: CanvasProjectPpt | undefined, configNode: CanvasNodeData) {
+    const prompt = (configNode.metadata?.pptLayoutPrompt ?? "").trim();
+    return prompt || (ppt?.compilePolicy === "verbatim" ? "" : PPT_PAGE_PROMPT);
+}
+
+function resolveCompilationPpt(ppt: CanvasProjectPpt, intent: GenerationIntent): CanvasProjectPpt {
+    if (intent.kind !== "deriveAndGenerate" || !intent.pageSpec) return ppt;
+    if (ppt.compilePolicy !== "structured") throw new Error("逐字规格工程不接受 PageSpec 更新");
+    const nextPageSpec = intent.pageSpec;
+    if (nextPageSpec.pageId !== intent.pageId) throw new Error("PageSpec 更新与派生页面身份不一致");
+    const current = ppt.pageSpecs.find((pageSpec) => pageSpec.pageId === nextPageSpec.pageId);
+    if (!current) throw new Error(`页面 ${nextPageSpec.pageId} 缺少 PageSpec`);
+    if (samePageSpec(current, nextPageSpec)) return ppt;
+    if (nextPageSpec.version !== current.version + 1) throw new Error(`页面 ${nextPageSpec.pageId} 的规格版本不连续`);
+    return { ...ppt, pageSpecs: ppt.pageSpecs.map((pageSpec) => (pageSpec.pageId === nextPageSpec.pageId ? structuredClone(nextPageSpec) : pageSpec)) };
 }
 
 function contractReferenceImages(references: readonly { storageKey: string }[]): ReferenceImage[] {

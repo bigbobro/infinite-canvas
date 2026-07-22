@@ -90,6 +90,8 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
         pages.findIndex((item) => item.page.pageId === activePageId),
     );
     const activePage = pages[activePosition];
+    const activeDescriptor = activePage?.descriptor;
+    const activeTitle = activeDescriptor?.title ?? "内容规格待修复";
     const activeWorkspace = activePage ? pageWorkspaces.find((item) => item.page.pageId === activePage.page.pageId) : undefined;
     const problemCount = pages.filter((item) => item.issues.length > 0).length;
     const pptxIssuePages = pages.filter((item) => item.pptxIssues.length > 0);
@@ -260,7 +262,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                         className="relative flex aspect-video h-full max-h-full w-fit max-w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-lg shadow-artwork duration-150 ease-out animate-in fade-in-0 motion-reduce:animate-none"
                                         onClick={() => setLightboxSrc(activePage.previewUrl || null)}
                                     >
-                                        <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activePage.page.title}（已确认最终版）`} className="size-full object-contain" />
+                                        <img src={activePage.previewUrl} alt={`第 ${activePage.page.index} 页：${activeTitle}（已确认最终版）`} className="size-full object-contain" />
                                         <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-black/55 px-2 py-1 font-mono text-xs tabular-nums text-white/75">
                                             {pad2(activePosition + 1)} / {pad2(pages.length)}
                                         </span>
@@ -287,7 +289,9 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                                             <div className="font-mono text-xs font-semibold uppercase tracking-wider tabular-nums text-white/70">
                                                 第 {pad2(activePage.page.index)} 页 / 共 {pad2(pages.length)} 页
                                             </div>
-                                            <h3 className="mt-2 text-xl font-semibold leading-7 text-white/90">{activePage.page.title}</h3>
+                                            <h3 className="mt-2 text-xl font-semibold leading-7 text-white/90" title={activeDescriptor?.status === "invalid" ? activeDescriptor.reason : undefined}>
+                                                {activeTitle}
+                                            </h3>
                                         </div>
 
                                         {activePage.issues.length ? (
@@ -437,7 +441,7 @@ export function CanvasPptFinalReview({ open, projectId, onClose, onEditPage }: {
                     </div>
                 </Modal>
             </ConfigProvider>
-            <CanvasImageLightbox src={lightboxSrc} alt={activePage ? `第 ${activePage.page.index} 页：${activePage.page.title}` : undefined} onClose={() => setLightboxSrc(null)} />
+            <CanvasImageLightbox src={lightboxSrc} alt={activePage ? `第 ${activePage.page.index} 页：${activeTitle}` : undefined} onClose={() => setLightboxSrc(null)} />
         </>
     );
 }

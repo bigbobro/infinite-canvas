@@ -28,18 +28,17 @@ export type CanvasProjectPptTake = {
 export type CanvasProjectPptPage = {
     pageId: string;
     index: number;
-    title: string;
-    outline: string;
-    visualHint: string;
     confirmedNodeId?: string;
     takes: CanvasProjectPptTake[];
 };
 
 export type CanvasProjectPptSourceRef = {
-    source: "material" | "imported_spec";
+    id: string;
+    source: "material" | "requirements" | "user_answer" | "confirmed_assumption";
     excerpt: string;
     startLine?: number;
     endLine?: number;
+    gapId?: string;
 };
 
 export type CanvasProjectPptLockedFact = {
@@ -51,6 +50,7 @@ export type CanvasProjectPptLockedFact = {
 
 export type CanvasProjectPptDeckBrief = {
     version: number;
+    sourceHash: string;
     audience: string;
     goal: string;
     narrative: string;
@@ -60,20 +60,59 @@ export type CanvasProjectPptDeckBrief = {
     lockedDeckFacts: CanvasProjectPptLockedFact[];
 };
 
+export type PptContentBrief = {
+    version: number;
+    sourceHash: string;
+    title: string;
+    audience: string;
+    goal: string;
+    narrative: string;
+    visualSignals: string[];
+};
+
+export type PptContentForm = "cover" | "comparison" | "architecture" | "process" | "timeline" | "data" | "narrative" | "closing";
+
+export type CanvasProjectPptContentBlock = {
+    id: string;
+    kind: "title" | "primary_claim" | "supporting_claim" | "body" | "list" | "table" | "chart_data" | "placeholder";
+    text: string;
+    sourceRefIds: string[];
+    gapId?: string;
+};
+
+export type CanvasProjectPptVisualEncoding = {
+    id: string;
+    contentBlockIds: string[];
+    intent: "differentiate" | "emphasize" | "sequence" | "group" | "show_relationship";
+    channel: "color" | "shape" | "position" | "size" | "line" | "icon";
+    lockedMapping?: Array<{ contentBlockId: string; token: string; sourceRefIds: string[] }>;
+};
+
+export type PptContentState = { status: "blocked"; gapIds: string[] } | { status: "reviewable" } | { status: "approved"; approvedAt: string };
+
 export type CanvasProjectPptPageSpec = {
     pageId: string;
     version: number;
+    purpose: string;
+    contentForm: PptContentForm;
+    contentFormNote?: string;
     sourceRefs: CanvasProjectPptSourceRef[];
-    lockedCopy: string[];
+    contentBlocks: CanvasProjectPptContentBlock[];
+    contentState: PptContentState;
     lockedFacts: CanvasProjectPptLockedFact[];
-    message: string;
     layoutRole: PptLayoutRole;
     layoutIntent: string[];
+    visualEncoding: CanvasProjectPptVisualEncoding[];
     assetRefs: string[];
     freedom: string;
-    requiresReview: boolean;
-    reviewReason?: string;
-    reviewedAt?: string;
+};
+
+export type CanvasProjectPptVerbatimSpec = {
+    pageId: string;
+    version: number;
+    title: string;
+    exactText: string;
+    origin: { kind: "source_slice"; sourceHash: string; startLine: number; endLine: number } | { kind: "user_edited" };
 };
 
 export type CanvasProjectPptCompilationIssue = {
@@ -93,7 +132,13 @@ export type CanvasProjectPptCompilationIssue = {
         | "duplicate_instruction"
         | "invalid_style_contract"
         | "invalid_layout_role"
-        | "visual_direction_outside_contract";
+        | "visual_direction_outside_contract"
+        | "content_spec_not_approved"
+        | "unresolved_information_gap"
+        | "invalid_content_provenance"
+        | "invalid_content_structure"
+        | "invalid_visual_encoding"
+        | "invalid_verbatim_spec";
     message: string;
     pageId?: string;
     takeId?: string;
@@ -120,31 +165,44 @@ export type CanvasProjectPptCompilationTarget = {
     overrideConfirmed?: boolean;
 };
 
-export type CanvasProjectPptCompilationSnapshot = {
+type CanvasProjectPptCompilationSnapshotBase = {
     snapshotId: string;
     compilerVersion: string;
     createdAt: string;
-    deckBriefVersion: number;
-    pageSpecsVersion: number;
-    deckBrief: CanvasProjectPptDeckBrief;
-    pageSpecs: CanvasProjectPptPageSpec[];
+    inputHash: string;
     targets: CanvasProjectPptCompilationTarget[];
     prompts: CanvasProjectPptCompiledPrompt[];
     issues: CanvasProjectPptCompilationIssue[];
 };
 
-export type CanvasProjectPpt = {
+export type CanvasProjectPptCompilationSnapshot = CanvasProjectPptCompilationSnapshotBase &
+    (
+        | {
+              compilePolicy: "structured";
+              deckBriefVersion: number;
+              pageSpecsVersion: number;
+              deckBrief: CanvasProjectPptDeckBrief;
+              pageSpecs: CanvasProjectPptPageSpec[];
+          }
+        | {
+              compilePolicy: "verbatim";
+              verbatimSpecs: CanvasProjectPptVerbatimSpec[];
+              confirmedGlobalSpec?: string;
+          }
+    );
+
+type CanvasProjectPptBase = {
     sourceMaterial: string;
     requirements: string;
     pages: CanvasProjectPptPage[];
-    deckBrief: CanvasProjectPptDeckBrief;
-    pageSpecs: CanvasProjectPptPageSpec[];
     compilationSnapshots: CanvasProjectPptCompilationSnapshot[];
     anchorConfirmed?: boolean;
-    mode?: "outline" | "extract";
     /** 批量生成确认弹窗记住的选择：true=直接生成全部、false=先锚定首页（07-17-ppt-ux-fixes #18）。 */
     skipAnchor?: boolean;
 };
+
+export type CanvasProjectPpt = CanvasProjectPptBase &
+    ({ compilePolicy: "structured"; deckBrief: CanvasProjectPptDeckBrief; pageSpecs: CanvasProjectPptPageSpec[] } | { compilePolicy: "verbatim"; verbatimSpecs: CanvasProjectPptVerbatimSpec[]; confirmedGlobalSpec?: string });
 
 export type CanvasProject = {
     id: string;
@@ -306,6 +364,7 @@ export const useCanvasStore = create<CanvasStore>()(
                 set((state) => {
                     const project = state.projects.find((item) => item.id === projectId);
                     if (!project?.ppt) throw new Error("当前工程不是 PPT 工作台工程");
+                    if (project.ppt.compilePolicy !== "structured") throw new Error("逐字规格工程不使用视觉 Contract");
                     if (project.ppt.deckBrief.version !== expectedDeckBriefVersion) throw new Error("PPT 全局规格已变更，请刷新后重试");
                     if (samePptStyleContract(project.ppt.deckBrief.styleContract, normalized)) return state;
                     const styleRules = derivePptVisualDirectionRules(project.ppt.requirements, normalized.direction);
@@ -330,6 +389,7 @@ export const useCanvasStore = create<CanvasStore>()(
                 set((state) => {
                     const project = state.projects.find((item) => item.id === projectId);
                     if (!project?.ppt) throw new Error("当前工程不是 PPT 工作台工程");
+                    if (project.ppt.compilePolicy !== "structured") throw new Error("逐字规格工程不使用页面职责");
                     const ppt = applyPptPageSpecUpdate(project.ppt, pageId, expectedPageSpecVersion, (pageSpec) => ({ ...pageSpec, layoutRole: nextRole }));
                     if (ppt === project.ppt) return state;
                     return {
@@ -353,6 +413,7 @@ export const useCanvasStore = create<CanvasStore>()(
 );
 
 export function applyPptPageSpecUpdate(ppt: CanvasProjectPpt, pageId: string, expectedPageSpecVersion: number, update: (pageSpec: CanvasProjectPptPageSpec) => CanvasProjectPptPageSpec): CanvasProjectPpt {
+    if (ppt.compilePolicy !== "structured") throw new Error("逐字规格工程不存在 PageSpec");
     const current = ppt.pageSpecs.find((pageSpec) => pageSpec.pageId === pageId);
     if (!current) throw new Error(`页面 ${pageId} 缺少 PageSpec`);
     if (current.version !== expectedPageSpecVersion) throw new Error(`页面 ${pageId} 的规格已变更，请刷新后重试`);

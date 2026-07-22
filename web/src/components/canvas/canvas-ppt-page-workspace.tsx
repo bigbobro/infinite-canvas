@@ -14,15 +14,14 @@ import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { GENERATION_COUNT_MAX, GENERATION_COUNT_MIN, getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
-import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
+import { createGenerationPlan, previewGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
-import { buildPptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
-import { buildPptPageSpec } from "@/lib/ppt/prompt-compiler";
+import { applyPptCanonicalPageTextEdit, approvePptCanonicalPageContent, buildPptPageWorkspace, getPptCanonicalPageText, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { getPptVisualDirectionLabel, PPT_LAYOUT_ROLES } from "@/lib/ppt/style-contract";
 import { canEnablePptWorkspaceSplitter, clampPptWorkspaceUpperHeight, PPT_WORKSPACE_LOWER_MIN_HEIGHT, PPT_WORKSPACE_SPLITTER_SIZE, PPT_WORKSPACE_UPPER_MIN_HEIGHT, resizePptWorkspaceByDrag, resizePptWorkspaceByKey } from "@/lib/ppt/workspace-layout";
 import { cn } from "@/lib/utils";
 import { useCopyText } from "@/hooks/use-copy-text";
-import { applyPptPageSpecUpdate, flushCanvasStore, useCanvasStore, type PptLayoutRole } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStore, useCanvasStore, type PptLayoutRole } from "@/stores/canvas/use-canvas-store";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useAnnotateStore } from "@/stores/use-annotate-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -150,22 +149,24 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     const workspaces = useMemo(() => {
         if (!project?.ppt) return [];
-        return [...project.ppt.pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(project, page));
+        const pages = Array.isArray(project.ppt.pages) ? project.ppt.pages : [];
+        return [...pages].sort((left, right) => left.index - right.index).map((page) => buildPptPageWorkspace(project, page));
     }, [project]);
     const workspace = workspaces.find((item) => item.page.pageId === pageId);
     const activeTake = workspace?.takes.find((take) => take.takeId === activeTakeId) ?? workspace?.takes[0];
-    const isExtractMode = project?.ppt?.mode === "extract";
-    const fallbackPrompt = workspace ? (isExtractMode ? workspace.page.outline : [`标题：${workspace.page.title}`, workspace.page.outline, workspace.page.visualHint ? `视觉建议：${workspace.page.visualHint}` : ""].filter(Boolean).join("\n\n")) : "";
+    const isVerbatim = project?.ppt?.compilePolicy === "verbatim";
+    const fallbackPrompt = workspace?.canonicalPrompt ?? "";
     const latestGenerationRun = activeTake ? [...activeTake.generationRuns].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).at(-1) : undefined;
     const latestGenerationRequests = latestGenerationRun ? activeTake?.generationRequests.filter((request) => request.runId === latestGenerationRun.runId).sort((left, right) => left.slotIndex - right.slotIndex) || [] : [];
     const generatingElapsed = useElapsedSeconds(Boolean(activeTake?.generating), latestGenerationRun?.createdAt);
     const activeGenerationConfig = useMemo(() => (activeTake?.configNode ? resolveGenerationConfig(effectiveConfig, activeTake.configNode, "image") : undefined), [activeTake?.configNode, effectiveConfig]);
-    const singleGenerationPlan = useMemo(() => {
-        if (!project || !activeTake) return undefined;
-        return createGenerationPlan({ kind: activeTake.candidates.length ? "generateOneCandidate" : "generateSingle", takeId: activeTake.takeId }, { project, effectiveConfig });
-    }, [activeTake, effectiveConfig, project]);
-    const overrideValidationPlan = useMemo(() => {
-        if (!compiledOverrideOpen || !project || !activeTake?.configNode) return undefined;
+    const singleGenerationPreview = useMemo(() => {
+        if (!project || !activeTake || workspace?.descriptor.status !== "ok") return {};
+        return previewGenerationPlan({ kind: activeTake.candidates.length ? "generateOneCandidate" : "generateSingle", takeId: activeTake.takeId }, { project, effectiveConfig });
+    }, [activeTake, effectiveConfig, project, workspace?.descriptor.status]);
+    const singleGenerationPlan = singleGenerationPreview.plan;
+    const overrideValidationPreview = useMemo(() => {
+        if (!compiledOverrideOpen || !project || !activeTake?.configNode || workspace?.descriptor.status !== "ok") return {};
         const value = compiledOverrideDraft.trim();
         const previewProject = {
             ...project,
@@ -182,8 +183,9 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     : node,
             ),
         };
-        return createGenerationPlan({ kind: "generateSingle", takeId: activeTake.takeId }, { project: previewProject, effectiveConfig });
-    }, [activeTake?.configNode, activeTake?.takeId, compiledOverrideDraft, compiledOverrideOpen, effectiveConfig, project]);
+        return previewGenerationPlan({ kind: "generateSingle", takeId: activeTake.takeId }, { project: previewProject, effectiveConfig });
+    }, [activeTake?.configNode, activeTake?.takeId, compiledOverrideDraft, compiledOverrideOpen, effectiveConfig, project, workspace?.descriptor.status]);
+    const overrideValidationPlan = overrideValidationPreview.plan;
     const textModelReady = Boolean(effectiveConfig.textModel.trim() && isAiConfigReady(effectiveConfig, effectiveConfig.textModel));
 
     useEffect(() => {
@@ -279,7 +281,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     const ppt = project.ppt;
     const page = workspace.page;
-    const pageSpec = ppt.pageSpecs.find((spec) => spec.pageId === page.pageId);
+    const pageSpec = workspace.descriptor.status === "ok" && ppt.compilePolicy === "structured" && Array.isArray(ppt.pageSpecs) ? ppt.pageSpecs.find((spec) => spec.pageId === page.pageId) : undefined;
+    const verbatimSpec = workspace.descriptor.status === "ok" && ppt.compilePolicy === "verbatim" && Array.isArray(ppt.verbatimSpecs) ? ppt.verbatimSpecs.find((spec) => spec.pageId === page.pageId) : undefined;
+    const canonicalSpecVersion = pageSpec?.version ?? verbatimSpec?.version;
+    const pageContentStatus = pageSpec?.contentState?.status;
+    const contentApprovalIssues = workspace.contentIssues.filter((issue) => issue !== "页面内容规格尚未批准");
     const activeNode = activeTake?.candidates.find((node) => node.id === activeNodeId);
     const possiblySubmittedStatuses = ["submitting", "submitted", "running", "submission_unknown", "succeeded", "materializing", "recoverable_error"];
     const riskyRequests = activeTake?.generationRequests.filter((request) => !request.remoteTaskId && possiblySubmittedStatuses.includes(request.status)) || [];
@@ -350,28 +356,18 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         }
     };
 
-    const pageSpecForPrompt = (value: string) => {
-        if (!pageSpec) return undefined;
-        const next = buildPptPageSpec({
-            mode: ppt.mode || "outline",
-            sourceMaterial: ppt.sourceMaterial,
-            page: { pageId: page.pageId, title: page.title, outline: value, visualHint: page.visualHint },
-            version: pageSpec.version,
-        });
-        next.layoutRole = pageSpec.layoutRole;
-        if (
-            JSON.stringify({ lockedCopy: next.lockedCopy, lockedFacts: next.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })), layoutIntent: next.layoutIntent, assetRefs: next.assetRefs, message: next.message }) ===
-            JSON.stringify({
-                lockedCopy: pageSpec.lockedCopy,
-                lockedFacts: pageSpec.lockedFacts.map(({ kind, value: factValue }) => ({ kind, value: factValue })),
-                layoutIntent: pageSpec.layoutIntent,
-                assetRefs: pageSpec.assetRefs,
-                message: pageSpec.message,
-            })
-        ) {
-            return pageSpec;
-        }
-        return next;
+    const syncPageAnchorProjections = (value: string) => {
+        if (!canvasContext) return undefined;
+        const anchorIds = new Set(page.takes.map((take) => take.anchorNodeId));
+        const ops = project.nodes
+            .filter((node) => anchorIds.has(node.id) && node.type === CanvasNodeType.Text && node.metadata?.content !== value)
+            .map<CanvasAgentOp>((node) => ({ type: "update_node", id: node.id, metadata: { content: value, status: "success" } }));
+        return canvasContext.applyTrustedOps(ops);
+    };
+
+    const editCanonicalContent = (value: string, approve: boolean) => {
+        if (canonicalSpecVersion === undefined) throw new Error(`第 ${page.index} 页缺少 canonical 内容规格`);
+        return applyPptCanonicalPageTextEdit(ppt, page.pageId, canonicalSpecVersion, value, approve && ppt.compilePolicy === "structured" ? new Date().toISOString() : undefined);
     };
 
     const executeGenerationPlan = async (plan: GenerationPlan) => {
@@ -394,6 +390,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     };
 
     const runGeneration = async () => {
+        if (workspace.descriptor.status === "invalid") {
+            message.warning(`内容规格需要修复：${workspace.descriptor.reason}`);
+            return;
+        }
         if (!activeTake?.configNode) {
             message.warning(activeTake ? `第 ${page.index} 页方案 ${activeTake.index + 1} 的配置缺失` : `第 ${page.index} 页尚未创建方案`);
             return;
@@ -406,7 +406,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("请先填写方案提示词");
             return;
         }
-        if (!singleGenerationPlan) return;
+        if (!singleGenerationPlan) {
+            message.warning(singleGenerationPreview.error || "当前页面还不能生成，请先完成内容确认");
+            return;
+        }
         if (planHasBlockingCompilationIssues(singleGenerationPlan)) {
             modal.warning({ title: "最终提示词需要处理", content: <PptGenerationPlanSummary plan={singleGenerationPlan} />, okText: "知道了", width: 680 });
             return;
@@ -563,16 +566,19 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("方案提示词不能为空");
             return;
         }
-        const nextPageSpec = pageSpecForPrompt(value);
-        if (!pageSpec || !nextPageSpec) {
-            message.error(`第 ${page.index} 页缺少页面规格，无法保存`);
+        let nextPpt;
+        try {
+            nextPpt = editCanonicalContent(value, false);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "页面内容规格保存失败");
             return;
         }
-        const next = canvasContext.applyTrustedOps([{ type: "update_node", id: activeTake.anchorNode.id, metadata: { content: value, status: "success" } }]);
-        const nextPpt = nextPageSpec === pageSpec ? ppt : applyPptPageSpecUpdate(ppt, page.pageId, pageSpec.version, () => nextPageSpec);
+        const canonicalText = getPptCanonicalPageText(nextPpt, page.pageId);
+        const next = syncPageAnchorProjections(canonicalText);
+        if (!next) return;
         if (!(await persistProject({ nodes: next.nodes, connections: next.connections, ppt: nextPpt }))) return;
         setPromptEditorOpen(false);
-        message.success(`方案 ${activeTake.index + 1} 的提示词已保存`);
+        message.success(nextPpt.compilePolicy === "structured" ? "页面内容规格已保存，请确认后生成" : "逐字内容已保存");
     };
 
     // #31：排版要求只作用于当前方案分支，存在专用字段 pptLayoutPrompt。
@@ -632,6 +638,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     const saveCompiledPromptOverride = async () => {
         if (!canvasContext || !activeTake?.configNode || activeTake.generating || activeTake.unresolvedGeneration) return;
+        if (overrideValidationPreview.error) {
+            message.warning(overrideValidationPreview.error);
+            return;
+        }
         const value = compiledOverrideDraft.trim();
         const blockers = overrideValidationPlan?.compilation?.issues.filter((issue) => issue.severity === "blocking") || [];
         const needsExplicitReview = blockers.length > 0 && blockers.every((issue) => issue.code === "override_review_required");
@@ -669,10 +679,14 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     };
 
     const confirmPageSpecReview = async () => {
-        if (!pageSpec?.requiresReview || pageSpec.reviewedAt) return;
-        const reviewedAt = new Date().toISOString();
-        if (!(await persistProject({ ppt: { ...ppt, pageSpecs: ppt.pageSpecs.map((spec) => (spec.pageId === page.pageId ? { ...spec, version: spec.version + 1, reviewedAt } : spec)) } }))) return;
-        message.success("已确认本页正文与布局拆分");
+        if (!pageSpec || pageSpec.contentState.status === "approved") return;
+        try {
+            const nextPpt = approvePptCanonicalPageContent(ppt, page.pageId, pageSpec.version, new Date().toISOString());
+            if (!(await persistProject({ ppt: nextPpt }))) return;
+            message.success("已确认本页内容规格");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "页面内容规格无法批准");
+        }
     };
 
     const setConfirmed = async (confirmedNodeId?: string) => {
@@ -701,20 +715,29 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.warning("方案提示词不能为空");
             return;
         }
-        if (!pageSpec) {
-            message.error(`第 ${page.index} 页缺少页面规格，无法创建方案`);
+        if (canonicalSpecVersion === undefined) {
+            message.error(`第 ${page.index} 页缺少 canonical 内容规格，无法创建方案`);
             return;
         }
-        const proposedPageSpec = pageSpecForPrompt(prompt)!;
-        const pptWithPageSpec = proposedPageSpec === pageSpec ? ppt : applyPptPageSpecUpdate(ppt, page.pageId, pageSpec.version, () => proposedPageSpec);
-        const nextPageSpec = pptWithPageSpec.pageSpecs.find((spec) => spec.pageId === page.pageId)!;
-        const projectWithSpec = pptWithPageSpec === ppt ? project : { ...project, ppt: pptWithPageSpec };
+        let pptWithContent;
+        try {
+            pptWithContent = editCanonicalContent(prompt, autoGenerate);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "页面内容规格无法更新");
+            return;
+        }
+        const canonicalText = getPptCanonicalPageText(pptWithContent, page.pageId);
+        const projected = syncPageAnchorProjections(canonicalText);
+        if (!projected) return;
+        const projectWithContent = { ...project, nodes: projected.nodes, connections: projected.connections, ppt: pptWithContent };
+        // 先持久化 canonical 内容与所有 anchor 投影；付费请求的 durable gate 不允许依赖未落盘的 UI 状态。
+        if (autoGenerate && !(await persistProject({ nodes: projected.nodes, connections: projected.connections, ppt: pptWithContent }))) return;
 
         const takeId = nanoid();
         const outlineId = nanoid();
         const configId = nanoid();
         // 派生/复制继承源方案的 effective 配置；空白方案使用当前全局 effective 配置。
-        const seedLayoutPrompt = sourceTake?.layoutPrompt?.trim() || (isExtractMode ? "" : PPT_PAGE_PROMPT);
+        const seedLayoutPrompt = sourceTake?.layoutPrompt?.trim() || (isVerbatim ? "" : PPT_PAGE_PROMPT);
         const inheritedConfig = resolveGenerationConfig(effectiveConfig, sourceTake?.configNode, "image");
         const configMetadata: CanvasNodeMetadata = {
             prompt: "",
@@ -728,7 +751,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             pptPageIndex: page.index,
             pptRole: "page",
         };
-        if (isExtractMode) configMetadata.composerContent = "";
+        if (isVerbatim) configMetadata.composerContent = "";
 
         const gridNodes = project.nodes.filter((node) => node.metadata?.pptPageId);
         const gridBottom = gridNodes.length ? Math.max(...gridNodes.map((node) => node.position.y + node.height)) : undefined;
@@ -755,12 +778,11 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     reservedAnchorNodeId: outlineId,
                     reservedConfigNodeId: configId,
                     configMetadata,
-                    anchorContent: prompt,
+                    anchorContent: canonicalText,
                     inheritedInputNodeIds,
-                    pageSpec: pptWithPageSpec === ppt ? undefined : nextPageSpec,
                     positions: { anchor: outlinePosition, config: configPosition },
                 },
-                { project: projectWithSpec, effectiveConfig },
+                { project: projectWithContent, effectiveConfig },
             );
             modal.confirm({
                 title: `保存并生成方案 ${nextTakeIndex}？`,
@@ -793,7 +815,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                 nodeType: CanvasNodeType.Text,
                 title: `第${page.index}页大纲`,
                 position: outlinePosition,
-                metadata: { content: prompt, status: "success", pptPageId: page.pageId, pptTakeId: takeId, pptPageIndex: page.index, pptRole: "outline" },
+                metadata: { content: canonicalText, status: "success", pptPageId: page.pageId, pptTakeId: takeId, pptPageIndex: page.index, pptRole: "outline" },
             },
             { type: "add_node", id: configId, nodeType: CanvasNodeType.Config, title: `第${page.index}页生成配置`, position: configPosition, metadata: configMetadata },
             { type: "connect_nodes", fromNodeId: outlineId, toNodeId: configId },
@@ -806,8 +828,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                 nodes: next.nodes,
                 connections: next.connections,
                 ppt: {
-                    ...pptWithPageSpec,
-                    pages: pptWithPageSpec.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)),
+                    ...pptWithContent,
+                    pages: pptWithContent.pages.map((item) => (item.pageId === page.pageId ? { ...item, takes: nextTakes } : item)),
                 },
             }))
         )
@@ -991,15 +1013,17 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                         </div>
                         <h2 className="flex min-w-0 items-baseline gap-2 text-base font-medium">
                             <span className="truncate">
-                                第 {page.index} 页 · {page.title}
+                                第 {page.index} 页 · {workspace.descriptor.title}
                             </span>
                             <span className="shrink-0 font-mono text-[11px] font-normal tabular-nums" style={{ color: canvasTheme.node.muted }}>
                                 {workspace.takes.length} 个方案 · {candidateCount} 个候选稿
                             </span>
                         </h2>
-                        <Button type="text" size="small" icon={<Palette className="size-3.5" />} className="shrink-0" onClick={() => setVisualDirectionOpen(true)}>
-                            视觉方向：{getPptVisualDirectionLabel(ppt.deckBrief.styleContract)}
-                        </Button>
+                        {ppt.compilePolicy === "structured" ? (
+                            <Button type="text" size="small" icon={<Palette className="size-3.5" />} className="shrink-0" onClick={() => setVisualDirectionOpen(true)}>
+                                视觉方向：{getPptVisualDirectionLabel(ppt.deckBrief.styleContract)}
+                            </Button>
+                        ) : null}
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-1">
                         {generationBatches.length ? (
@@ -1186,7 +1210,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                 ) : null}
                                 <Dropdown
                                     trigger={["click"]}
-                                    disabled={!canvasContext || Boolean(newTakeDraft)}
+                                    disabled={!canvasContext || Boolean(newTakeDraft) || workspace.descriptor.status === "invalid"}
                                     menu={{
                                         items: [
                                             { key: "blank", label: "空白方案" },
@@ -1199,7 +1223,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                         type="button"
                                         className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10"
                                         style={{ color: canvasTheme.node.muted, outlineColor: canvasTheme.node.activeStroke }}
-                                        disabled={!canvasContext || Boolean(newTakeDraft)}
+                                        disabled={!canvasContext || Boolean(newTakeDraft) || workspace.descriptor.status === "invalid"}
                                     >
                                         <Plus className="size-3.5" aria-hidden="true" />
                                         新方案
@@ -1245,20 +1269,20 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                             style={{ background: canvasTheme.node.fill }}
                                             aria-label={`方案 ${activeTake.index + 1} 页面规格，双击调整`}
                                             title="双击打开大编辑器"
-                                            onDoubleClick={() => !activeTake.generating && setPromptEditorOpen(true)}
+                                            onDoubleClick={() => workspace.descriptor.status === "ok" && !activeTake.generating && setPromptEditorOpen(true)}
                                         >
                                             {promptDraft || <span style={{ color: canvasTheme.node.muted }}>暂无提示词</span>}
                                         </div>
                                         <div className="mt-3 flex items-center justify-between gap-3">
                                             <span className="text-[11px]" style={{ color: canvasTheme.node.muted }}>
-                                                {activeTake.canEditPrompt ? "保存只更新当前方案；生成前可展开查看最终提示词" : `${activeTake.candidates.length} 个候选稿共用；调整后会另存为新方案`}
+                                                {activeTake.canEditPrompt ? "保存会更新本页内容，并同步到本页所有方案；生成前可查看最终提示词" : `已有 ${activeTake.candidates.length} 个候选稿；调整会更新本页内容并另建方案`}
                                             </span>
                                             <div className="flex shrink-0 gap-1">
                                                 <Button
                                                     size="small"
                                                     type="text"
                                                     icon={<FileText className="size-3.5" />}
-                                                    disabled={activeTake.generating || activeTake.unresolvedGeneration}
+                                                    disabled={workspace.descriptor.status === "invalid" || activeTake.generating || activeTake.unresolvedGeneration}
                                                     onClick={() => {
                                                         setCompiledOverrideDraft(activeTake.configNode?.metadata?.pptCompiledPromptOverride || singleGenerationPlan?.compilation?.prompts[0]?.finalPrompt || "");
                                                         setCompiledOverrideOpen(true);
@@ -1266,44 +1290,35 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                                 >
                                                     {activeTake.configNode?.metadata?.pptCompiledPromptOverride ? "最终提示词（覆盖中）" : "最终提示词覆盖"}
                                                 </Button>
-                                                <Button size="small" icon={<Pencil className="size-3.5" />} disabled={activeTake.generating} onClick={() => setPromptEditorOpen(true)}>
+                                                <Button size="small" icon={<Pencil className="size-3.5" />} disabled={workspace.descriptor.status === "invalid" || activeTake.generating} onClick={() => setPromptEditorOpen(true)}>
                                                     调整规格
                                                 </Button>
                                             </div>
                                         </div>
-                                        <UpstreamInputsPanel
-                                            take={activeTake}
-                                            layoutRole={pageSpec?.layoutRole}
-                                            canvasTheme={canvasTheme}
-                                            muted={canvasTheme.node.muted}
-                                            canEdit={Boolean(canvasContext) && !activeTake.unresolvedGeneration}
-                                            onSaveLayoutRole={changePageLayoutRole}
-                                            onSaveLayout={saveLayoutPrompt}
-                                        />
-                                        {pageSpec?.requiresReview && !pageSpec.reviewedAt ? (
+                                        {pageSpec ? (
+                                            <UpstreamInputsPanel
+                                                take={activeTake}
+                                                layoutRole={pageSpec.layoutRole}
+                                                canvasTheme={canvasTheme}
+                                                muted={canvasTheme.node.muted}
+                                                canEdit={Boolean(canvasContext) && !activeTake.unresolvedGeneration}
+                                                onSaveLayoutRole={changePageLayoutRole}
+                                                onSaveLayout={saveLayoutPrompt}
+                                            />
+                                        ) : null}
+                                        {workspace.descriptor.status === "invalid" ? (
+                                            <Alert className="mt-2.5" type="error" showIcon message="内容规格待修复" description={workspace.descriptor.reason} />
+                                        ) : pageSpec && pageContentStatus !== "approved" ? (
                                             <div className="mt-2.5 rounded-lg border p-3 text-xs" style={{ borderColor: token.colorWarningBorder, background: token.colorWarningBg }}>
                                                 <div className="font-medium" style={{ color: token.colorWarningText }}>
-                                                    本页规格需要人工确认
+                                                    {pageContentStatus === "blocked" ? "本页仍有信息缺口" : "本页内容规格需要确认"}
                                                 </div>
                                                 <div className="mt-1" style={{ color: canvasTheme.node.muted }}>
-                                                    {pageSpec.reviewReason || "系统无法完全确定哪些内容是页面正文、哪些是布局要求。"}
+                                                    {pageContentStatus === "blocked" ? "请先返回内容方案处理未解决信息；未完成前不会发起生成。" : contentApprovalIssues[0] || "确认后，canonical PageSpec 才会进入生成。"}
                                                 </div>
-                                                <details className="mt-2" open>
-                                                    <summary className="cursor-pointer font-medium">查看解析结果</summary>
-                                                    <div className="mt-2 space-y-2">
-                                                        <div>
-                                                            <div className="font-medium">锁定正文</div>
-                                                            <div className="mt-0.5 whitespace-pre-wrap">{pageSpec.lockedCopy.join("\n") || "未识别"}</div>
-                                                        </div>
-                                                        <div>
-                                                            <div className="font-medium">布局意图</div>
-                                                            <div className="mt-0.5 whitespace-pre-wrap">{pageSpec.layoutIntent.join("\n") || "未识别"}</div>
-                                                        </div>
-                                                        <Button size="small" onClick={() => void confirmPageSpecReview()}>
-                                                            确认当前拆分
-                                                        </Button>
-                                                    </div>
-                                                </details>
+                                                <Button className="mt-2" size="small" disabled={pageContentStatus !== "reviewable" || contentApprovalIssues.length > 0} onClick={() => void confirmPageSpecReview()}>
+                                                    确认本页内容规格
+                                                </Button>
                                             </div>
                                         ) : null}
                                     </>
@@ -1604,7 +1619,12 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                 <div className="flex flex-col items-center gap-3 text-center">
                                     <ScanSearch className="size-10 text-white/60" aria-hidden="true" />
                                     <div className="text-sm font-semibold text-white/90">暂无候选稿</div>
-                                    <Button type="primary" icon={<Sparkles className="size-4" />} disabled={!canvasContext || Boolean(newTakeDraft) || (activeTake.canEditPrompt && !activeTake.prompt.trim())} onClick={runGeneration}>
+                                    <Button
+                                        type="primary"
+                                        icon={<Sparkles className="size-4" />}
+                                        disabled={workspace.descriptor.status === "invalid" || !canvasContext || Boolean(newTakeDraft) || (activeTake.canEditPrompt && !activeTake.prompt.trim())}
+                                        onClick={runGeneration}
+                                    >
                                         {generationLabel("生成首稿")}
                                     </Button>
                                 </div>
@@ -1684,7 +1704,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                 <div className="flex flex-wrap items-center gap-2">
                                     <Button
                                         icon={activeTake?.generating ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
-                                        disabled={!activeTake?.configNode || activeTake.generating || !canvasContext || Boolean(newTakeDraft)}
+                                        disabled={workspace.descriptor.status === "invalid" || !activeTake?.configNode || activeTake.generating || !canvasContext || Boolean(newTakeDraft)}
                                         title={activeTake?.candidates.length ? "不添加修改要求，重新生成一个候选" : undefined}
                                         onClick={runGeneration}
                                     >
@@ -1767,7 +1787,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     </Button>
                 </div>
             </Modal>
-            <CanvasPptVisualDirectionDialog open={visualDirectionOpen} projectId={projectId} onClose={() => setVisualDirectionOpen(false)} />
+            {ppt.compilePolicy === "structured" ? <CanvasPptVisualDirectionDialog open={visualDirectionOpen} projectId={projectId} onClose={() => setVisualDirectionOpen(false)} /> : null}
             <CanvasImageLightbox src={lightboxSrc} alt={`第 ${page.index} 页候选稿`} onClose={() => setLightboxSrc(null)} />
         </Modal>
     );

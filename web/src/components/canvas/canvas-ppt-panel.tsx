@@ -9,7 +9,7 @@ import { CanvasPptPageWorkspace } from "@/components/canvas/canvas-ppt-page-work
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolvePageImageNode } from "@/lib/ppt/deck-export";
 import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
-import { createGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
+import { createGenerationPlan, previewGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { buildPptPageWorkspace, type PptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { flushCanvasStore, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
@@ -100,7 +100,8 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setSurface("workbench");
         setFinalReviewOpen(false);
     }, [notificationToken, notifiedPageId, notifiedRunId, notifiedTakeId, pageWorkspaces]);
-    const restPlanPreview = useMemo(() => (currentProject ? createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : undefined), [currentProject, effectiveConfig]);
+    const restPlanResult = useMemo(() => (currentProject ? previewGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : {}), [currentProject, effectiveConfig]);
+    const restPlanPreview = restPlanResult.plan;
     const repeatBillingRiskCount = (plan?: GenerationPlan) =>
         plan?.runs.filter((run) => pageWorkspaces.find((workspace) => workspace.page.pageId === run.pageId)?.takes.find((take) => take.takeId === run.takeId)?.requiresRepeatBillingConfirmation).length || 0;
 
@@ -108,7 +109,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     if (!ppt || !currentProject) return null;
 
     const pages = ppt.pages;
-    const hasVisualDirection = Boolean(ppt.deckBrief.styleContract?.direction?.trim());
+    const hasVisualDirection = ppt.compilePolicy === "structured" && Boolean(ppt.deckBrief.styleContract.direction.trim());
     // #18：skipAnchor 改为写回 ppt 数据的持久默认，不再靠面板内勾选框临时覆盖。
     const skipAnchor = ppt.skipAnchor ?? !hasVisualDirection;
     const confirmedCount = pageWorkspaces.filter((item) => item.confirmationIssues.length === 0).length;
@@ -152,24 +153,28 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
 
     const batchLabel = batchState.kind === "start" ? "开始生成" : batchState.kind === "waitingFirst" ? "等待确认首页" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
     const batchHidden = batchState.kind === "hidden";
-    const batchDisabled = !canvasContext || batchState.kind === "waitingFirst";
+    const batchDisabled = !canvasContext || batchState.kind === "waitingFirst" || (batchState.kind !== "hidden" && !restPlanPreview);
     // #4：精修台头部按钮只在「锚定流程相关」的前两态出现；confirmRest 阶段收敛到结构面板，避免头部与
     // 结构面板双入口并存。结构面板自身仍按 batchHidden 展示全部三个非隐藏态。
     const workspaceBatchHidden = batchHidden || batchState.kind === "confirmRest";
 
     const openBatchModal = () => {
-        if (batchState.kind === "start") {
-            const nextAnchorFirst = hasVisualDirection;
-            const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: nextAnchorFirst }, { project: currentProject, effectiveConfig });
-            setAnchorFirst(nextAnchorFirst);
-            setPendingBatchPlan(plan);
-            setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
-            setStartModalOpen(true);
-        } else if (batchState.kind === "confirmRest") {
-            const plan = createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig });
-            setPendingBatchPlan(plan);
-            setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
-            setRestModalOpen(true);
+        try {
+            if (batchState.kind === "start") {
+                const nextAnchorFirst = hasVisualDirection;
+                const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: nextAnchorFirst }, { project: currentProject, effectiveConfig });
+                setAnchorFirst(nextAnchorFirst);
+                setPendingBatchPlan(plan);
+                setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
+                setStartModalOpen(true);
+            } else if (batchState.kind === "confirmRest") {
+                const plan = createGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig });
+                setPendingBatchPlan(plan);
+                setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
+                setRestModalOpen(true);
+            }
+        } catch (error) {
+            message.warning(error instanceof Error ? error.message : restPlanResult.error || "当前内容规格还不能生成");
         }
     };
 
@@ -199,10 +204,14 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
 
     const changeAnchorFirst = (value: boolean) => {
         if (batchStarting) return;
-        const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: value }, { project: currentProject, effectiveConfig });
-        setAnchorFirst(value);
-        setPendingBatchPlan(plan);
-        setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
+        try {
+            const plan = createGenerationPlan({ kind: "startBatch", anchorFirst: value }, { project: currentProject, effectiveConfig });
+            setAnchorFirst(value);
+            setPendingBatchPlan(plan);
+            setPendingRepeatBillingRiskCount(repeatBillingRiskCount(plan));
+        } catch (error) {
+            message.warning(error instanceof Error ? error.message : "当前内容规格还不能生成");
+        }
     };
 
     const closeBatchModal = (kind: "start" | "rest") => {
@@ -503,7 +512,7 @@ function PptPageRow({
     errorColor: string;
     onOpen: () => void;
 }) {
-    const { page, takes, confirmationIssues } = workspace;
+    const { page, descriptor, takes, confirmationIssues } = workspace;
     const imageNode = resolvePageImageNode(project, page);
     const candidateCount = takes.reduce((total, take) => total + take.candidates.length, 0);
     const generating = takes.some((take) => take.generating);
@@ -540,7 +549,9 @@ function PptPageRow({
                     <span className="shrink-0 text-[11px] font-medium" style={{ color: canvasTheme.node.muted }}>
                         第<span className="font-mono tabular-nums">{page.index}</span>页
                     </span>
-                    <span className="truncate text-sm font-semibold">{page.title}</span>
+                    <span className="truncate text-sm font-semibold" title={descriptor.status === "invalid" ? descriptor.reason : undefined}>
+                        {descriptor.title}
+                    </span>
                 </span>
                 <span className="mt-1.5 block text-xs" style={{ color: canvasTheme.node.muted }}>
                     <span className="font-mono tabular-nums">{takes.length}</span> 个方案分支 · <span className="font-mono tabular-nums">{candidateCount}</span> 个候选稿

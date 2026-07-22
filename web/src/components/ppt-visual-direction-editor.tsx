@@ -18,12 +18,19 @@ export function PptVisualDirectionEditor({ value, onChange, extractedDirectionHi
     const fileInputRef = useRef<HTMLInputElement>(null);
     const validValue = isPptStyleContractValid(value);
     const draft = createPptStyleContractDraft(value);
-    const [advancedOpen, setAdvancedOpen] = useState(!validValue || draft.source.kind === "custom" || draft.references.length > 0);
+    const extractedHint = extractedDirectionHint?.trim() || "";
+    const extractedHintApplied = Boolean(extractedHint && draft.direction.includes(extractedHint));
+    const [advancedOpen, setAdvancedOpen] = useState(Boolean(extractedHint) || !validValue || draft.source.kind === "custom" || draft.references.length > 0);
     const [uploading, setUploading] = useState(false);
 
     const selectPreset = (presetId: PptVisualDirectionPresetId) => {
         const preset = getPptVisualDirectionPreset(presetId);
         onChange({ source: { kind: "preset", presetId }, direction: preset.direction, references: draft.references });
+    };
+
+    const adoptExtractedHint = () => {
+        if (!extractedHint || extractedHintApplied) return;
+        onChange({ ...draft, source: { kind: "custom" }, direction: [draft.direction.trim(), extractedHint].filter(Boolean).join("\n") });
     };
 
     const addReferences = async (files: FileList | null) => {
@@ -94,15 +101,25 @@ export function PptVisualDirectionEditor({ value, onChange, extractedDirectionHi
                 </summary>
 
                 <div className="space-y-4 border-t px-3.5 py-4" style={{ borderColor: token.colorBorderSecondary }}>
+                    {extractedHint ? (
+                        <div className="border-l-2 py-1 pl-3" style={{ borderColor: token.colorPrimary }}>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-medium" style={{ color: token.colorText }}>
+                                    从内容阶段带入的视觉线索
+                                </span>
+                                <Button type="text" size="small" disabled={extractedHintApplied} onClick={adoptExtractedHint}>
+                                    {extractedHintApplied ? "已采用" : "采用线索"}
+                                </Button>
+                            </div>
+                            <p className="mt-1 whitespace-pre-wrap text-xs leading-5" style={{ color: token.colorTextSecondary }}>
+                                {extractedHint}
+                            </p>
+                        </div>
+                    ) : null}
                     <label className="grid gap-1.5">
                         <span className="text-sm font-medium" style={{ color: token.colorText }}>
                             自定义方向
                         </span>
-                        {extractedDirectionHint ? (
-                            <span className="text-xs leading-5" style={{ color: token.colorTextSecondary }}>
-                                已从原稿未占用内容中带入候选说明，请确认后再建图。
-                            </span>
-                        ) : null}
                         <Input.TextArea
                             value={draft.direction}
                             autoSize={{ minRows: 3, maxRows: 10 }}

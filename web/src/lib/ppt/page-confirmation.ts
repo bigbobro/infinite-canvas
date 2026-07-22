@@ -2,6 +2,7 @@ import type { CanvasProject, CanvasProjectPpt, CanvasProjectPptCompilationSnapsh
 import { CanvasNodeType, type CanvasNodeData, type PptGenerationRequestTrace, type PptGenerationRunSummary } from "@/types/canvas";
 import { isPptCandidateEditSnapshot } from "@/lib/ppt/candidate-edit";
 import { compilePptPromptSnapshot } from "@/lib/ppt/prompt-compiler";
+import { hashPptContentSource, hashPptSourceText } from "@/lib/ppt/source-lineage";
 
 type PptCandidateIdentity = {
     pageId: string;
@@ -40,11 +41,35 @@ export function resolvePptCandidateCompilationSnapshot(project: CanvasProject, c
         const snapshots = project.ppt.compilationSnapshots.filter((snapshot) => snapshot.snapshotId === snapshotId);
         if (snapshots.length !== 1) throw new Error(snapshots.length ? "候选稿绑定了重复的 Compiler 快照" : "候选稿绑定的 Compiler 快照已丢失");
         const snapshot = assertCompilationSnapshotIntegrity(snapshots[0]);
+        if (snapshot.compilePolicy !== project.ppt.compilePolicy) throw new Error("候选稿的 Compiler 快照与当前工程编译策略不一致");
+        assertCandidateSnapshotCurrent(project.ppt, snapshot, targetIdentity.pageId);
         const prompts = snapshot.prompts.filter((prompt) => prompt.pageId === targetIdentity.pageId && prompt.takeId === targetIdentity.takeId && typeof prompt.finalPrompt === "string" && Boolean(prompt.finalPrompt.trim()));
         if (prompts.length !== 1) throw new Error("Compiler 快照不包含该页面方案的唯一编译结果");
         if (current.metadata?.prompt !== prompts[0].finalPrompt) throw new Error("候选稿的实际提示词与 Compiler 快照不一致");
         return snapshot;
     }
+}
+
+function assertCandidateSnapshotCurrent(ppt: CanvasProjectPpt, snapshot: CanvasProjectPptCompilationSnapshot, pageId: string) {
+    if (snapshot.compilePolicy === "structured" && ppt.compilePolicy === "structured") {
+        if (snapshot.deckBrief.sourceHash !== hashPptContentSource(ppt.sourceMaterial, ppt.requirements)) throw new Error("候选稿的整套内容来源已变化");
+        if (!sameCandidateContentBrief(snapshot.deckBrief, ppt.deckBrief)) throw new Error("候选稿的全局内容规格已变化");
+        const snapshotSpec = snapshot.pageSpecs.find((spec) => spec.pageId === pageId);
+        const currentSpecs = ppt.pageSpecs.filter((spec) => spec.pageId === pageId);
+        if (!snapshotSpec || currentSpecs.length !== 1 || JSON.stringify(snapshotSpec) !== JSON.stringify(currentSpecs[0])) throw new Error("候选稿的页面内容规格已变化");
+        return;
+    }
+    if (snapshot.compilePolicy === "verbatim" && ppt.compilePolicy === "verbatim") {
+        const snapshotSpec = snapshot.verbatimSpecs.find((spec) => spec.pageId === pageId);
+        const currentSpecs = ppt.verbatimSpecs.filter((spec) => spec.pageId === pageId);
+        if (snapshot.confirmedGlobalSpec !== ppt.confirmedGlobalSpec || !snapshotSpec || currentSpecs.length !== 1 || JSON.stringify(snapshotSpec) !== JSON.stringify(currentSpecs[0])) throw new Error("候选稿的逐字内容规格已变化");
+        if (snapshotSpec.origin.kind === "source_slice" && snapshotSpec.origin.sourceHash !== hashPptSourceText(ppt.sourceMaterial)) throw new Error("候选稿的原文版本已变化");
+    }
+}
+
+function sameCandidateContentBrief(left: Extract<CanvasProjectPptCompilationSnapshot, { compilePolicy: "structured" }>["deckBrief"], right: Extract<CanvasProjectPpt, { compilePolicy: "structured" }>["deckBrief"]) {
+    const contentFields = (brief: typeof left) => ({ sourceHash: brief.sourceHash, audience: brief.audience, goal: brief.goal, narrative: brief.narrative, globalRules: brief.globalRules, lockedDeckFacts: brief.lockedDeckFacts });
+    return JSON.stringify(contentFields(left)) === JSON.stringify(contentFields(right));
 }
 
 /**
@@ -177,10 +202,9 @@ function assertCompilationSnapshotIntegrity(snapshot: CanvasProjectPptCompilatio
         !snapshot.compilerVersion.trim() ||
         typeof snapshot.createdAt !== "string" ||
         !snapshot.createdAt.trim() ||
-        !Number.isInteger(snapshot.deckBriefVersion) ||
-        !Number.isInteger(snapshot.pageSpecsVersion) ||
-        !snapshot.deckBrief ||
-        !Array.isArray(snapshot.pageSpecs) ||
+        typeof snapshot.inputHash !== "string" ||
+        !snapshot.inputHash.trim() ||
+        (snapshot.compilePolicy !== "structured" && snapshot.compilePolicy !== "verbatim") ||
         !Array.isArray(snapshot.targets) ||
         !Array.isArray(snapshot.prompts) ||
         !Array.isArray(snapshot.issues)
@@ -193,13 +217,27 @@ function assertCompilationSnapshotIntegrity(snapshot: CanvasProjectPptCompilatio
     }
     let rebuilt: CanvasProjectPptCompilationSnapshot;
     try {
-        rebuilt = compilePptPromptSnapshot({
-            snapshotId: snapshot.snapshotId,
-            compiledAt: snapshot.createdAt,
-            deckBrief: snapshot.deckBrief,
-            pageSpecs: snapshot.pageSpecs,
-            targets: snapshot.targets,
-        });
+        if (snapshot.compilePolicy === "structured") {
+            if (!Number.isInteger(snapshot.deckBriefVersion) || !Number.isInteger(snapshot.pageSpecsVersion) || !snapshot.deckBrief || !Array.isArray(snapshot.pageSpecs)) throw new Error("invalid structured snapshot");
+            rebuilt = compilePptPromptSnapshot({
+                compilePolicy: "structured",
+                snapshotId: snapshot.snapshotId,
+                compiledAt: snapshot.createdAt,
+                deckBrief: snapshot.deckBrief,
+                pageSpecs: snapshot.pageSpecs,
+                targets: snapshot.targets,
+            });
+        } else {
+            if (!Array.isArray(snapshot.verbatimSpecs) || (snapshot.confirmedGlobalSpec !== undefined && typeof snapshot.confirmedGlobalSpec !== "string")) throw new Error("invalid verbatim snapshot");
+            rebuilt = compilePptPromptSnapshot({
+                compilePolicy: "verbatim",
+                snapshotId: snapshot.snapshotId,
+                compiledAt: snapshot.createdAt,
+                verbatimSpecs: snapshot.verbatimSpecs,
+                ...(snapshot.confirmedGlobalSpec === undefined ? {} : { confirmedGlobalSpec: snapshot.confirmedGlobalSpec }),
+                targets: snapshot.targets,
+            });
+        }
     } catch {
         throw new Error("Compiler 快照结构不完整");
     }

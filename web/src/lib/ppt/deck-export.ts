@@ -1,6 +1,7 @@
 import saveAs from "file-saver";
 
 import { createImagePptxBlob, findMixedImagePptxPages, readImagePptxDimensions } from "@/lib/ppt/image-pptx-export";
+import { selectPptPageDescriptor, type PptPageDescriptor } from "@/lib/ppt/page-descriptor";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
 import { createZip } from "@/lib/zip";
 import { getImageBlob, resolveImageUrl } from "@/services/image-storage";
@@ -9,6 +10,7 @@ import type { CanvasNodeData } from "@/types/canvas";
 
 export type PptDeckInspectionPage = {
     page: CanvasProjectPptPage;
+    descriptor: PptPageDescriptor;
     node?: CanvasNodeData;
     previewUrl?: string;
     issues: string[];
@@ -66,7 +68,7 @@ export async function inspectPptDeckExport(project: CanvasProject, dependencies 
     const pages = await resolveInspectionPages(project, { inspectPptx: true }, dependencies);
     const ready = pages.length > 0 && pages.every((page) => !page.issues.length);
     return {
-        pages: pages.map(({ page, node, previewUrl, issues, pptxIssues, width, height }) => ({ page, node, previewUrl, issues, pptxIssues, width, height })),
+        pages: pages.map(({ page, descriptor, node, previewUrl, issues, pptxIssues, width, height }) => ({ page, descriptor, node, previewUrl, issues, pptxIssues, width, height })),
         ready,
         pptxReady: ready && pages.every((page) => !page.pptxIssues.length),
     };
@@ -76,10 +78,12 @@ export async function exportPptDeckImages(project: CanvasProject, options: Expor
     const pages = await resolveInspectionPages(project, { onProgress: options.onProgress });
     assertExportReady(pages, false);
 
-    const files = pages.map(({ page, blob }) => ({
-        name: `${String(page.index).padStart(2, "0")}_${safeFileName(page.title, `第${page.index}页`)}.${fileExtension(blob!.type)}`,
-        data: blob!,
-    }));
+    const files = pages.map(({ page, descriptor, blob }) => {
+        return {
+            name: `${String(page.index).padStart(2, "0")}_${safeFileName(descriptor.title, `第${page.index}页`)}.${fileExtension(blob!.type)}`,
+            data: blob!,
+        };
+    });
     options.onProgress?.({ current: pages.length, total: pages.length, message: "正在打包页面图片…" });
     const zip = await createZip(files);
     saveAs(zip, `${safeFileName(project.title || "PPT")}.zip`);
@@ -101,12 +105,14 @@ export async function exportPptDeckPptx(project: CanvasProject, options: ExportO
 async function resolveInspectionPages(project: CanvasProject, { inspectPptx = false, onProgress }: ExportOptions & { inspectPptx?: boolean } = {}, dependencies = DEFAULT_EXPORT_DEPENDENCIES): Promise<ResolvedInspectionPage[]> {
     const pages = [...(project.ppt?.pages || [])].sort((a, b) => a.index - b.index);
     const resolved = pages.map<ResolvedInspectionPage>((page) => {
+        const descriptor = selectPptPageDescriptor(project.ppt, page.pageId);
+        if (descriptor.status === "invalid") return { page, descriptor, issues: [`内容规格待修复：${descriptor.reason}`], pptxIssues: [] };
         const workspace = buildPptPageWorkspace(project, page);
-        return { page, node: workspace.confirmedNode, issues: [...workspace.confirmationIssues], pptxIssues: [] };
+        return { page, descriptor, node: workspace.confirmedNode, issues: [...workspace.confirmationIssues], pptxIssues: [] };
     });
 
-    // 先完成全 deck 的确认/血缘预检；任一已确认页损坏时，不先读其他页 Blob 造成部分导出副作用。
-    if (resolved.some((item) => item.page.confirmedNodeId && item.issues.length)) {
+    // 先完成全 deck 的内容规格与确认/血缘预检；任一页不可信时，不先读其他页 Blob 造成部分导出副作用。
+    if (resolved.some((item) => item.descriptor.status === "invalid" || (item.page.confirmedNodeId && item.issues.length))) {
         resolved.forEach((_, index) => onProgress?.({ current: index + 1, total: pages.length, message: `正在检查页面 ${index + 1}/${pages.length}` }));
         return resolved;
     }
