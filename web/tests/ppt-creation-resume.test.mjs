@@ -129,16 +129,21 @@ test("extract 模式：已生成分页在 save→load 后恢复步骤与材料",
 
 test("outline 模式：contentDraft、finalizedContent、style Contract 与 PageSpecs 往返", async () => {
     const styleContract = createPptVisualDirectionPresetContract("clean-report");
+    const titleSourceId = "page-1:source:title";
+    const claimSourceId = "page-1:source:claim";
     const pageSpecs = [
         {
             pageId: "page-1",
             version: 1,
             purpose: "封面定位",
             contentForm: "cover",
-            sourceRefs: [],
+            sourceRefs: [
+                { id: titleSourceId, source: "material", relation: "verbatim", excerpt: "中转站", startLine: 1, endLine: 1 },
+                { id: claimSourceId, source: "material", relation: "derived", excerpt: "用一句话说明中转站的定位", startLine: 2, endLine: 2 },
+            ],
             contentBlocks: [
-                { id: "b1", kind: "title", text: "中转站", sourceRefIds: [] },
-                { id: "b2", kind: "primary_claim", text: "一句话定位", sourceRefIds: [] },
+                { id: "b1", kind: "title", text: "中转站", sourceRefIds: [titleSourceId] },
+                { id: "b2", kind: "primary_claim", text: "一句话定位", sourceRefIds: [claimSourceId] },
             ],
             contentState: { status: "approved", approvedAt: "2026-07-23T00:00:00.000Z" },
             lockedFacts: [],
@@ -198,6 +203,9 @@ test("outline 模式：contentDraft、finalizedContent、style Contract 与 Page
     assert.equal(restored.styleContract?.schemaVersion, 1);
     assert.equal(restored.styleContract?.modelStyle.density, styleContract.modelStyle.density);
     assert.deepEqual(restored.stylePageSpecs?.[0].layoutIntent, ["居中主视觉"]);
+    assert.equal(restored.contentDraft?.pageSpecs[0].sourceRefs.find((source) => source.id === claimSourceId)?.relation, "derived");
+    assert.equal(restored.finalizedContent?.pageSpecs[0].sourceRefs.find((source) => source.id === claimSourceId)?.relation, "derived");
+    assert.equal(restored.stylePageSpecs?.[0].sourceRefs.find((source) => source.id === claimSourceId)?.relation, "derived");
 
     // Restored Contract must suppress auto style requests (zero auto model call).
     assert.equal(

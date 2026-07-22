@@ -229,7 +229,7 @@ export function applyPptCanonicalPageTextEdit(ppt: CanvasProjectPpt, pageId: str
             exactBlockIds.add(match.id);
         }
         const preservedBlockIds = new Set<string>();
-        const sourceRefs = lines.map((text, index) => ({ id: `${pageId}:source:user-answer:${pageSpec.version + 1}:${index + 1}`, source: "user_answer" as const, excerpt: text }));
+        const sourceRefs = lines.map((text, index) => ({ id: `${pageId}:source:user-answer:${pageSpec.version + 1}:${index + 1}`, source: "user_answer" as const, relation: "verbatim" as const, excerpt: text }));
         const contentBlocks = lines.map<CanvasProjectPptContentBlock>((text, index) => {
             const requiredKind = index === 0 ? "title" : index === 1 ? "primary_claim" : undefined;
             const positional = previousBlocks[index];
@@ -285,7 +285,7 @@ export function applyPptCanonicalPageRewrite(ppt: CanvasProjectPpt, pageId: stri
                 }
                 return previous;
             }
-            const sourceRef = { id: `${pageId}:source:ai-rewrite:${pageSpec.version + 1}:${index + 1}`, source: "confirmed_assumption" as const, excerpt: block.text };
+            const sourceRef = { id: `${pageId}:source:ai-rewrite:${pageSpec.version + 1}:${index + 1}`, source: "confirmed_assumption" as const, relation: "verbatim" as const, excerpt: block.text };
             sourceRefById.set(sourceRef.id, sourceRef);
             return {
                 id: `${pageId}:block:ai-rewrite:${pageSpec.version + 1}:${index + 1}`,

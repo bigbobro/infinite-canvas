@@ -68,6 +68,8 @@ export type CanvasProjectPptPage = {
 export type CanvasProjectPptSourceRef = {
     id: string;
     source: "material" | "requirements" | "user_answer" | "confirmed_assumption";
+    /** verbatim = 页面文案可在 excerpt 中逐字定位；derived = 基于 excerpt 归纳/压缩，硬事实须仍落在 excerpt 内 */
+    relation: "verbatim" | "derived";
     excerpt: string;
     startLine?: number;
     endLine?: number;

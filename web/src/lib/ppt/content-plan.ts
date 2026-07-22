@@ -11,7 +11,7 @@ export type PptContentSourceInput = {
     previousPageSpecs?: CanvasProjectPptPageSpec[];
 };
 
-type RawSourceRange = { source?: unknown; startLine?: unknown; endLine?: unknown };
+type RawSourceRange = { source?: unknown; startLine?: unknown; endLine?: unknown; relation?: unknown };
 type RawBlock = { key?: unknown; kind?: unknown; text?: unknown; source?: RawSourceRange; gapKey?: unknown };
 type RawVisualEncoding = {
     contentKeys?: unknown;
@@ -125,6 +125,7 @@ const GAP_KINDS = new Set<PptInformationGap["kind"]>(["missing_detail", "missing
 const ENCODING_INTENTS = new Set<CanvasProjectPptVisualEncoding["intent"]>(["differentiate", "emphasize", "sequence", "group", "show_relationship"]);
 const ENCODING_CHANNELS = new Set<CanvasProjectPptVisualEncoding["channel"]>(["color", "shape", "position", "size", "line", "icon"]);
 const SOURCE_KINDS = new Set<CanvasProjectPptSourceRef["source"]>(["material", "requirements", "user_answer", "confirmed_assumption"]);
+const SOURCE_RELATIONS = new Set<CanvasProjectPptSourceRef["relation"]>(["verbatim", "derived"]);
 const NUMBER_PATTERN = /(?:[$¥€£]\s*)?\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:亿元|万元|百分点|个月|小时|分钟|%|％|倍|万|亿|元|人|家|台|页|年|天|秒|个|项|条|点)?/g;
 const ASCII_TERM_PATTERN = /\b[A-Z][A-Z0-9-]{1,}\b/g;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*•]\s+|\d+[.)、]\s*)/;
@@ -158,15 +159,15 @@ export function normalizePptContentDraft(rawInput: unknown, sourceInput: PptCont
     };
     for (const field of ["audience", "goal", "narrative"] as const) {
         const value = brief[field];
-        if (value && sourceSupportsText(combinedSource, value)) continue;
+        // Deck Brief 是作者侧整套归纳元数据：非空即可进入可审草稿，不因未逐字出现在材料中而阻断
+        if (value) continue;
         gaps.push({
             id: `brief:gap:${field}`,
             lineageKey: `brief:${field}`,
-            kind: value ? "unsupported_claim" : "missing_detail",
+            kind: "missing_detail",
             question: `请确认整套材料的${field === "audience" ? "受众" : field === "goal" ? "目标" : "叙事主线"}`,
-            reason: value ? "该描述无法从原始输入中定位" : "内容方案缺少整套定位",
+            reason: "内容方案缺少整套定位",
             blocking: true,
-            ...(value ? { proposedAnswer: value } : {}),
             briefField: field,
         });
     }
@@ -220,6 +221,7 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
             const sourceRef: CanvasProjectPptSourceRef = {
                 id: `${gapId}:source:${resolution.kind}`,
                 source: resolution.kind,
+                relation: "verbatim",
                 excerpt: resolution.text.trim(),
                 gapId,
             };
@@ -326,6 +328,7 @@ export function applyPptContentAction(draft: PptContentDraft, preview: PptConten
             const sourceRef: CanvasProjectPptSourceRef = {
                 id: `${page.pageId}:source:user-answer:${encodeURIComponent(block.id)}:${page.version + 1}`,
                 source: "user_answer",
+                relation: "verbatim",
                 excerpt: editedText,
                 ...(lineageGapId ? { gapId: lineageGapId } : {}),
             };
@@ -489,12 +492,13 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
             !sourceRef.id.trim() ||
             !sourceRef.excerpt.trim() ||
             !SOURCE_KINDS.has(sourceRef.source) ||
+            !SOURCE_RELATIONS.has(sourceRef.relation) ||
             ((sourceRef.source === "material" || sourceRef.source === "requirements") && (!Number.isInteger(sourceRef.startLine) || !Number.isInteger(sourceRef.endLine) || sourceRef.startLine! < 1 || sourceRef.endLine! < sourceRef.startLine!)),
     );
     const invalidBlockSource = pageSpec.contentBlocks.some((block) => {
         if (block.kind === "placeholder") return false;
-        const refs = block.sourceRefIds.map((id) => sourceById.get(id));
-        return !refs.length || refs.some((sourceRef) => !sourceRef) || !sourceSupportsText(refs.map((sourceRef) => sourceRef!.excerpt).join("\n"), block.text);
+        const refs = block.sourceRefIds.map((id) => sourceById.get(id)).filter((sourceRef): sourceRef is CanvasProjectPptSourceRef => Boolean(sourceRef));
+        return !refs.length || refs.length !== block.sourceRefIds.length || !sourceRefsSupportBlockText(refs, block.text);
     });
     if (duplicateSources || invalidSource || invalidBlockSource) {
         issues.push({ code: "invalid_content_provenance", message: "页面内容存在缺失或无效的来源" });
@@ -672,13 +676,14 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
                 };
                 gaps.push(gap);
             } else if (effectiveKind !== "placeholder") {
+                const question = unsupportedClaimQuestion(key, effectiveKind);
                 gap = {
                     id: `${pageId}:gap:auto:${encodeURIComponent(autoGapKey)}`,
-                    lineageKey: gapLineageKey("unsupported_claim", `请确认或补充：${effectiveValue}`),
+                    lineageKey: gapLineageKey("unsupported_claim", question),
                     pageId,
                     kind: "unsupported_claim",
-                    question: `请确认或补充：${effectiveValue}`,
-                    reason: rawSource ? "引用范围无效或与内容无关" : "该内容无法从原始输入中定位",
+                    question,
+                    reason: "该表述引入了原材料未支持的事实或结论",
                     blocking: true,
                     proposedAnswer: effectiveValue,
                 };
@@ -788,6 +793,8 @@ function normalizeVisualEncodings(rawValue: unknown, pageId: string, blockByKey:
 function resolveSourceRef(pageId: string, key: string, value: string, raw: RawSourceRange | undefined, sourceInput: PptContentSourceInput) {
     if (!normalize(value)) return undefined;
     const declared = raw?.source === "material" || raw?.source === "requirements" ? raw.source : undefined;
+    const declaredRelation = raw?.relation === "derived" || raw?.relation === "verbatim" ? raw.relation : undefined;
+    // 1) 原文可逐字定位：错误行号也全材料重绑，规范化为 verbatim
     if (declared) {
         const sourceText = declared === "material" ? sourceInput.sourceMaterial : sourceInput.requirements;
         const startLine = Number(raw?.startLine);
@@ -796,12 +803,12 @@ function resolveSourceRef(pageId: string, key: string, value: string, raw: RawSo
         if (Number.isInteger(startLine) && Number.isInteger(endLine) && startLine >= 1 && endLine >= startLine && endLine <= lines.length) {
             const excerpt = lines.slice(startLine - 1, endLine).join("\n");
             if (sourceSupportsText(excerpt, value)) {
-                return { id: `${pageId}:source:${stableKey(key)}:${declared}:${startLine}-${endLine}`, source: declared, excerpt, startLine, endLine } satisfies CanvasProjectPptSourceRef;
+                return makeSourceRef(pageId, key, declared, "verbatim", excerpt, startLine, endLine);
             }
         }
         const rebound = findSmallestSupportingRange(sourceText, value);
         if (rebound) {
-            return { id: `${pageId}:source:${stableKey(key)}:${declared}:${rebound.startLine}-${rebound.endLine}`, source: declared, excerpt: rebound.excerpt, startLine: rebound.startLine, endLine: rebound.endLine } satisfies CanvasProjectPptSourceRef;
+            return makeSourceRef(pageId, key, declared, "verbatim", rebound.excerpt, rebound.startLine, rebound.endLine);
         }
     }
     for (const source of ["material", "requirements"] as const) {
@@ -809,10 +816,52 @@ function resolveSourceRef(pageId: string, key: string, value: string, raw: RawSo
         const sourceText = source === "material" ? sourceInput.sourceMaterial : sourceInput.requirements;
         const rebound = findSmallestSupportingRange(sourceText, value);
         if (rebound) {
-            return { id: `${pageId}:source:${stableKey(key)}:${source}:${rebound.startLine}-${rebound.endLine}`, source, excerpt: rebound.excerpt, startLine: rebound.startLine, endLine: rebound.endLine } satisfies CanvasProjectPptSourceRef;
+            return makeSourceRef(pageId, key, source, "verbatim", rebound.excerpt, rebound.startLine, rebound.endLine);
+        }
+    }
+    // 2) 显式 derived：合法行号 + excerpt 与原文切片一致 + 数字/大写术语均落在 excerpt
+    if (declaredRelation === "derived" && declared) {
+        const sourceText = declared === "material" ? sourceInput.sourceMaterial : sourceInput.requirements;
+        const startLine = Number(raw?.startLine);
+        const endLine = Number(raw?.endLine);
+        const lines = sourceText.split("\n");
+        if (Number.isInteger(startLine) && Number.isInteger(endLine) && startLine >= 1 && endLine >= startLine && endLine <= lines.length) {
+            const excerpt = lines.slice(startLine - 1, endLine).join("\n");
+            if (hardFactsSupported(excerpt, value)) {
+                return makeSourceRef(pageId, key, declared, "derived", excerpt, startLine, endLine);
+            }
         }
     }
     return undefined;
+}
+
+function makeSourceRef(pageId: string, key: string, source: "material" | "requirements", relation: CanvasProjectPptSourceRef["relation"], excerpt: string, startLine: number, endLine: number): CanvasProjectPptSourceRef {
+    return {
+        id: `${pageId}:source:${stableKey(key)}:${source}:${relation}:${startLine}-${endLine}`,
+        source,
+        relation,
+        excerpt,
+        startLine,
+        endLine,
+    };
+}
+
+function hardFactsSupported(source: string, value: string) {
+    const normalizedSource = normalize(source);
+    if (!normalizedSource || !normalize(value)) return false;
+    const facts = extractHardFacts(value);
+    return facts.every((fact) => normalizedSource.includes(normalize(fact)));
+}
+
+function extractHardFacts(value: string) {
+    return [...value.matchAll(NUMBER_PATTERN), ...value.matchAll(ASCII_TERM_PATTERN)].map((match) => match[0].trim()).filter(Boolean);
+}
+
+function sourceRefsSupportBlockText(refs: CanvasProjectPptSourceRef[], value: string) {
+    if (!refs.length) return false;
+    const joined = refs.map((sourceRef) => sourceRef.excerpt).join("\n");
+    if (refs.every((sourceRef) => sourceRef.relation === "derived")) return hardFactsSupported(joined, value);
+    return sourceSupportsText(joined, value);
 }
 
 function findSmallestSupportingRange(sourceText: string, value: string) {
@@ -846,6 +895,16 @@ function missingDetailQuestion(key: string, kind: CanvasProjectPptContentBlock["
     if (kind === "table") return "请补充本页表格内容";
     if (kind === "chart_data") return "请补充本页图表数据";
     return "请补充本页所需信息";
+}
+
+function unsupportedClaimQuestion(key: string, kind: CanvasProjectPptContentBlock["kind"]) {
+    if (key === "title" || kind === "title") return "请确认本页标题中的新增表述";
+    if (key === "primary_claim" || kind === "primary_claim") return "请确认本页核心信息中的新增表述";
+    if (kind === "supporting_claim") return "请确认本页支撑观点中的新增表述";
+    if (kind === "list") return "请确认本页列表中的新增表述";
+    if (kind === "table") return "请确认本页表格中的新增表述";
+    if (kind === "chart_data") return "请确认本页图表数据中的新增表述";
+    return "请确认本段新增表述";
 }
 
 function resolvePreviousConfirmedBlock(previousPageSpec: CanvasProjectPptPageSpec | undefined, kind: CanvasProjectPptContentBlock["kind"], value: string, consumedBlockIds: Set<string>) {
@@ -884,7 +943,9 @@ function assertRegeneratedPagePreservesConfirmedSources(current: CanvasProjectPp
             currentBindings.every((currentBlock) =>
                 replacement.contentBlocks.some((block) => block.id === currentBlock.id && block.kind === currentBlock.kind && block.sourceRefIds.includes(sourceRef.id) && normalize(block.text) === normalize(currentBlock.text)),
             );
-        return !replacementSource || replacementSource.source !== sourceRef.source || replacementSource.excerpt !== sourceRef.excerpt || replacementSource.gapId !== sourceRef.gapId || !bindingsPreserved;
+        return (
+            !replacementSource || replacementSource.source !== sourceRef.source || replacementSource.relation !== sourceRef.relation || replacementSource.excerpt !== sourceRef.excerpt || replacementSource.gapId !== sourceRef.gapId || !bindingsPreserved
+        );
     });
     if (missing) throw new Error("本页生成结果遗漏或改写了已确认内容；原页已保留");
 }
@@ -1125,8 +1186,7 @@ function sourceSupportsText(source: string, value: string) {
     const normalizedValue = normalize(value);
     if (!normalizedValue) return false;
     if (!normalize(source).includes(normalizedValue)) return false;
-    const facts = [...value.matchAll(NUMBER_PATTERN), ...value.matchAll(ASCII_TERM_PATTERN)].map((match) => match[0].trim()).filter(Boolean);
-    return facts.every((fact) => normalize(source).includes(normalize(fact)));
+    return hardFactsSupported(source, value);
 }
 
 function normalizedComparable(value: string) {

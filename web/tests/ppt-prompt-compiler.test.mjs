@@ -110,6 +110,16 @@ test("Compiler 保留 5 点、数字术语和页面布局，且基线无阻断",
     );
 });
 
+test("SHA-26：Compiler 快照与逐页 prompt 保留 derived 来源关系", () => {
+    const { deckBrief, pageSpecs } = modelForFixturePages(["page-2"]);
+    pageSpecs[0].sourceRefs[0].relation = "derived";
+    const snapshot = compilePptPromptSnapshot(snapshotInputForPage(deckBrief, pageSpecs[0], "take-derived"));
+
+    assert.equal(hasBlockingCompilationIssues(snapshot), false);
+    assert.equal(snapshot.pageSpecs[0].sourceRefs[0].relation, "derived");
+    assert.equal(snapshot.prompts[0].sourceRefs[0].relation, "derived");
+});
+
 test("Compiler 把已批准文案按语义块编译，并允许无文字视觉构件", () => {
     const text = ["LLM 中转站选型", "选型需同时平衡接入能力、运行规模、安全与成本", "模型接入：明确服务商与协议兼容性", "容量与路由：评估并发、吞吐和故障切换", "安全治理：覆盖密钥、鉴权、审计与脱敏"].join("\n");
     const { deckBrief, pageSpecs } = singlePageModel({ pageId: "page-semantic-blocks", title: "LLM 中转站选型", text, styleContract: styleContract() });
@@ -271,7 +281,7 @@ test("全局要求的项目符号不会被误当成每页点数", () => {
 
 test("无法溯源或未批准的 canonical PageSpec 必须阻断", () => {
     const { deckBrief, pageSpecs } = singlePageModel({ pageId: "page-source", title: "核心结论", text: "核心结论\n公司已经实现盈利", styleContract: styleContract() });
-    pageSpecs[0].sourceRefs[0] = { id: "page-source:source", source: "material", excerpt: "公司尚未实现盈利", startLine: 1, endLine: 1 };
+    pageSpecs[0].sourceRefs[0] = { id: "page-source:source", source: "material", relation: "verbatim", excerpt: "公司尚未实现盈利", startLine: 1, endLine: 1 };
     pageSpecs[0].contentState = { status: "reviewable" };
     const snapshot = compilePptPromptSnapshot({ ...snapshotInputForPage(deckBrief, pageSpecs[0], "take-source"), snapshotId: "snapshot-source" });
 
@@ -281,7 +291,7 @@ test("无法溯源或未批准的 canonical PageSpec 必须阻断", () => {
 
 test("canonical SourceRef 保留用户确认的重复原文行号", () => {
     const { pageSpecs } = singlePageModel({ pageId: "page-repeat", title: "重复页", text: "重复页", styleContract: styleContract() });
-    pageSpecs[0].sourceRefs[0] = { id: "page-repeat:source", source: "material", excerpt: "重复页", startLine: 3, endLine: 3 };
+    pageSpecs[0].sourceRefs[0] = { id: "page-repeat:source", source: "material", relation: "verbatim", excerpt: "重复页", startLine: 3, endLine: 3 };
 
     assert.equal(pageSpecs[0].sourceRefs[0].startLine, 3);
     assert.equal(pageSpecs[0].sourceRefs[0].endLine, 3);
@@ -716,7 +726,7 @@ function createPageSpec({ pageId, title, text, sourceMaterial, sourceKind, layou
     const lines = text.split("\n");
     const bodyLines = lines[0] === title ? lines.slice(1) : lines;
     const primaryClaim = bodyLines[0] || title;
-    const sourceRef = { id: `${pageId}:source`, source: sourceKind, excerpt: text };
+    const sourceRef = { id: `${pageId}:source`, source: sourceKind, relation: "verbatim", excerpt: text };
     if (sourceKind === "material" || sourceKind === "requirements") Object.assign(sourceRef, locateSourceRange(sourceMaterial, text));
     const contentBlocks = [
         { id: `${pageId}:title`, kind: "title", text: title, sourceRefIds: [sourceRef.id] },

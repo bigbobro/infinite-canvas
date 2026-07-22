@@ -180,6 +180,7 @@ function createProject(roles) {
         const sourceRef = {
             id: `${pageId}:source`,
             source: "material",
+            relation: "verbatim",
             excerpt: lines.join("\n"),
             startLine: index * 2 + 1,
             endLine: index * 2 + 2,

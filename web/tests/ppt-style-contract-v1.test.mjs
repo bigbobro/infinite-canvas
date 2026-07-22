@@ -219,7 +219,7 @@ function pageSpec({ layoutIntent = ["左右双栏"], visualEncoding = [], bodyTe
         version: 1,
         purpose: "说明项目结论",
         contentForm: "narrative",
-        sourceRefs: [{ id: "source", source: "material", excerpt: sourceExcerpt, startLine: 1, endLine: 1 }],
+        sourceRefs: [{ id: "source", source: "material", relation: "verbatim", excerpt: sourceExcerpt, startLine: 1, endLine: 1 }],
         contentBlocks: [
             { id: "title", kind: "title", text: "项目标题", sourceRefIds: ["source"] },
             { id: "claim", kind: "primary_claim", text: "项目结论", sourceRefIds: ["source"] },

@@ -224,8 +224,8 @@ function structuredProject(suffix) {
         purpose: "建立共同理解",
         contentForm: "cover",
         sourceRefs: [
-            { id: `source-title-${suffix}`, source: "material", excerpt: "项目概览", startLine: 1, endLine: 1 },
-            { id: `source-claim-${suffix}`, source: "material", excerpt: "用一页说清项目价值", startLine: 2, endLine: 2 },
+            { id: `source-title-${suffix}`, source: "material", relation: "verbatim", excerpt: "项目概览", startLine: 1, endLine: 1 },
+            { id: `source-claim-${suffix}`, source: "material", relation: "verbatim", excerpt: "用一页说清项目价值", startLine: 2, endLine: 2 },
         ],
         contentBlocks: [
             { id: `title-${suffix}`, kind: "title", text: "项目概览", sourceRefIds: [`source-title-${suffix}`] },

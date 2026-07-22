@@ -60,13 +60,60 @@ test("SHA-25：块已绑定未解决 gap 且无来源时只显示信息缺口，
             { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: ["src-claim"] },
             { id: "list", kind: "placeholder", text: "待补充", sourceRefIds: [], gapId: "g-list" },
         ],
-        sourceRefs: [{ id: "src-claim", source: "material", excerpt: "核心信息", startLine: 1, endLine: 1 }],
+        sourceRefs: [{ id: "src-claim", source: "material", relation: "verbatim", excerpt: "核心信息", startLine: 1, endLine: 1 }],
     });
     const gapSection = sectionStartingAt(html, "信息缺口");
     assert.match(gapSection, /请补充本页列表内容/);
     assert.match(gapSection, /ppt-gap-g-list/);
     assert.doesNotMatch(html, /来源待确认/);
     assert.doesNotMatch(html, /等待你补充/);
+});
+
+test("SHA-26：derived 来源标签显示基于材料归纳", () => {
+    const html = renderPlan([], {
+        contentBlocks: [
+            { id: "title", kind: "title", text: "测试页", sourceRefIds: ["src-title"] },
+            { id: "claim", kind: "primary_claim", text: "归纳后的核心信息", sourceRefIds: ["src-claim"] },
+            { id: "body", kind: "body", text: "归纳后的补充要求", sourceRefIds: ["src-requirements"] },
+        ],
+        sourceRefs: [
+            { id: "src-title", source: "material", relation: "verbatim", excerpt: "测试页", startLine: 1, endLine: 1 },
+            { id: "src-claim", source: "material", relation: "derived", excerpt: "原文核心表述", startLine: 2, endLine: 3 },
+            { id: "src-requirements", source: "requirements", relation: "derived", excerpt: "补充要求原文", startLine: 4, endLine: 4 },
+        ],
+    });
+    assert.match(html, /基于材料 L2–3 归纳/);
+    assert.match(html, /基于补充要求 L4 归纳/);
+    assert.match(html, /材料 L1/);
+    assert.doesNotMatch(html, /材料 L2–3(?! 归纳)/);
+});
+
+test("SHA-26：proposedAnswer 与已显示 block 相同时不渲染第二份 AI 建议，并提供确认当前内容", () => {
+    const claim = "解决从材料到可交付 PPT 的关键工作";
+    const html = renderPlan([gap("g-claim", "请确认本页核心信息中的新增表述", { pageId: "page-1", kind: "unsupported_claim", reason: "该表述引入了原材料未支持的事实或结论", proposedAnswer: claim })], {
+        contentBlocks: [
+            { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
+            { id: "claim", kind: "primary_claim", text: claim, sourceRefIds: [], gapId: "g-claim" },
+        ],
+    });
+    const gapSection = sectionStartingAt(html, "信息缺口");
+    assert.match(gapSection, /请确认本页核心信息中的新增表述/);
+    assert.match(gapSection, /确认采用当前内容/);
+    assert.doesNotMatch(gapSection, /AI 建议，尚未采纳/);
+    assert.doesNotMatch(gapSection, /采纳 AI 建议/);
+});
+
+test("SHA-26：没有 proposedAnswer 的占位缺口不能确认当前占位内容", () => {
+    const html = renderPlan([gap("g-missing", "请补充本页列表内容", { pageId: "page-1" })], {
+        contentBlocks: [
+            { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
+            { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: [] },
+            { id: "list", kind: "placeholder", text: "待补充", sourceRefIds: [], gapId: "g-missing" },
+        ],
+    });
+    const gapSection = sectionStartingAt(html, "信息缺口");
+    assert.match(gapSection, /让 AI 给建议/);
+    assert.doesNotMatch(gapSection, /确认采用当前内容/);
 });
 
 test("SHA-20：页级修复可见 loading、success、error 终态且进行中禁用重复提交", () => {

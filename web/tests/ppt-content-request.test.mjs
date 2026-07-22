@@ -263,6 +263,16 @@ test("内容方案 prompt 不要求模型生成稳定 ID、action 或 lockedFact
     assert.deepEqual(parsePptContentPlanResponse('```json\n{"brief":{},"pages":[]}\n```'), { brief: {}, pages: [] });
 });
 
+test("SHA-26：内容方案 prompt 要求 source.relation 声明 verbatim 或 derived", () => {
+    const messages = buildPptContentPlanMessages({ title: "中转站", sourceMaterial: "材料", requirements: "" });
+    const systemPrompt = messages[0].content;
+    assert.match(systemPrompt, /"relation":"verbatim"/);
+    assert.match(systemPrompt, /"relation":"derived"/);
+    assert.match(systemPrompt, /relation[^\n]*verbatim[^\n]*derived|verbatim[^\n]*derived/);
+    assert.match(systemPrompt, /不得引入引用行中不存在的数字、大写术语/);
+    assert.match(systemPrompt, /brief\.audience\/goal\/narrative[^\n]*归纳/);
+});
+
 test("内容方案 prompt 先分离 Deck Brief 与上屏正文，再规划最少的非重复页面", () => {
     const messages = buildPptContentPlanMessages({
         title: "PPT 工作台介绍",

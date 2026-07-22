@@ -506,6 +506,8 @@ function BlockSources({ block, sourceById, unresolvedGapIds }: { block: CanvasPr
 
 function sourceLabel(source: CanvasProjectPptSourceRef) {
     const range = source.startLine ? ` L${source.startLine}${source.endLine && source.endLine !== source.startLine ? `–${source.endLine}` : ""}` : "";
+    if (source.source === "material" && source.relation === "derived") return `基于材料${range} 归纳`;
+    if (source.source === "requirements" && source.relation === "derived") return `基于补充要求${range} 归纳`;
     return `${SOURCE_LABELS[source.source]}${range}`;
 }
 
@@ -579,6 +581,12 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
     const [answer, setAnswer] = useState("");
     const resolved = gap.resolution;
     const boundPage = gap.pageId ? planning.draft?.pageSpecs.find((page) => page.pageId === gap.pageId) : undefined;
+    const boundBlock = boundPage?.contentBlocks.find((block) => block.gapId === gap.id);
+    const boundBlockText = boundBlock?.text?.trim() || "";
+    const proposedAnswer = gap.proposedAnswer?.trim() || "";
+    const proposedEqualsBoundBlock = Boolean(proposedAnswer && boundBlockText && proposedAnswer === boundBlockText);
+    const showProposedAnswer = Boolean(proposedAnswer && !proposedEqualsBoundBlock);
+    const confirmCurrentText = proposedEqualsBoundBlock ? boundBlockText : "";
     const requiresConcreteContent = Boolean(gap.briefField || boundPage?.contentBlocks.some((block) => block.gapId === gap.id && (block.kind === "title" || block.kind === "primary_claim")));
     if (resolved) {
         return (
@@ -610,10 +618,10 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
                 </div>
                 <span className={`text-[11px] ${gap.blocking ? "text-amber-600 dark:text-amber-300" : "text-stone-400"}`}>{gap.blocking ? "需要决定" : "可选"}</span>
             </div>
-            {gap.proposedAnswer ? (
+            {showProposedAnswer ? (
                 <div className="mt-3 border-y border-stone-100 py-2 text-sm dark:border-stone-800">
                     <p className="text-xs text-stone-400">AI 建议，尚未采纳</p>
-                    <p className="mt-1 leading-6 text-stone-600 dark:text-stone-300">{gap.proposedAnswer}</p>
+                    <p className="mt-1 leading-6 text-stone-600 dark:text-stone-300">{proposedAnswer}</p>
                 </div>
             ) : null}
             <div className="mt-3 flex gap-2">
@@ -623,12 +631,17 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
                 </Button>
             </div>
             <div className="mt-2 flex flex-wrap gap-x-1 gap-y-1">
-                {gap.proposedAnswer ? (
-                    <Button size="small" type="text" onClick={() => planning.resolveGap(gap.id, { kind: "confirmed_assumption", text: gap.proposedAnswer!, resolvedAt: new Date().toISOString() })}>
+                {showProposedAnswer ? (
+                    <Button size="small" type="text" onClick={() => planning.resolveGap(gap.id, { kind: "confirmed_assumption", text: proposedAnswer, resolvedAt: new Date().toISOString() })}>
                         采纳 AI 建议
                     </Button>
                 ) : null}
-                {!gap.proposedAnswer && gap.pageId ? (
+                {confirmCurrentText ? (
+                    <Button size="small" type="text" onClick={() => planning.resolveGap(gap.id, { kind: "confirmed_assumption", text: confirmCurrentText, resolvedAt: new Date().toISOString() })}>
+                        确认采用当前内容
+                    </Button>
+                ) : null}
+                {!proposedAnswer && !confirmCurrentText && gap.pageId ? (
                     <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} loading={planning.pageRequest.loading && planning.pageRequest.pageId === gap.pageId} onClick={() => void planning.regeneratePage(gap.pageId!)}>
                         让 AI 给建议
                     </Button>

@@ -476,7 +476,7 @@ function projectWithPages(indices) {
             version: 1,
             purpose: "验证 PPT 页面导出",
             contentForm: index === indices[0] ? "cover" : "narrative",
-            sourceRefs: [{ id: sourceRefId, source: "confirmed_assumption", excerpt: pageSemantic(index) }],
+            sourceRefs: [{ id: sourceRefId, source: "confirmed_assumption", relation: "verbatim", excerpt: pageSemantic(index) }],
             contentBlocks: [
                 { id: `page-${index}:title`, kind: "title", text: `页面${label}`, sourceRefIds: [sourceRefId] },
                 { id: `page-${index}:claim`, kind: "primary_claim", text: `页面${label}已编译`, sourceRefIds: [sourceRefId] },

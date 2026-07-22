@@ -437,7 +437,7 @@ function customContract(mood, references = []) {
 }
 
 function pageSpec(pageId, title) {
-    const sourceRef = { id: `${pageId}:source`, source: "confirmed_assumption", excerpt: title };
+    const sourceRef = { id: `${pageId}:source`, source: "confirmed_assumption", relation: "verbatim", excerpt: title };
     const spec = {
         pageId,
         version: 1,

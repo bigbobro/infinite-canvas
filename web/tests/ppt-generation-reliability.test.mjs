@@ -985,8 +985,8 @@ function structuredPageSpec(pageId, title, claim, layoutRole = "cover") {
         purpose: "验证生成可靠性",
         contentForm: "narrative",
         sourceRefs: [
-            { id: titleSourceId, source: "user_answer", excerpt: title },
-            { id: claimSourceId, source: "user_answer", excerpt: claim },
+            { id: titleSourceId, source: "user_answer", relation: "verbatim", excerpt: title },
+            { id: claimSourceId, source: "user_answer", relation: "verbatim", excerpt: claim },
         ],
         contentBlocks: [
             { id: `${pageId}:block:title`, kind: "title", text: title, sourceRefIds: [titleSourceId] },
