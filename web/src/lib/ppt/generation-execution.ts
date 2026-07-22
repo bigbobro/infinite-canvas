@@ -450,6 +450,7 @@ async function preparePlan(plan: GenerationPlan, expectedKind: GenerationPlan["k
         if (!project.ppt) throw new Error("当前工程不是 PPT 工作台工程");
         assertGenerationPlanKind(project, plan, expectedKind);
         assertCompilerInputsCurrent(project, plan);
+        assertGenerationPlanCurrentTargets(project, plan);
         const unresolved = allRequestTraces(project).filter((trace) => !["completed", "failed", "abandoned"].includes(trace.status));
         const unresolvedRuns = allRunSummaries(project).filter((run) => run.status === "preparing" || run.status === "running" || run.status === "needs_attention");
         const conflict = plan.runs.find((run) => unresolved.some((trace) => trace.pageId === run.pageId && trace.takeId === run.takeId) || unresolvedRuns.some((summary) => summary.pageId === run.pageId && summary.takeId === run.takeId));

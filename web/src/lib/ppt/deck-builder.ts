@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { getNodeSpec } from "@/constant/canvas";
 import { renderPptPageSpecText, validatePptPageSpec } from "@/lib/ppt/content-plan";
 import { hashPptContentSource, hashPptSourceText } from "@/lib/ppt/source-lineage";
-import { assertPptStyleContract } from "@/lib/ppt/style-contract";
+import { assertPptStyleContract, reviewPptStyle } from "@/lib/ppt/style-contract";
 import type { CanvasProject, CanvasProjectPpt, CanvasProjectPptDeckBrief, CanvasProjectPptPage, CanvasProjectPptPageSpec, CanvasProjectPptVerbatimSpec } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
@@ -32,6 +32,17 @@ export function buildPptDeckProject(params: BuildPptDeckParams): Partial<CanvasP
     if (params.compilePolicy === "structured") {
         assertPptStyleContract(params.deckBrief.styleContract);
         if (params.deckBrief.sourceHash !== hashPptContentSource(params.sourceMaterial, params.requirements)) throw new Error("整套内容定位已与当前原始材料或补充要求脱节");
+        if (!params.deckBrief.contentRevision?.trim()) throw new Error("整套内容定位缺少已确认内容版本");
+        const styleReview = reviewPptStyle({
+            contract: params.deckBrief.styleContract,
+            contentRevision: params.deckBrief.contentRevision,
+            reviewedContentRevision: params.deckBrief.contentRevision,
+            draftRevision: params.deckBrief.version,
+            pageSpecs: params.pageSpecs,
+            deckRules: params.deckBrief.globalRules,
+        });
+        const styleBlocker = styleReview.issues.find((issue) => issue.severity === "blocking");
+        if (styleBlocker) throw new Error(`视觉系统尚未就绪，不能创建画布：${styleBlocker.location}，${styleBlocker.reason}`);
         const sourceContext = { sourceMaterial: params.sourceMaterial, requirements: params.requirements };
         const issues = params.pageSpecs.flatMap((pageSpec) => validatePptPageSpec(pageSpec, sourceContext));
         if (issues.length) throw new Error(`内容规格尚未就绪，不能创建画布：${issues[0].message}`);

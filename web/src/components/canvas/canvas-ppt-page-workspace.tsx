@@ -7,6 +7,7 @@ import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
 import { planHasBlockingCompilationIssues, PptGenerationPlanSummary } from "@/components/canvas/canvas-ppt-generation-confirm";
 import { CanvasPptPromptEditor } from "@/components/canvas/canvas-ppt-prompt-editor";
 import { CanvasPptVisualDirectionDialog } from "@/components/canvas/canvas-ppt-visual-direction-dialog";
+import { findPptWorkspaceLayoutStyleOverrides, getPptWorkspaceStyleSummary, previewPptWorkspaceLayoutRestore } from "@/components/canvas/ppt-workspace-style";
 import { imageAspectOptions, imageSizeLabel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -282,6 +283,13 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     const ppt = project.ppt;
     const page = workspace.page;
+    const styleSummary =
+        ppt.compilePolicy === "structured"
+            ? {
+                  ...getPptWorkspaceStyleSummary(ppt.deckBrief.styleContract),
+                  label: getPptVisualDirectionLabel(ppt.deckBrief.styleContract),
+              }
+            : undefined;
     const pageSpec = workspace.descriptor.status === "ok" && ppt.compilePolicy === "structured" && Array.isArray(ppt.pageSpecs) ? ppt.pageSpecs.find((spec) => spec.pageId === page.pageId) : undefined;
     const verbatimSpec = workspace.descriptor.status === "ok" && ppt.compilePolicy === "verbatim" && Array.isArray(ppt.verbatimSpecs) ? ppt.verbatimSpecs.find((spec) => spec.pageId === page.pageId) : undefined;
     const canonicalSpecVersion = pageSpec?.version ?? verbatimSpec?.version;
@@ -585,7 +593,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
 
     // #31：排版要求只作用于当前方案分支，存在专用字段 pptLayoutPrompt。
     // metadata.prompt 不再作为 PPT Compiler 的指令来源。
-    const saveLayoutPrompt = async (content: string) => {
+    const saveLayoutPrompt = async (content: string, trusted = false) => {
         if (!canvasContext || !activeTake?.configNode) {
             message.warning("画布尚未就绪，请稍后再试");
             return false;
@@ -606,7 +614,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.success(`方案分支 ${activeTake.index + 1} 的排版要求已保存`);
             return true;
         };
-        const alreadyReviewed = Boolean(value && activeTake.configNode.metadata?.pptLayoutPromptReviewed === value);
+        const alreadyReviewed = Boolean(value && (trusted || activeTake.configNode.metadata?.pptLayoutPromptReviewed === value));
         if (value && value !== PPT_PAGE_PROMPT && !alreadyReviewed) {
             return new Promise<boolean>((resolve) => {
                 modal.confirm({
@@ -1013,19 +1021,36 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                         <div className="grid size-7 shrink-0 place-items-center rounded-lg border" style={{ background: canvasTheme.node.fill, borderColor: canvasTheme.node.stroke }}>
                             <Layers3 className="size-3.5" aria-hidden="true" />
                         </div>
-                        <h2 className="flex min-w-0 items-baseline gap-2 text-base font-medium">
-                            <span className="truncate">
-                                第 {page.index} 页 · {workspace.descriptor.title}
-                            </span>
-                            <span className="shrink-0 font-mono text-[11px] font-normal tabular-nums" style={{ color: canvasTheme.node.muted }}>
-                                {workspace.takes.length} 个方案 · {candidateCount} 个候选稿
-                            </span>
-                        </h2>
-                        {ppt.compilePolicy === "structured" ? (
-                            <Button type="text" size="small" icon={<Palette className="size-3.5" />} className="shrink-0" onClick={() => setVisualDirectionOpen(true)}>
-                                视觉方向：{getPptVisualDirectionLabel(ppt.deckBrief.styleContract)}
-                            </Button>
-                        ) : null}
+                        <div className="min-w-0">
+                            <h2 className="flex min-w-0 items-baseline gap-2 text-base font-medium leading-5">
+                                <span className="truncate">
+                                    第 {page.index} 页 · {workspace.descriptor.title}
+                                </span>
+                                <span className="shrink-0 font-mono text-[11px] font-normal tabular-nums" style={{ color: canvasTheme.node.muted }}>
+                                    {workspace.takes.length} 个方案 · {candidateCount} 个候选稿
+                                </span>
+                            </h2>
+                            {styleSummary ? (
+                                <button
+                                    type="button"
+                                    className="mt-0.5 flex max-w-full items-center gap-1.5 truncate text-[10px] leading-3 transition-opacity hover:opacity-75 focus-visible:outline-2 focus-visible:outline-offset-1"
+                                    style={{ color: canvasTheme.node.muted, outlineColor: canvasTheme.node.activeStroke }}
+                                    aria-label={`整套视觉系统：${styleSummary.label}；色板 ${styleSummary.palette.join("、")}；${styleSummary.moodAndDensity}；${styleSummary.shell}`}
+                                    onClick={() => setVisualDirectionOpen(true)}
+                                >
+                                    <Palette className="size-3 shrink-0" aria-hidden="true" />
+                                    <span className="shrink-0">{styleSummary.label}</span>
+                                    <span className="flex shrink-0 gap-0.5" aria-hidden="true">
+                                        {styleSummary.palette.map((color, index) => (
+                                            <span key={`${index}:${color}`} className="size-2 rounded-full border" style={{ background: color, borderColor: canvasTheme.node.stroke }} title={color} />
+                                        ))}
+                                    </span>
+                                    <span className="truncate">
+                                        {styleSummary.moodAndDensity} · {styleSummary.shell}
+                                    </span>
+                                </button>
+                            ) : null}
+                        </div>
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-1">
                         {generationBatches.length ? (
@@ -1306,6 +1331,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                                 canEdit={Boolean(canvasContext) && !activeTake.unresolvedGeneration}
                                                 onSaveLayoutRole={changePageLayoutRole}
                                                 onSaveLayout={saveLayoutPrompt}
+                                                onOpenGlobalStyle={() => setVisualDirectionOpen(true)}
                                             />
                                         ) : null}
                                         {workspace.descriptor.status === "invalid" ? (
@@ -1857,6 +1883,7 @@ function UpstreamInputsPanel({
     canEdit,
     onSaveLayoutRole,
     onSaveLayout,
+    onOpenGlobalStyle,
 }: {
     take: PptPageWorkspaceTake;
     layoutRole?: PptLayoutRole;
@@ -1864,12 +1891,17 @@ function UpstreamInputsPanel({
     muted: string;
     canEdit: boolean;
     onSaveLayoutRole: (role: PptLayoutRole) => Promise<void>;
-    onSaveLayout: (content: string) => Promise<boolean>;
+    onSaveLayout: (content: string, trusted?: boolean) => Promise<boolean>;
+    onOpenGlobalStyle: () => void;
 }) {
+    const { token } = antdTheme.useToken();
     const [collapsed, setCollapsed] = useState(true);
     const [editingLayout, setEditingLayout] = useState(false);
     const [layoutDraft, setLayoutDraft] = useState(take.layoutPrompt);
     const visibleInputs = take.upstreamInputs.filter((input) => input.pptRole !== "style");
+    const checkedLayout = editingLayout ? layoutDraft : take.layoutPrompt;
+    const layoutStyleOverrides = findPptWorkspaceLayoutStyleOverrides(checkedLayout);
+    const layoutRestore = previewPptWorkspaceLayoutRestore(checkedLayout);
 
     useEffect(() => {
         setEditingLayout(false);
@@ -2025,6 +2057,48 @@ function UpstreamInputsPanel({
                         未设置
                     </div>
                 )}
+                {layoutStyleOverrides.length ? (
+                    <div className="mt-2 rounded-md border px-2.5 py-2" role="alert" style={{ borderColor: token.colorWarningBorder, background: token.colorWarningBg }}>
+                        <div className="font-medium" style={{ color: token.colorWarningText }}>
+                            检测到整套风格覆盖
+                        </div>
+                        <div className="mt-1" style={{ color: muted }}>
+                            「{layoutStyleOverrides.map((item) => item.fragment).join("；")}」应由整套视觉系统控制；本页只保留角色母版正文区内的构图。
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                            {layoutRestore.safe ? (
+                                <Button
+                                    size="small"
+                                    type="text"
+                                    icon={<RotateCcw className="size-3" />}
+                                    disabled={!canEdit || take.generating}
+                                    onClick={async () => {
+                                        if (!(await onSaveLayout(layoutRestore.value, true))) return;
+                                        setLayoutDraft(layoutRestore.value);
+                                        setEditingLayout(false);
+                                    }}
+                                >
+                                    恢复母版与已批准构图
+                                </Button>
+                            ) : (
+                                <Button
+                                    size="small"
+                                    type="text"
+                                    disabled={!canEdit || take.generating}
+                                    onClick={() => {
+                                        setLayoutDraft(checkedLayout);
+                                        setEditingLayout(true);
+                                    }}
+                                >
+                                    手动修改构图
+                                </Button>
+                            )}
+                            <Button size="small" type="text" icon={<Palette className="size-3" />} onClick={onOpenGlobalStyle}>
+                                打开整套视觉系统
+                            </Button>
+                        </div>
+                    </div>
+                ) : null}
             </div>
         </div>
     );

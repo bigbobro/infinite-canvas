@@ -9,8 +9,9 @@ import { CanvasPptPageWorkspace } from "@/components/canvas/canvas-ppt-page-work
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolvePageImageNode } from "@/lib/ppt/deck-export";
 import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
-import { createGenerationPlan, previewGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
+import { createGenerationPlan, getCurrentPptStyleProof, previewGenerationPlan, selectPptStyleProofPageId, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { buildPptPageWorkspace, type PptPageWorkspace } from "@/lib/ppt/page-workspace";
+import { isPptStyleContractValid } from "@/lib/ppt/style-contract";
 import { flushCanvasStore, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentStore } from "@/stores/use-agent-store";
@@ -22,7 +23,7 @@ const PANEL_WIDTH = 360;
 const PANEL_GAP = 16; // 对应 tailwind `right-4`
 const PANEL_SAFE_WIDTH = PANEL_WIDTH + PANEL_GAP * 2;
 
-type BatchState = { kind: "start" } | { kind: "waitingFirst" } | { kind: "confirmRest"; count: number } | { kind: "hidden" };
+type BatchState = { kind: "start" } | { kind: "waitingProof" } | { kind: "confirmRest"; count: number } | { kind: "hidden" };
 
 function isPageUntouched(workspace: PptPageWorkspace) {
     return !workspace.takes.some((take) => take.candidates.length > 0 || take.generating || take.unresolvedGeneration);
@@ -101,6 +102,8 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setFinalReviewOpen(false);
     }, [notificationToken, notifiedPageId, notifiedRunId, notifiedTakeId, pageWorkspaces]);
     const restPlanResult = useMemo(() => (currentProject ? previewGenerationPlan({ kind: "generateRest" }, { project: currentProject, effectiveConfig }) : {}), [currentProject, effectiveConfig]);
+    const currentStyleProof = useMemo(() => (currentProject ? getCurrentPptStyleProof(currentProject) : undefined), [currentProject]);
+    const suggestedStyleProofPageId = useMemo(() => (currentProject ? selectPptStyleProofPageId(currentProject) : undefined), [currentProject]);
     const restPlanPreview = restPlanResult.plan;
     const repeatBillingRiskCount = (plan?: GenerationPlan) =>
         plan?.runs.filter((run) => pageWorkspaces.find((workspace) => workspace.page.pageId === run.pageId)?.takes.find((take) => take.takeId === run.takeId)?.requiresRepeatBillingConfirmation).length || 0;
@@ -109,12 +112,15 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     if (!ppt || !currentProject) return null;
 
     const pages = ppt.pages;
-    const hasVisualDirection = ppt.compilePolicy === "structured" && Boolean(ppt.deckBrief.styleContract.direction.trim());
+    const hasVisualDirection = ppt.compilePolicy === "structured" && isPptStyleContractValid(ppt.deckBrief.styleContract);
     // #18：skipAnchor 改为写回 ppt 数据的持久默认，不再靠面板内勾选框临时覆盖。
     const skipAnchor = ppt.skipAnchor ?? !hasVisualDirection;
     const confirmedCount = pageWorkspaces.filter((item) => item.confirmationIssues.length === 0).length;
     const generatingCount = pageWorkspaces.filter((item) => item.takes.some((take) => take.generating)).length;
     const firstPageId = pageWorkspaces[0]?.page.pageId ?? pages[0]?.pageId ?? "";
+    const styleProofPageId = ppt.styleProofPageId || suggestedStyleProofPageId;
+    const styleProofWorkspace = pageWorkspaces.find((item) => item.page.pageId === styleProofPageId);
+    const styleProofConfirmed = Boolean(currentStyleProof);
     const activePageId = focusPageId && pageWorkspaces.some((item) => item.page.pageId === focusPageId) ? focusPageId : firstPageId;
 
     const executePlan = async (plan: GenerationPlan) => {
@@ -136,24 +142,19 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         }
     };
 
-    const firstPage = pageWorkspaces[0]?.page ?? pages[0];
-    const firstWorkspace = pageWorkspaces.find((item) => item.page.pageId === firstPage?.pageId);
-    const firstConfirmed = Boolean(firstWorkspace && firstWorkspace.confirmationIssues.length === 0);
     const nothingGenerated = pageWorkspaces.length > 0 && pageWorkspaces.every(isPageUntouched);
-    // 首页单独排除只在「锚定流程」下有意义（首页已确认，天然不在未生成集合里）；skipAnchor=true 时不应
-    // 无条件排除首页——否则用户若先手动生成过某一其他页，首页会被永久挡在批量「生成其余」之外。
-    const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.pageId !== firstPage?.pageId) && isPageUntouched(item));
-    // #3+#26：批量按钮四态状态机，替换旧的「anchorPending 二态」实现，杜绝首页候选未确认时仍可重复触发生成。
+    const restUntouchedWorkspaces = pageWorkspaces.filter((item) => (skipAnchor || item.page.pageId !== styleProofPageId) && isPageUntouched(item));
+    // 批量流程以代表性风格校样为门禁，不再把首页封面当作内容页母版。
     let batchState: BatchState = { kind: "hidden" };
     if (pages.length > 1) {
-        if (nothingGenerated) batchState = { kind: "start" };
-        else if (!skipAnchor && !ppt.anchorConfirmed && !firstConfirmed) batchState = { kind: "waitingFirst" };
+        if (nothingGenerated || (!skipAnchor && !ppt.styleProofPageId)) batchState = { kind: "start" };
+        else if (!skipAnchor && !styleProofConfirmed) batchState = { kind: "waitingProof" };
         else if (restUntouchedWorkspaces.length) batchState = { kind: "confirmRest", count: restPlanPreview?.pageCount ?? 0 };
     }
 
-    const batchLabel = batchState.kind === "start" ? "开始生成" : batchState.kind === "waitingFirst" ? "等待确认首页" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
+    const batchLabel = batchState.kind === "start" ? "生成风格校样" : batchState.kind === "waitingProof" ? "等待确认校样" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
     const batchHidden = batchState.kind === "hidden";
-    const batchDisabled = !canvasContext || batchState.kind === "waitingFirst" || (batchState.kind !== "hidden" && !restPlanPreview);
+    const batchDisabled = !canvasContext || batchState.kind === "waitingProof" || (batchState.kind === "confirmRest" && !restPlanPreview);
     // #4：精修台头部按钮只在「锚定流程相关」的前两态出现；confirmRest 阶段收敛到结构面板，避免头部与
     // 结构面板双入口并存。结构面板自身仍按 batchHidden 展示全部三个非隐藏态。
     const workspaceBatchHidden = batchHidden || batchState.kind === "confirmRest";
@@ -183,6 +184,10 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
         setBatchStarting(true);
         try {
             if (!(await executePlan(pendingBatchPlan))) return;
+            if (anchorFirst && pendingBatchPlan.runs[0]?.pageId) {
+                setFocusPageId(pendingBatchPlan.runs[0].pageId);
+                setSurface("workbench");
+            }
             setStartModalOpen(false);
             setPendingBatchPlan(undefined);
         } finally {
@@ -223,13 +228,26 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     };
 
     const reanchor = () => {
+        const pageId = ppt.styleProof?.pageId || ppt.styleProofPageId;
         modal.confirm({
-            title: "重新锚定？",
-            content: "回到先确认首页再批量的流程，不会删除已生成的内容。",
-            okText: "重新锚定",
+            title: "重新确认风格校样？",
+            content: "当前校样确认会失效，已生成的图片仍保留，可在校样页重新选择。",
+            okText: "重新确认",
             cancelText: "取消",
             onOk: async () => {
-                updateProject(projectId, { ppt: { ...ppt, anchorConfirmed: false } });
+                updateProject(projectId, {
+                    ppt: {
+                        ...ppt,
+                        anchorConfirmed: false,
+                        styleProof: undefined,
+                        styleProofPageId: pageId,
+                        pages: ppt.pages.map((page) => (page.pageId === pageId ? { ...page, confirmedNodeId: undefined } : page)),
+                    },
+                });
+                if (pageId) {
+                    setFocusPageId(pageId);
+                    setSurface("workbench");
+                }
                 try {
                     await flushCanvasStore();
                 } catch (error) {
@@ -326,10 +344,10 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
 
                         <div className="flex items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: canvasTheme.toolbar.border }}>
                             <div className="min-h-[20px]">
-                                {ppt.anchorConfirmed ? (
+                                {ppt.anchorConfirmed || ppt.styleProof ? (
                                     <button type="button" className="flex items-center gap-1 text-[11px] underline underline-offset-2" style={{ color: canvasTheme.node.muted }} onClick={reanchor}>
                                         <RotateCcw className="size-3" aria-hidden="true" />
-                                        重新锚定
+                                        重新确认校样
                                     </button>
                                 ) : null}
                             </div>
@@ -415,6 +433,8 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
             <BatchConfirmModal
                 open={startModalOpen}
                 anchorFirst={anchorFirst}
+                canUseStyleProof={hasVisualDirection}
+                styleProofPageIndex={styleProofWorkspace?.page.index}
                 plan={pendingBatchPlan}
                 repeatBillingRiskCount={pendingRepeatBillingRiskCount}
                 starting={batchStarting}
@@ -446,6 +466,8 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
 function BatchConfirmModal({
     open,
     anchorFirst,
+    canUseStyleProof,
+    styleProofPageIndex,
     plan,
     repeatBillingRiskCount,
     starting,
@@ -455,6 +477,8 @@ function BatchConfirmModal({
 }: {
     open: boolean;
     anchorFirst: boolean;
+    canUseStyleProof: boolean;
+    styleProofPageIndex?: number;
     plan?: GenerationPlan;
     repeatBillingRiskCount: number;
     starting: boolean;
@@ -471,27 +495,38 @@ function BatchConfirmModal({
             closable={!starting}
             maskClosable={!starting}
             keyboard={!starting}
-            title={`开始生成 ${plan?.pageCount ?? 0} 页？`}
-            okText={anchorFirst ? "生成第 1 页" : `生成全部 ${plan?.pageCount ?? 0} 页`}
+            title={anchorFirst ? "生成代表性风格校样？" : `开始生成 ${plan?.pageCount ?? 0} 页？`}
+            okText={anchorFirst ? `生成第 ${styleProofPageIndex ?? "-"} 页校样` : `生成全部 ${plan?.pageCount ?? 0} 页`}
             cancelButtonProps={{ disabled: starting }}
             okButtonProps={{ disabled: starting || !plan?.pageCount || planHasBlockingCompilationIssues(plan) }}
             cancelText="取消"
             destroyOnHidden
         >
-            <Radio.Group className="flex flex-col gap-3" value={anchorFirst} disabled={starting} onChange={(event) => onAnchorFirstChange(event.target.value)}>
-                <Radio value={true}>
-                    <div className="text-sm font-medium">先生成第 1 页，确认风格后再批量</div>
-                    <Typography.Text type="secondary" className="text-xs">
-                        推荐，确认首页效果后再生成其余页面
-                    </Typography.Text>
-                </Radio>
-                <Radio value={false}>
-                    <div className="text-sm font-medium">直接生成全部可执行页面</div>
-                    <Typography.Text type="secondary" className="text-xs">
-                        各页按当前方案的模型、比例与张数执行
-                    </Typography.Text>
-                </Radio>
-            </Radio.Group>
+            {canUseStyleProof ? (
+                <Radio.Group className="flex w-full flex-col gap-3" value={anchorFirst} disabled={starting} onChange={(event) => onAnchorFirstChange(event.target.value)}>
+                    <Radio value={true}>
+                        <div className="text-sm font-medium">代表性风格校样</div>
+                        <Typography.Text type="secondary" className="text-xs">
+                            推荐：先生成第 {styleProofPageIndex ?? "-"} 页内容型校样，确认后把同一张图作为其余页面的共同参考
+                        </Typography.Text>
+                    </Radio>
+                    <details className="ml-6" open={!anchorFirst}>
+                        <summary className="cursor-pointer text-xs">高级：直接生成全部</summary>
+                        <div className="pt-2">
+                            <Radio value={false}>
+                                <div className="text-sm font-medium">直接生成全部可执行页面</div>
+                                <Typography.Text type="secondary" className="text-xs">
+                                    会跳过共同校样参考，跨页一致性可能降低
+                                </Typography.Text>
+                            </Radio>
+                        </div>
+                    </details>
+                </Radio.Group>
+            ) : (
+                <Typography.Text type="secondary" className="text-sm">
+                    当前模式不使用视觉 Contract，将直接生成全部可执行页面。
+                </Typography.Text>
+            )}
             {plan ? <PptGenerationPlanSummary plan={plan} repeatBillingRiskCount={repeatBillingRiskCount} /> : null}
         </Modal>
     );

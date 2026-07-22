@@ -8,14 +8,16 @@ import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
 import { useCanvasStore, type CanvasProject, type CanvasProjectPptDeckBrief, type CanvasProjectPptStyleContract } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { hasUnresolvedPptGeneration } from "@/lib/ppt/generation-ledger";
-import { resolveImageUrl } from "@/services/image-storage";
+import { getImageBlob, resolveImageUrl } from "@/services/image-storage";
 import { extractPptPages, previewExtractPages, type PptOutlinePage } from "@/lib/ppt/outline-prompt";
 import { buildPptDeckProject, createPptVerbatimSpecs } from "@/lib/ppt/deck-builder";
 import { buildPptPageWorkspace } from "@/lib/ppt/page-workspace";
-import { createPptVisualDirectionPresetContract, derivePptVisualDirectionRules, normalizePptStyleContract } from "@/lib/ppt/style-contract";
+import { derivePptVisualDirectionRules, normalizePptStyleContract } from "@/lib/ppt/style-contract";
 import { selectPptPageDescriptor } from "@/lib/ppt/page-descriptor";
 import { PptContentPlanStep } from "@/pages/ppt/components/ppt-content-plan-step";
+import { PptStyleReviewPanel } from "@/pages/ppt/components/ppt-style-review-panel";
 import { usePptContentPlanning, type FinalizedPptContent } from "@/pages/ppt/use-ppt-content-planning";
+import { usePptStylePlanning } from "@/pages/ppt/use-ppt-style-planning";
 import type { CanvasNodeData } from "@/types/canvas";
 
 type PptWizardMode = "outline" | "extract";
@@ -226,10 +228,10 @@ function PptWizard({
     const [extractError, setExtractError] = useState("");
     const [extractReceivedCharacters, setExtractReceivedCharacters] = useState(0);
     const [pages, setPages] = useState<PptOutlinePage[]>([]);
-    const [styleContract, setStyleContract] = useState<CanvasProjectPptStyleContract>(() => createPptVisualDirectionPresetContract());
     const [extractedDirectionHint, setExtractedDirectionHint] = useState("");
     const [extractGlobalDecision, setExtractGlobalDecision] = useState<"include" | "exclude" | null>(null);
     const [finalizedContent, setFinalizedContent] = useState<FinalizedPptContent | null>(null);
+    const [brokenReferenceKeys, setBrokenReferenceKeys] = useState<string[]>([]);
     const [building, setBuilding] = useState(false);
     const extractControllerRef = useRef<AbortController | null>(null);
     const extractTokenRef = useRef(0);
@@ -240,6 +242,18 @@ function PptWizard({
         sourceMaterial: material,
         requirements,
     });
+    const styleInput = useMemo(
+        () =>
+            finalizedContent
+                ? { brief: finalizedContent.brief, pageSpecs: finalizedContent.pageSpecs, contentRevision: finalizedContent.contentRevision }
+                : {
+                      brief: { title: deckTitle, audience: "", goal: "", narrative: "", visualSignals: [] },
+                      pageSpecs: [],
+                      contentRevision: "",
+                  },
+        [deckTitle, finalizedContent],
+    );
+    const stylePlanning = usePptStylePlanning(effectiveConfig, styleInput, { brokenReferenceKeys });
 
     const cancelExtract = () => {
         extractControllerRef.current?.abort();
@@ -255,6 +269,11 @@ function PptWizard({
         },
         [],
     );
+
+    useEffect(() => {
+        if (mode !== "outline" || step !== 2 || !finalizedContent || stylePlanning.recommendation.status !== "idle" || stylePlanning.candidates.length) return;
+        void stylePlanning.generate();
+    }, [finalizedContent, mode, step, stylePlanning.candidates.length, stylePlanning.generate, stylePlanning.recommendation.status]);
 
     const textModelReady = () => {
         const model = effectiveConfig.textModel || effectiveConfig.model;
@@ -346,14 +365,29 @@ function PptWizard({
         try {
             const title = deckTitle.trim() || `PPT-${new Date().toLocaleDateString()}`;
             const content = mode === "outline" ? finalizedContent || contentPlanning.finalize() : null;
+            if (content && (!stylePlanning.contract || stylePlanning.review.blocking || stylePlanning.contractStale)) throw new Error("请先完成视觉 Contract 检查");
+            if (content && stylePlanning.contract) {
+                const referenceResults = await Promise.all(
+                    stylePlanning.contract.references.map(async ({ storageKey }) => {
+                        try {
+                            return (await getImageBlob(storageKey)) ? null : storageKey;
+                        } catch {
+                            return storageKey;
+                        }
+                    }),
+                );
+                const broken = referenceResults.filter((key): key is string => Boolean(key));
+                setBrokenReferenceKeys(broken);
+                if (broken.length) throw new Error("有参考图无法读取，请移除或重新上传后再继续");
+            }
             const deck = content
                 ? buildPptDeckProject({
                       title,
                       sourceMaterial: material,
                       requirements,
                       compilePolicy: "structured",
-                      deckBrief: createDeckBrief(content, styleContract, requirements),
-                      pageSpecs: content.pageSpecs,
+                      deckBrief: createDeckBrief(content, stylePlanning.contract!, requirements),
+                      pageSpecs: stylePlanning.pageSpecs,
                   })
                 : buildPptDeckProject({
                       title,
@@ -375,7 +409,7 @@ function PptWizard({
 
     return (
         <main className="h-full overflow-auto bg-background text-stone-950 dark:text-stone-100">
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-10">
+            <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-10">
                 <header className="flex items-center gap-3 border-b border-stone-200 pb-6 dark:border-stone-800">
                     <Button type="text" icon={<ArrowLeft className="size-4" />} onClick={onCancel}>
                         返回列表
@@ -399,10 +433,12 @@ function PptWizard({
                                 value={mode}
                                 onChange={(value) => {
                                     contentPlanning.cancel();
+                                    stylePlanning.cancel();
                                     cancelExtract();
                                     setMode(value as PptWizardMode);
                                     setPages([]);
                                     setFinalizedContent(null);
+                                    setBrokenReferenceKeys([]);
                                     setExtractedDirectionHint("");
                                     setExtractGlobalDecision(null);
                                     setExtractError("");
@@ -461,6 +497,7 @@ function PptWizard({
                         planning={contentPlanning}
                         onBack={() => setStep(0)}
                         onConfirmed={(content) => {
+                            setBrokenReferenceKeys([]);
                             setFinalizedContent(content);
                             setStep(2);
                         }}
@@ -494,17 +531,64 @@ function PptWizard({
                                     <h2 className="text-base font-semibold">选择整套 PPT 的视觉方向</h2>
                                     <p className="mt-1 text-sm text-stone-500">内容已经定稿，这一步只决定整套的视觉规则。</p>
                                 </div>
-                                <PptVisualDirectionEditor value={styleContract} onChange={setStyleContract} extractedDirectionHint={finalizedContent?.brief.visualSignals.join("\n") || undefined} />
+                                <PptVisualDirectionEditor
+                                    value={stylePlanning.contract || stylePlanning.fallbackCandidates[0].contract}
+                                    onChange={(contract) => {
+                                        setBrokenReferenceKeys([]);
+                                        stylePlanning.editContract(contract);
+                                    }}
+                                    candidates={stylePlanning.candidates}
+                                    selectedCandidateId={stylePlanning.selectedCandidateId || ""}
+                                    onSelectCandidate={stylePlanning.chooseCandidate}
+                                    pageCount={finalizedContent?.pageSpecs.length || 0}
+                                    loading={stylePlanning.loading}
+                                    error={stylePlanning.error}
+                                    onRetry={() => void stylePlanning.generate({ force: true })}
+                                    onUseFallback={() => stylePlanning.useFallback()}
+                                    onAddReferences={stylePlanning.addReferences}
+                                    extractedDirectionHint={finalizedContent?.brief.visualSignals.join("\n") || undefined}
+                                />
+                                {!stylePlanning.loading && (stylePlanning.contract || stylePlanning.recommendation.status !== "idle") ? (
+                                    <PptStyleReviewPanel
+                                        planning={stylePlanning}
+                                        onReturnToContent={(pageId, regenerate) => {
+                                            stylePlanning.cancel();
+                                            setFinalizedContent(null);
+                                            setStep(1);
+                                            if (pageId && regenerate) void contentPlanning.regeneratePage(pageId);
+                                        }}
+                                        onOpenContract={(issue) => {
+                                            const advanced = document.getElementById("ppt-style-contract-advanced") as HTMLDetailsElement | null;
+                                            if (advanced) {
+                                                advanced.open = true;
+                                                advanced.scrollIntoView({ behavior: "smooth", block: "start" });
+                                            }
+                                            message.info(issue?.code === "reference_unreadable" ? "请在高级设置中删除或重新上传参考图" : "请在高级设置中调整整套 Contract");
+                                        }}
+                                    />
+                                ) : null}
                             </>
                         ) : (
                             <ExtractGlobalSpecDecision value={extractedDirectionHint} decision={extractGlobalDecision} onChange={setExtractGlobalDecision} />
                         )}
 
                         <div className="flex justify-between">
-                            <Button icon={<ArrowLeft className="size-4" />} onClick={() => setStep(1)}>
+                            <Button
+                                icon={<ArrowLeft className="size-4" />}
+                                onClick={() => {
+                                    stylePlanning.cancel();
+                                    setStep(1);
+                                }}
+                            >
                                 上一步
                             </Button>
-                            <Button type="primary" icon={<Sparkles className="size-4" />} loading={building} disabled={mode === "extract" && Boolean(extractedDirectionHint) && extractGlobalDecision === null} onClick={() => void confirmBuild()}>
+                            <Button
+                                type="primary"
+                                icon={<Sparkles className="size-4" />}
+                                loading={building}
+                                disabled={(mode === "outline" && !stylePlanning.canContinue) || (mode === "extract" && Boolean(extractedDirectionHint) && extractGlobalDecision === null)}
+                                onClick={() => void confirmBuild()}
+                            >
                                 生成画布
                             </Button>
                         </div>
@@ -517,10 +601,11 @@ function PptWizard({
 
 function createDeckBrief(content: FinalizedPptContent, styleContract: CanvasProjectPptStyleContract, requirements: string): CanvasProjectPptDeckBrief {
     const normalizedContract = normalizePptStyleContract(styleContract);
-    const styleRules = derivePptVisualDirectionRules(requirements, normalizedContract.direction);
+    const styleRules = derivePptVisualDirectionRules(requirements);
     return {
         version: 1,
         sourceHash: content.brief.sourceHash,
+        contentRevision: content.contentRevision,
         audience: content.brief.audience,
         goal: content.brief.goal,
         narrative: content.brief.narrative,

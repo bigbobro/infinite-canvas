@@ -4,16 +4,49 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
-import { assertPptStyleContract, derivePptVisualDirectionRules, isPptLayoutRole, normalizePptStyleContract, samePptStyleContract } from "@/lib/ppt/style-contract";
+import { assertPptStyleContract, derivePptVisualDirectionRules, isPptLayoutRole, normalizePptStyleContract, reviewPptStyle, samePptStyleContract } from "@/lib/ppt/style-contract";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
 export type PptVisualDirectionPresetId = "clean-report" | "visual-story" | "brand-led";
 
-export type PptVisualDirectionSource = { kind: "preset"; presetId: PptVisualDirectionPresetId } | { kind: "custom" };
+export type PptVisualDirectionSource = { kind: "preset"; presetId: PptVisualDirectionPresetId } | { kind: "generated"; candidateId: string } | { kind: "custom" };
 
 export type CanvasProjectPptStyleContract = {
+    schemaVersion: 1;
     source: PptVisualDirectionSource;
-    direction: string;
+    modelStyle: {
+        mood: string[];
+        density: "airy" | "balanced" | "dense";
+        palette: {
+            background: string;
+            surface: string;
+            text: string;
+            mutedText: string;
+            primary: string;
+            accent: string;
+        };
+        typography: {
+            headingClass: "sans" | "serif" | "display";
+            bodyClass: "sans" | "serif";
+            hierarchy: "quiet" | "balanced" | "strong";
+            brandFontHint?: string;
+        };
+        shell: {
+            safeArea: "compact" | "regular" | "generous";
+            titleRegion: "top-left" | "top-center" | "center";
+            header: "none" | "deck-title" | "section-label";
+            footer: "none" | "page-number" | "deck-title-and-page-number";
+        };
+        graphicLanguage: {
+            card: string;
+            chart: string;
+            icon: string;
+            illustration: string;
+            imageTreatment: string;
+        };
+        roleMasters: Record<PptLayoutRole, string>;
+        forbiddenRules: string[];
+    };
     references: { storageKey: string }[];
 };
 
@@ -51,6 +84,7 @@ export type CanvasProjectPptLockedFact = {
 export type CanvasProjectPptDeckBrief = {
     version: number;
     sourceHash: string;
+    contentRevision: string;
     audience: string;
     goal: string;
     narrative: string;
@@ -133,6 +167,7 @@ export type CanvasProjectPptCompilationIssue = {
         | "invalid_style_contract"
         | "invalid_layout_role"
         | "visual_direction_outside_contract"
+        | "semantic_visual_conflict"
         | "content_spec_not_approved"
         | "unresolved_information_gap"
         | "invalid_content_provenance"
@@ -181,6 +216,7 @@ export type CanvasProjectPptCompilationSnapshot = CanvasProjectPptCompilationSna
               compilePolicy: "structured";
               deckBriefVersion: number;
               pageSpecsVersion: number;
+              styleFingerprint: string;
               deckBrief: CanvasProjectPptDeckBrief;
               pageSpecs: CanvasProjectPptPageSpec[];
           }
@@ -197,6 +233,14 @@ type CanvasProjectPptBase = {
     pages: CanvasProjectPptPage[];
     compilationSnapshots: CanvasProjectPptCompilationSnapshot[];
     anchorConfirmed?: boolean;
+    styleProofPageId?: string;
+    styleProof?: {
+        pageId: string;
+        candidateNodeId: string;
+        styleFingerprint: string;
+        contentRevision: string;
+    };
+    styleProofCandidateIds?: string[];
     /** 批量生成确认弹窗记住的选择：true=直接生成全部、false=先锚定首页（07-17-ppt-ux-fixes #18）。 */
     skipAnchor?: boolean;
 };
@@ -367,10 +411,22 @@ export const useCanvasStore = create<CanvasStore>()(
                     if (project.ppt.compilePolicy !== "structured") throw new Error("逐字规格工程不使用视觉 Contract");
                     if (project.ppt.deckBrief.version !== expectedDeckBriefVersion) throw new Error("PPT 全局规格已变更，请刷新后重试");
                     if (samePptStyleContract(project.ppt.deckBrief.styleContract, normalized)) return state;
-                    const styleRules = derivePptVisualDirectionRules(project.ppt.requirements, normalized.direction);
+                    const styleReview = reviewPptStyle({
+                        contract: normalized,
+                        contentRevision: project.ppt.deckBrief.contentRevision,
+                        reviewedContentRevision: project.ppt.deckBrief.contentRevision,
+                        draftRevision: project.ppt.deckBrief.version + 1,
+                        pageSpecs: project.ppt.pageSpecs,
+                        deckRules: project.ppt.deckBrief.globalRules,
+                    });
+                    const blocker = styleReview.issues.find((issue) => issue.severity === "blocking");
+                    if (blocker) throw new Error(`视觉系统尚未通过检查：${blocker.location}，${blocker.reason}`);
+                    const styleRules = derivePptVisualDirectionRules(project.ppt.requirements);
                     const ppt: CanvasProjectPpt = {
                         ...project.ppt,
                         anchorConfirmed: false,
+                        styleProofPageId: undefined,
+                        styleProof: undefined,
                         deckBrief: {
                             ...project.ppt.deckBrief,
                             version: project.ppt.deckBrief.version + 1,
@@ -422,10 +478,10 @@ export function applyPptPageSpecUpdate(ppt: CanvasProjectPpt, pageId: string, ex
     const comparable = { ...candidate, version: current.version };
     if (JSON.stringify(comparable) === JSON.stringify(current)) return ppt;
     const next = { ...candidate, version: current.version + 1 };
-    const firstPageId = [...ppt.pages].sort((left, right) => left.index - right.index)[0]?.pageId;
+    const invalidatesProof = pageId === ppt.styleProofPageId;
     return {
         ...ppt,
-        ...(pageId === firstPageId ? { anchorConfirmed: false } : {}),
+        ...(invalidatesProof ? { anchorConfirmed: false, styleProof: undefined } : {}),
         pageSpecs: ppt.pageSpecs.map((pageSpec) => (pageSpec.pageId === pageId ? next : pageSpec)),
         pages: ppt.pages.map((page) => (page.pageId === pageId && page.confirmedNodeId ? { ...page, confirmedNodeId: undefined } : page)),
     };

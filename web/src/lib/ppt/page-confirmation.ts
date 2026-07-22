@@ -3,6 +3,7 @@ import { CanvasNodeType, type CanvasNodeData, type PptGenerationRequestTrace, ty
 import { isPptCandidateEditSnapshot } from "@/lib/ppt/candidate-edit";
 import { compilePptPromptSnapshot } from "@/lib/ppt/prompt-compiler";
 import { hashPptContentSource, hashPptSourceText } from "@/lib/ppt/source-lineage";
+import { compilePptStyleContract } from "@/lib/ppt/style-contract";
 
 type PptCandidateIdentity = {
     pageId: string;
@@ -68,7 +69,16 @@ function assertCandidateSnapshotCurrent(ppt: CanvasProjectPpt, snapshot: CanvasP
 }
 
 function sameCandidateContentBrief(left: Extract<CanvasProjectPptCompilationSnapshot, { compilePolicy: "structured" }>["deckBrief"], right: Extract<CanvasProjectPpt, { compilePolicy: "structured" }>["deckBrief"]) {
-    const contentFields = (brief: typeof left) => ({ sourceHash: brief.sourceHash, audience: brief.audience, goal: brief.goal, narrative: brief.narrative, globalRules: brief.globalRules, lockedDeckFacts: brief.lockedDeckFacts });
+    const contentFields = (brief: typeof left) => ({
+        sourceHash: brief.sourceHash,
+        contentRevision: brief.contentRevision,
+        audience: brief.audience,
+        goal: brief.goal,
+        narrative: brief.narrative,
+        styleContract: brief.styleContract,
+        globalRules: brief.globalRules,
+        lockedDeckFacts: brief.lockedDeckFacts,
+    });
     return JSON.stringify(contentFields(left)) === JSON.stringify(contentFields(right));
 }
 
@@ -82,10 +92,28 @@ export function setPptPageConfirmedNode(project: CanvasProject, pageId: string, 
     const page = ppt.pages.find((item) => item.pageId === pageId);
     if (!page) throw new Error("要确认的 PPT 页面已不存在");
     if (confirmedNodeId) assertPptPageCandidateCanBeConfirmed(project, page, confirmedNodeId);
-    return {
+    const next: CanvasProjectPpt = {
         ...ppt,
         pages: ppt.pages.map((page) => (page.pageId === pageId ? { ...page, confirmedNodeId } : page)),
     };
+    const isProofPage = ppt.styleProofPageId === pageId || ppt.styleProof?.pageId === pageId;
+    if (!isProofPage) return next;
+    if (!confirmedNodeId) return { ...next, anchorConfirmed: false, styleProof: undefined };
+    if (ppt.compilePolicy !== "structured") return next;
+
+    const compiled = compilePptStyleContract(ppt.deckBrief.styleContract);
+    if (!compiled.ok) throw new Error("视觉 Contract 无效，不能确认风格校样");
+    const snapshot = resolvePptCandidateCompilationSnapshot(project, confirmedNodeId);
+    if (snapshot.compilePolicy !== "structured" || snapshot.styleFingerprint !== compiled.value.fingerprint) throw new Error("候选稿不是由当前视觉 Contract 生成，请重新生成校样");
+    const styleProof = {
+        pageId,
+        candidateNodeId: confirmedNodeId,
+        styleFingerprint: compiled.value.fingerprint,
+        contentRevision: ppt.deckBrief.contentRevision,
+    };
+    const proofChanged = JSON.stringify(styleProof) !== JSON.stringify(ppt.styleProof);
+    const styleProofCandidateIds = Array.from(new Set([...(ppt.styleProofCandidateIds || []), confirmedNodeId]));
+    return { ...next, ...(proofChanged ? { anchorConfirmed: false } : {}), styleProof, styleProofCandidateIds };
 }
 
 /** 确认写入与精修台 read model 共用的完整门禁。 */

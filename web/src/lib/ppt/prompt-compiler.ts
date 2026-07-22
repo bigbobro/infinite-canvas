@@ -1,6 +1,6 @@
 import { derivePptLockedFacts, isPptLayoutIntentSupported, renderPptPageSpecText, validatePptPageSpec } from "@/lib/ppt/content-plan";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
-import { derivePptVisualDirectionRules, findPptVisualDirectionInstructions, getPptLayoutRoleInstruction, isPptLayoutRole, validatePptStyleContract } from "@/lib/ppt/style-contract";
+import { compilePptStyleContract, derivePptVisualDirectionRules, findPptDeckStyleOverrides, isPptLayoutRole, reviewPptStyle } from "@/lib/ppt/style-contract";
 import type {
     CanvasProjectPptCompilationIssue,
     CanvasProjectPptCompilationSnapshot,
@@ -12,7 +12,7 @@ import type {
     CanvasProjectPptVerbatimSpec,
 } from "@/stores/canvas/use-canvas-store";
 
-export const PPT_COMPILER_VERSION = "3.0.0";
+export const PPT_COMPILER_VERSION = "4.0.0";
 
 export type PptCompilationTarget = CanvasProjectPptCompilationTarget;
 
@@ -43,6 +43,15 @@ export function hasBlockingCompilationIssues(snapshot: CanvasProjectPptCompilati
 function compileStructuredSnapshot(input: Extract<CompilePptPromptSnapshotInput, { compilePolicy: "structured" }>): CanvasProjectPptCompilationSnapshot {
     const pageSpecById = new Map(input.pageSpecs.map((pageSpec) => [pageSpec.pageId, pageSpec]));
     const issues: CanvasProjectPptCompilationIssue[] = [];
+    const styleReview = reviewPptStyle({
+        contract: input.deckBrief.styleContract,
+        contentRevision: input.deckBrief.contentRevision,
+        reviewedContentRevision: input.deckBrief.contentRevision,
+        draftRevision: input.deckBrief.version,
+        pageSpecs: input.pageSpecs,
+        deckRules: input.deckBrief.globalRules,
+        targetLayouts: input.targets.map((target) => ({ pageId: target.pageId, values: target.layoutIntent.filter((value) => value !== PPT_PAGE_PROMPT) })),
+    });
     validateUniqueIds(
         input.pageSpecs.map((pageSpec) => pageSpec.pageId),
         input.snapshotId,
@@ -55,10 +64,21 @@ function compileStructuredSnapshot(input: Extract<CompilePptPromptSnapshotInput,
         const pageSpec = pageSpecById.get(target.pageId);
         if (!pageSpec) addIssue("missing_page_spec", "blocking", `页面 ${target.pageId} 缺少 PageSpec，不能生成`);
         if (typeof input.deckBrief.sourceHash !== "string" || !input.deckBrief.sourceHash.trim()) addIssue("invalid_content_provenance", "blocking", "整套内容定位缺少原始材料版本绑定");
-        for (const message of validatePptStyleContract(input.deckBrief.styleContract)) addIssue("invalid_style_contract", "blocking", message);
+        if (typeof input.deckBrief.contentRevision !== "string" || !input.deckBrief.contentRevision.trim()) addIssue("invalid_content_provenance", "blocking", "整套内容定位缺少已确认内容版本");
+        for (const styleIssue of styleReview.issues.filter((issue) => issue.scope === "contract" || issue.pageId === target.pageId)) {
+            const code =
+                styleIssue.code === "invalid_contract"
+                    ? "invalid_style_contract"
+                    : styleIssue.code === "page_style_override"
+                      ? "visual_direction_outside_contract"
+                      : styleIssue.code === "semantic_color_conflict"
+                        ? "semantic_visual_conflict"
+                        : styleIssue.code === "invalid_visual_encoding"
+                          ? "invalid_visual_encoding"
+                          : "invalid_content_provenance";
+            addIssue(code, styleIssue.severity, `${styleIssue.location}${styleIssue.fragment ? `（${styleIssue.fragment}）` : ""}：${styleIssue.reason}`);
+        }
         if (pageSpec && !isPptLayoutRole(pageSpec.layoutRole)) addIssue("invalid_layout_role", "blocking", `页面 ${target.pageId} 的页面职责无效`);
-        for (const instruction of findPptVisualDirectionInstructions(input.deckBrief.globalRules)) addIssue("visual_direction_outside_contract", "blocking", `全局规则包含 Contract 之外的视觉描述：${preview(instruction)}`);
-        for (const instruction of findPptVisualDirectionInstructions([...(pageSpec?.layoutIntent || []), ...target.layoutIntent])) addIssue("visual_direction_outside_contract", "blocking", `页面或方案排版包含视觉方向覆盖：${preview(instruction)}`);
         if (pageSpec) for (const issue of validatePptPageSpec(pageSpec)) addIssue(issue.code, "blocking", issue.message);
         if (pageSpec) for (const instruction of target.layoutIntent.filter((intent) => !isSupportedLayoutInstruction(pageSpec, intent))) addIssue("unreviewed_fact", "blocking", `排版要求包含未经批准的文案或事实：${preview(instruction)}`);
 
@@ -87,6 +107,7 @@ function compileStructuredSnapshot(input: Extract<CompilePptPromptSnapshotInput,
         inputHash: hashPptCompilerInput({ compilePolicy: input.compilePolicy, deckBrief: input.deckBrief, pageSpecs: snapshotPageSpecs, targets: input.targets }),
         deckBriefVersion: input.deckBrief.version,
         pageSpecsVersion: snapshotPageSpecs.reduce((version, pageSpec) => Math.max(version, pageSpec.version), 0),
+        styleFingerprint: styleReview.compiled?.fingerprint || "invalid-style-contract",
         deckBrief: structuredClone(input.deckBrief),
         pageSpecs: structuredClone(snapshotPageSpecs),
         targets: structuredClone(input.targets),
@@ -134,13 +155,11 @@ function compileVerbatimSnapshot(input: Extract<CompilePptPromptSnapshotInput, {
 function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: CanvasProjectPptPageSpec | undefined, target: PptCompilationTarget) {
     const pageContent = pageSpec ? renderPptPageSpecText(pageSpec) : "";
     const promptPageContent = pageSpec ? renderPptPromptBlocks(pageSpec) : "";
-    const globalRules = deckBrief.globalRules.filter((instruction) => !findPptVisualDirectionInstructions(instruction).length);
-    const layoutInstructions = unique(
-        [...(pageSpec?.layoutIntent || []), ...target.layoutIntent].filter((instruction) => !findPptVisualDirectionInstructions(instruction).length && Boolean(pageSpec && isSupportedLayoutInstruction(pageSpec, instruction))),
-    );
-    const forbiddenStyle = new Set(deckBrief.forbiddenRules.flatMap(meaningfulLines).map(normalize));
-    const styleInstructions = unique(meaningfulLines(deckBrief.styleContract.direction).filter((instruction) => !forbiddenStyle.has(normalize(instruction)) && !FORBIDDEN_PATTERN.test(instruction)));
-    const roleInstruction = pageSpec && isPptLayoutRole(pageSpec.layoutRole) ? getPptLayoutRoleInstruction(pageSpec.layoutRole) : "";
+    const globalRules = deckBrief.globalRules.filter((instruction) => !findPptDeckStyleOverrides(instruction).length);
+    const layoutInstructions = unique([...(pageSpec?.layoutIntent || []), ...target.layoutIntent].filter((instruction) => !findPptDeckStyleOverrides(instruction).length && Boolean(pageSpec && isSupportedLayoutInstruction(pageSpec, instruction))));
+    const style = compilePptStyleContract(deckBrief.styleContract);
+    const styleInstructions = style.ok ? style.value.globalInstructions : [];
+    const roleInstructions = pageSpec && isPptLayoutRole(pageSpec.layoutRole) && style.ok ? style.value.roleInstructions[pageSpec.layoutRole] : [];
     const structureInstructions = pageSpec ? pptContentStructureInstructions(pageSpec) : [];
     const encodingInstructions = pageSpec ? pageSpec.visualEncoding.map((encoding) => visualEncodingInstruction(encoding, pageSpec)) : [];
     const visibleDeckBlocks = [deckBrief.audience, deckBrief.goal, deckBrief.narrative, ...globalRules];
@@ -154,10 +173,10 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
         ["禁止项", deckBrief.forbiddenRules],
         ["本页内容", [promptPageContent]],
         ["内容结构", structureInstructions],
-        ["页面职责", [roleInstruction]],
+        ["页面职责与角色母版", roleInstructions],
         ["信息表达", encodingInstructions],
         ["本页布局", layoutInstructions],
-        ["视觉方向", styleInstructions],
+        ["整套视觉系统", styleInstructions],
         ["允许自由发挥", [pageSpec?.freedom || ""]],
     ];
     const finalPrompt = sections
@@ -167,7 +186,7 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
     return {
         finalPrompt,
         pageContent,
-        requiredInstructions: unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, roleInstruction, ...structureInstructions, ...encodingInstructions, ...layoutInstructions, ...styleInstructions, pageSpec?.freedom || ""]),
+        requiredInstructions: unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, ...roleInstructions, ...structureInstructions, ...encodingInstructions, ...layoutInstructions, ...styleInstructions, pageSpec?.freedom || ""]),
     };
 }
 

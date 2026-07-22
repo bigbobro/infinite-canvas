@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import { hashPptContentSource } from "@/lib/ppt/source-lineage";
+import { findPptDeckStyleOverrides, previewPptStyleClauseRepair, validatePptPageVisualEncoding } from "@/lib/ppt/style-contract";
 import type { CanvasProjectPptContentBlock, CanvasProjectPptLockedFact, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef, CanvasProjectPptVisualEncoding, PptContentBrief, PptContentForm, PptLayoutRole } from "@/stores/canvas/use-canvas-store";
 
 export type PptContentSourceInput = {
@@ -62,7 +63,7 @@ export type PptContentAuditIssue = {
     pageIds: string[];
     message: string;
     actions: PptContentAuditAction[];
-    repair?: { kind: "route_deck_style"; pageId: string; value: string; replacement: string; signals: string[] };
+    repair?: { kind: "route_deck_style"; pageId: string; value: string; replacement: string };
 };
 
 export type PptContentAudit = { issues: PptContentAuditIssue[]; gaps: PptInformationGap[] };
@@ -87,7 +88,7 @@ export type PptPageRewriteSpec = {
 
 export type PptContentRepairPreview = {
     draftRevision: number;
-    operations: Array<{ kind: "route_deck_style"; pageId: string; value: string; replacement: string; signals: string[] }>;
+    operations: Array<{ kind: "route_deck_style"; pageId: string; value: string; replacement: string }>;
 };
 
 export type PptContentAction =
@@ -107,12 +108,11 @@ const GAP_KINDS = new Set<PptInformationGap["kind"]>(["missing_detail", "missing
 const ENCODING_INTENTS = new Set<CanvasProjectPptVisualEncoding["intent"]>(["differentiate", "emphasize", "sequence", "group", "show_relationship"]);
 const ENCODING_CHANNELS = new Set<CanvasProjectPptVisualEncoding["channel"]>(["color", "shape", "position", "size", "line", "icon"]);
 const SOURCE_KINDS = new Set<CanvasProjectPptSourceRef["source"]>(["material", "requirements", "user_answer", "confirmed_assumption"]);
-const DECK_STYLE_FRAGMENT_PATTERN = /(?:[^\s，,。；;·・]+(?:风格|科技风|朋克风)|科技感|配色|字体|渐变|材质|画面气质|背景色|背景图|画面背景|(?:深色|浅色|纯色|渐变|简洁|淡化|透明|品牌化|抽象|纹理)背景)/g;
 const NUMBER_PATTERN = /(?:[$¥€£]\s*)?\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:亿元|万元|百分点|个月|小时|分钟|%|％|倍|万|亿|元|人|家|台|页|年|天|秒|个|项|条|点)?/g;
 const ASCII_TERM_PATTERN = /\b[A-Z][A-Z0-9-]{1,}\b/g;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*•]\s+|\d+[.)、]\s*)/;
 const LAYOUT_GEOMETRY_PATTERN =
-    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|布局|排版|构图|双栏|分栏|网格|矩阵|时间线|流程图|概念图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
+    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|布局|排版|构图|双栏|分栏|分区|网格|矩阵|时间线|流程图|概念图|架构图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|说明|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
 const LAYOUT_GEOMETRY_COUNT_PATTERN = /(?:[0-9一二三四五六七八九十两]+(?:个)?(?:柱状图|折线图|饼图|概念图|图表|图片|列|行|栏|区|块|图|层|组|卡片|模块))/g;
 const LAYOUT_CONTENT_COUNT_PATTERN = /([0-9一二三四五六七八九十两]+)(?:个)?(?:指标|要点)|([0-9一二三四五六七八九十两]+)(?:条)?行动建议/g;
 const AUTHORING_INSTRUCTION_PATTERN = /^(?:(?:我)?(?:希望|想让)(?:你|AI|模型)|(?:请|麻烦)(?:你|AI|模型)|帮我).{0,40}(?:建议|补充|完善|起草|生成|写|整理)/i;
@@ -247,7 +247,6 @@ export function applyPptContentRepair(draft: PptContentDraft, repair: PptContent
         const page = next.pageSpecs.find((item) => item.pageId === operation.pageId);
         if (!page) throw new Error("修复目标页不存在");
         page.layoutIntent = page.layoutIntent.flatMap((value) => (value !== operation.value ? [value] : operation.replacement ? [operation.replacement] : []));
-        next.brief.visualSignals = unique([...next.brief.visualSignals, ...operation.signals]);
         touched.add(page.pageId);
     }
     for (const page of next.pageSpecs) if (touched.has(page.pageId)) page.version += 1;
@@ -345,7 +344,7 @@ export function replacePptContentDraftPage(draft: PptContentDraft, expectedRevis
     return rebuildDraft(next);
 }
 
-export function finalizePptContentDraft(draft: PptContentDraft, approvedAt = new Date().toISOString()): { brief: PptContentBrief; pageSpecs: CanvasProjectPptPageSpec[] } {
+export function finalizePptContentDraft(draft: PptContentDraft, approvedAt = new Date().toISOString()): { brief: PptContentBrief; pageSpecs: CanvasProjectPptPageSpec[]; contentRevision: string } {
     const validation = validatePptContentDraft(draft);
     if (!validation.valid)
         throw new Error(
@@ -354,16 +353,20 @@ export function finalizePptContentDraft(draft: PptContentDraft, approvedAt = new
                 .map((issue) => issue.message)
                 .join("；")}`,
         );
-    const routedVisualSignals = draft.pageSpecs.flatMap((page) => page.layoutIntent.flatMap(extractDeckStyleSignals));
-    const brief = { ...structuredClone(draft.brief), visualSignals: unique([...draft.brief.visualSignals, ...routedVisualSignals]) };
+    const brief = structuredClone(draft.brief);
     const pageSpecs = draft.pageSpecs.map((page) => {
         const next = structuredClone(page);
-        next.layoutIntent = unique(next.layoutIntent.map(stripDeckStyleSignals));
+        next.layoutIntent = unique(
+            next.layoutIntent.map((value) => {
+                const preview = previewPptStyleClauseRepair(value);
+                return preview.safe ? preview.remainder : value;
+            }),
+        );
         next.lockedFacts = derivePptLockedFacts(next);
         next.contentState = { status: "approved", approvedAt };
         return next;
     });
-    return { brief, pageSpecs };
+    return { brief, pageSpecs, contentRevision: `${brief.sourceHash}:r${draft.revision}` };
 }
 
 export function derivePptLockedFacts(pageSpec: Pick<CanvasProjectPptPageSpec, "pageId" | "contentBlocks">): CanvasProjectPptLockedFact[] {
@@ -431,26 +434,7 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
     if (sourceContext && validatePptPageSourceRefs(pageSpec, sourceContext).length) issues.push({ code: "invalid_content_provenance", message: "页面来源已与当前原始材料或补充要求脱节" });
     if (JSON.stringify(pageSpec.lockedFacts) !== JSON.stringify(derivePptLockedFacts(pageSpec))) issues.push({ code: "invalid_content_provenance", message: "页面锁定事实与内容块派生结果不一致" });
     if (pageSpec.layoutIntent.some((intent) => !isPptLayoutIntentSupported(pageSpec, intent))) issues.push({ code: "invalid_content_structure", message: "页面排版要求包含未经批准的文案或事实" });
-    const contentById = new Map(pageSpec.contentBlocks.map((block) => [block.id, block]));
-    const encodingIds = pageSpec.visualEncoding.map((encoding) => encoding.id);
-    if (encodingIds.some((id) => !id.trim()) || new Set(encodingIds).size !== encodingIds.length) issues.push({ code: "invalid_visual_encoding", message: "功能性视觉编码身份缺失或重复" });
-    for (const encoding of pageSpec.visualEncoding) {
-        const runtimeEncoding = encoding as CanvasProjectPptVisualEncoding & Record<string, unknown>;
-        const visibleText = ["text", "label", "copy", "caption"].some((key) => typeof runtimeEncoding[key] === "string" && String(runtimeEncoding[key]).trim());
-        const validIds = ENCODING_INTENTS.has(encoding.intent) && ENCODING_CHANNELS.has(encoding.channel) && encoding.contentBlockIds.length > 0 && encoding.contentBlockIds.every((id) => contentById.has(id) && contentById.get(id)?.kind !== "placeholder");
-        const validMapping = (encoding.lockedMapping || []).every((mapping) => {
-            const block = contentById.get(mapping.contentBlockId);
-            return (
-                Boolean(block) &&
-                encoding.contentBlockIds.includes(mapping.contentBlockId) &&
-                sourceSupportsText(block!.text, mapping.token) &&
-                mapping.sourceRefIds.length > 0 &&
-                mapping.sourceRefIds.every((id) => block!.sourceRefIds.includes(id) && sourceById.has(id)) &&
-                sourceSupportsText(mapping.sourceRefIds.map((id) => sourceById.get(id)!.excerpt).join("\n"), mapping.token)
-            );
-        });
-        if (visibleText || !validIds || !validMapping) issues.push({ code: "invalid_visual_encoding", message: "功能性视觉编码引用了未批准内容、无效来源或新增文案" });
-    }
+    for (const message of validatePptPageVisualEncoding(pageSpec)) issues.push({ code: "invalid_visual_encoding", message });
     return issues;
 }
 
@@ -468,7 +452,9 @@ export function validatePptPageSourceRefs(pageSpec: CanvasProjectPptPageSpec, so
 }
 
 export function isPptLayoutIntentSupported(pageSpec: CanvasProjectPptPageSpec, intent: string) {
-    const layout = stripDeckStyleSignals(intent);
+    const stylePreview = previewPptStyleClauseRepair(intent);
+    if (!stylePreview.safe && findPptDeckStyleOverrides(intent).length) return true;
+    const layout = stylePreview.remainder;
     if (!layout) return true;
     const approvedSource = [renderPptPageSpecText(pageSpec), ...pageSpec.sourceRefs.map((sourceRef) => sourceRef.excerpt)].join("\n");
     const approvedText = normalizedComparable(approvedSource);
@@ -867,9 +853,8 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
             });
         }
         for (const value of page.layoutIntent) {
-            const signals = extractDeckStyleSignals(value);
-            if (!signals.length) continue;
-            const replacement = stripDeckStyleSignals(value);
+            if (!findPptDeckStyleOverrides(value).length) continue;
+            const preview = previewPptStyleClauseRepair(value);
             const id = `issue:${page.pageId}:style:${stableKey(value)}`;
             issues.push({
                 id,
@@ -877,8 +862,8 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
                 severity: "warning",
                 pageIds: [page.pageId],
                 message: `整套审美描述应留到视觉方向阶段：${value}`,
-                actions: [{ kind: "preview_safe_patch", issueId: id }],
-                repair: { kind: "route_deck_style", pageId: page.pageId, value, replacement, signals },
+                actions: preview.safe ? [{ kind: "preview_safe_patch", issueId: id }] : [{ kind: "regenerate_pages", pageIds: [page.pageId] }],
+                ...(preview.safe ? { repair: { kind: "route_deck_style" as const, pageId: page.pageId, value, replacement: preview.remainder } } : {}),
             });
         }
     }
@@ -919,18 +904,6 @@ function sourceSupportsText(source: string, value: string) {
     if (!normalize(source).includes(normalizedValue)) return false;
     const facts = [...value.matchAll(NUMBER_PATTERN), ...value.matchAll(ASCII_TERM_PATTERN)].map((match) => match[0].trim()).filter(Boolean);
     return facts.every((fact) => normalize(source).includes(normalize(fact)));
-}
-
-function extractDeckStyleSignals(value: string) {
-    return unique([...value.matchAll(DECK_STYLE_FRAGMENT_PATTERN)].map((match) => match[0]));
-}
-
-function stripDeckStyleSignals(value: string) {
-    return value
-        .replace(DECK_STYLE_FRAGMENT_PATTERN, "")
-        .replace(/^[\s·・，,。；;、]+|[\s·・，,。；;、]+$/g, "")
-        .replace(/(?:[\s]*[·・，,。；;、][\s]*){2,}/g, " · ")
-        .trim();
 }
 
 function normalizedComparable(value: string) {
