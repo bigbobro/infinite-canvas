@@ -106,6 +106,38 @@ test("Compiler 保留 5 点、数字术语和页面布局，且基线无阻断",
     );
 });
 
+test("Compiler 把已批准文案按语义块编译，并允许无文字视觉构件", () => {
+    const text = ["LLM 中转站选型", "选型需同时平衡接入能力、运行规模、安全与成本", "模型接入：明确服务商与协议兼容性", "容量与路由：评估并发、吞吐和故障切换", "安全治理：覆盖密钥、鉴权、审计与脱敏"].join("\n");
+    const { deckBrief, pageSpecs } = singlePageModel({ pageId: "page-semantic-blocks", title: "LLM 中转站选型", text, styleContract: styleContract() });
+    pageSpecs[0].visualEncoding = [
+        {
+            id: "page-semantic-blocks:encoding:1",
+            contentBlockIds: [pageSpecs[0].contentBlocks[2].id],
+            intent: "group",
+            channel: "shape",
+        },
+    ];
+    const snapshot = compilePptPromptSnapshot(snapshotInputForPage(deckBrief, pageSpecs[0], "take-semantic-blocks"));
+    const prompt = snapshot.prompts[0].finalPrompt;
+
+    assert.equal(hasBlockingCompilationIssues(snapshot), false);
+    assert.match(prompt, /【本页内容】/);
+    assert.match(prompt, /\[B1 · 标题\]/);
+    assert.match(prompt, /\[B2 · 核心信息\]/);
+    assert.match(prompt, /\[B3 · 正文\]/);
+    assert.match(prompt, /结构编号.*不作为可见文案/);
+    assert.match(prompt, /对 B3 使用形状表达分组/);
+    assert.match(prompt, /允许新增不含文字的图标、形状、连线/);
+    for (const line of text.split("\n")) assert.equal(prompt.split(line).length - 1, 1);
+
+    const comparison = structuredClone(pageSpecs[0]);
+    comparison.contentForm = "comparison";
+    const comparisonPrompt = compilePptPromptSnapshot(snapshotInputForPage(deckBrief, comparison, "take-comparison")).prompts[0].finalPrompt;
+    assert.notEqual(comparisonPrompt, prompt);
+    assert.match(comparisonPrompt, /按可对齐的维度并列表达差异与取舍/);
+    assert.doesNotMatch(comparisonPrompt, /配色|字体|背景色/);
+});
+
 test("视觉方向 Contract 中的禁止项只进入禁止段，不在视觉方向中重复", () => {
     const { deckBrief, pageSpecs } = singlePageModel({
         pageId: "page-style-rule",
