@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Input, Popconfirm, Skeleton } from "antd";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, FileText, Merge, Pencil, RefreshCw, Save, Sparkles, Square, Trash2, WandSparkles, X } from "lucide-react";
 
-import type { PptContentAuditAction, PptContentAuditIssue, PptInformationGap } from "@/lib/ppt/content-plan";
+import { pptPageRepairActionLabel, type PptContentAuditAction, type PptContentAuditIssue, type PptInformationGap } from "@/lib/ppt/content-plan";
 import type { CanvasProjectPptContentBlock, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef } from "@/stores/canvas/use-canvas-store";
 import type { FinalizedPptContent, PptContentPlanningController } from "@/pages/ppt/use-ppt-content-planning";
 
@@ -323,6 +323,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
     const unresolvedCount = unresolvedGaps.length;
     const suggestionCount = unresolvedGaps.filter((gap) => gap.proposedAnswer?.trim()).length;
     const pageRequest = planning.pageRequest.pageId === page.pageId ? planning.pageRequest : null;
+    const pageBusy = Boolean(pageRequest?.loading);
     const nextPageId = pageIds[index + 1];
     const move = (offset: -1 | 1) => {
         const targetIndex = index + offset;
@@ -333,7 +334,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
     };
 
     return (
-        <article className="border border-stone-200 bg-card dark:border-stone-800">
+        <article className="border border-stone-200 bg-card dark:border-stone-800" aria-busy={pageBusy}>
             <header className="grid gap-3 border-b border-stone-200 px-4 py-4 sm:grid-cols-[44px_minmax(0,1fr)] dark:border-stone-800">
                 <span className="font-mono text-xs tabular-nums text-stone-400">{String(index + 1).padStart(2, "0")}</span>
                 <div className="min-w-0">
@@ -343,12 +344,12 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                         <span className="mr-2">
                             {CONTENT_FORM_LABELS[page.contentForm]} · {unresolvedCount ? `${unresolvedCount} 项待决定` : "可确认"}
                         </span>
-                        {pageRequest?.loading ? (
+                        {pageBusy ? (
                             <Button size="small" type="text" danger icon={<Square className="size-3 fill-current" />} onClick={planning.cancel}>
                                 取消本页生成
                             </Button>
                         ) : (
-                            <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} onClick={() => void planning.regeneratePage(page.pageId)}>
+                            <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} disabled={pageBusy} onClick={() => void planning.regeneratePage(page.pageId)}>
                                 让 AI 补全本页
                             </Button>
                         )}
@@ -378,7 +379,14 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
             </header>
 
             <div className="space-y-5 px-4 py-4">
-                {pageRequest?.error ? <Alert type="error" showIcon message="本页重新生成失败" description={`${pageRequest.error}；原页内容已保留。`} /> : null}
+                {pageBusy ? (
+                    <div className="flex items-center gap-2 border-l-2 border-stone-300 py-1 pl-3 text-sm text-stone-500 dark:border-stone-700" role="status">
+                        <Sparkles className="size-4 animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                        正在修复本页…
+                    </div>
+                ) : null}
+                {pageRequest?.status === "success" && pageRequest.successMessage ? <Alert type="success" showIcon message={pageRequest.successMessage} description="内容检查已按本页最新结果重新审核。" /> : null}
+                {pageRequest?.status === "error" && pageRequest.error ? <Alert type="error" showIcon message="本页重新生成失败" description={`${pageRequest.error}${/原页/.test(pageRequest.error) ? "" : "；原页内容已保留。"}`} /> : null}
                 <section>
                     <p className="text-xs font-medium text-stone-400">核心信息</p>
                     <EditableText value={primaryClaim?.text || "待补充"} className="mt-2 text-[15px] font-medium leading-6" ariaLabel="编辑核心信息" multiline onSave={(value) => primaryClaim && planning.editBlock(page.pageId, primaryClaim.id, value)} />
@@ -515,10 +523,12 @@ function PageIssues({ issues, planning }: { issues: PptContentAuditIssue[]; plan
 
 function PageIssueAction({ issue, planning }: { issue: PptContentAuditIssue; planning: PptContentPlanningController }) {
     const action = issue.actions.find((item) => item.kind === "merge_pages" || item.kind === "regenerate_pages" || item.kind === "preview_safe_patch") as PptContentAuditAction | undefined;
+    const targetPageId = action?.kind === "regenerate_pages" ? action.pageIds[0] : issue.pageIds[0];
+    const busy = Boolean(targetPageId && planning.pageRequest.loading && planning.pageRequest.pageId === targetPageId);
     if (action?.kind === "merge_pages" && action.pageIds.length === 2) {
         return (
             <Popconfirm title="将这两页合并？" description="合并不会自动接受新事实。" okText="合并" cancelText="取消" onConfirm={() => planning.mergePages([action.pageIds[0], action.pageIds[1]])}>
-                <Button size="small" type="text" icon={<Merge className="size-3.5" />}>
+                <Button size="small" type="text" icon={<Merge className="size-3.5" />} disabled={busy}>
                     合并这两页
                 </Button>
             </Popconfirm>
@@ -526,14 +536,14 @@ function PageIssueAction({ issue, planning }: { issue: PptContentAuditIssue; pla
     }
     if (action?.kind === "regenerate_pages" && action.pageIds[0]) {
         return (
-            <Button size="small" type="text" icon={<RefreshCw className="size-3.5" />} onClick={() => void planning.regeneratePage(action.pageIds[0])}>
-                重新生成本页
+            <Button size="small" type="text" icon={<RefreshCw className="size-3.5" />} loading={busy} disabled={busy} onClick={() => void planning.regeneratePage(action.pageIds[0], { targetIssueId: issue.id })}>
+                {pptPageRepairActionLabel(issue)}
             </Button>
         );
     }
     if (issue.repair) {
         return (
-            <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} onClick={() => planning.previewRepair([issue.id])}>
+            <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} disabled={busy} onClick={() => planning.previewRepair([issue.id])}>
                 预览修复
             </Button>
         );

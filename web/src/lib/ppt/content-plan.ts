@@ -372,6 +372,32 @@ export function assertPptPageAuditIssuesResolved(draft: PptContentDraft, pageId:
     if (remaining.length) throw new Error(`本页重新生成后问题仍未解决：${remaining.map((issue) => issue.message).join("；")}；原页已保留`);
 }
 
+/** Issue-triggered repair keeps the selected issue plus same-page blocking checks; general AI fill keeps all page issues. */
+export function selectPptPageRepairAuditIssues(draft: PptContentDraft, pageId: string, targetIssueId?: string | null): Array<Pick<PptContentAuditIssue, "code" | "field" | "message" | "value">> {
+    const pageIssues = draft.audit.issues.filter((issue) => issue.code !== "unresolved_gap" && issue.pageIds.includes(pageId));
+    const selected = new Map<string, PptContentAuditIssue>();
+    if (targetIssueId) {
+        for (const issue of pageIssues) {
+            if (issue.severity === "blocking" || issue.id === targetIssueId) selected.set(issue.id, issue);
+        }
+    } else {
+        for (const issue of pageIssues) selected.set(issue.id, issue);
+    }
+    return [...selected.values()].map((issue) => ({
+        code: issue.code,
+        message: issue.message,
+        ...(issue.field ? { field: issue.field } : {}),
+        ...(issue.value ? { value: issue.value } : {}),
+    }));
+}
+
+/** Dynamic repair CTA: excessive copy → 压缩, cover → 修复封面, else 修复本页. */
+export function pptPageRepairActionLabel(issue?: Pick<PptContentAuditIssue, "code"> | null): string {
+    if (issue?.code === "excessive_copy" || issue?.code === "monolithic_content") return "压缩本页";
+    if (issue?.code === "invalid_cover") return "修复封面";
+    return "修复本页";
+}
+
 export function finalizePptContentDraft(draft: PptContentDraft, approvedAt = new Date().toISOString()): { brief: PptContentBrief; pageSpecs: CanvasProjectPptPageSpec[]; contentRevision: string } {
     const validation = validatePptContentDraft(draft);
     if (!validation.valid)

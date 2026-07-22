@@ -12,6 +12,7 @@ import {
     previewPptContentAction,
     replacePptContentDraftPage,
     resolvePptInformationGap,
+    selectPptPageRepairAuditIssues,
     validatePptContentDraft,
     type PptContentAction,
     type PptContentDraft,
@@ -23,7 +24,18 @@ import type { AiConfig } from "@/stores/use-config-store";
 
 type DraftEntry = { inputKey: string; draft: PptContentDraft | null };
 type RequestState = { inputKey: string; loading: boolean; error: string; receivedCharacters: number; streamProgress: PptContentStreamProgress };
-type PageRequestState = { inputKey: string; pageId: string | null; loading: boolean; error: string; receivedCharacters: number };
+export type PptPageRequestStatus = "idle" | "loading" | "success" | "error";
+type PageRequestState = {
+    inputKey: string;
+    pageId: string | null;
+    loading: boolean;
+    status: PptPageRequestStatus;
+    error: string;
+    successMessage: string;
+    receivedCharacters: number;
+};
+
+const EMPTY_PAGE_REQUEST: PageRequestState = { inputKey: "", pageId: null, loading: false, status: "idle", error: "", successMessage: "", receivedCharacters: 0 };
 
 const EMPTY_STREAM_PROGRESS: PptContentStreamProgress = { completedPages: [] };
 
@@ -55,7 +67,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
     const draftKeyRef = useRef(inputKey);
     const [draftEntry, setDraftEntry] = useState<DraftEntry>({ inputKey, draft: initialDraft });
     const [requestState, setRequestState] = useState<RequestState>({ inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
-    const [pageRequestState, setPageRequestState] = useState<PageRequestState>({ inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
+    const [pageRequestState, setPageRequestState] = useState<PageRequestState>({ ...EMPTY_PAGE_REQUEST, inputKey });
     const [repairPreview, setRepairPreview] = useState<PptContentRepairPreview | null>(null);
 
     inputRef.current = inputSnapshot;
@@ -67,7 +79,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         controllerRef.current = null;
         requestTokenRef.current += 1;
         setRequestState((current) => (current.loading ? { ...current, loading: false, streamProgress: EMPTY_STREAM_PROGRESS } : current));
-        setPageRequestState((current) => (current.loading ? { ...current, loading: false } : current));
+        setPageRequestState((current) => (current.loading ? { ...current, loading: false, status: current.error ? "error" : "idle" } : current));
     }, []);
 
     useEffect(() => {
@@ -78,7 +90,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         setDraftEntry({ inputKey, draft: cached });
         setRepairPreview(null);
         setRequestState({ inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
-        setPageRequestState({ inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
+        setPageRequestState({ ...EMPTY_PAGE_REQUEST, inputKey });
     }, [cancel, inputKey, requestConfigKey]);
 
     useEffect(
@@ -92,7 +104,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
     const visibleDraft = draftEntry.inputKey === inputKey ? draftEntry.draft : (cacheRef.current.get(inputKey) ?? null);
     const validation = useMemo(() => (visibleDraft ? validatePptContentDraft(visibleDraft) : null), [visibleDraft]);
     const visibleRequest = requestState.inputKey === inputKey ? requestState : { inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS };
-    const visiblePageRequest = pageRequestState.inputKey === inputKey ? pageRequestState : { inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 };
+    const visiblePageRequest = pageRequestState.inputKey === inputKey ? pageRequestState : { ...EMPTY_PAGE_REQUEST, inputKey };
 
     const commitDraft = useCallback((targetInputKey: string, draft: PptContentDraft) => {
         cacheRef.current.set(targetInputKey, draft);
@@ -143,7 +155,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             requestTokenRef.current = token;
             controllerRef.current = controller;
             setRepairPreview(null);
-            setPageRequestState({ inputKey: requestedInputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
+            setPageRequestState({ ...EMPTY_PAGE_REQUEST, inputKey: requestedInputKey });
             setRequestState({ inputKey: requestedInputKey, loading: true, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
 
             try {
@@ -278,7 +290,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
     );
 
     const regeneratePage = useCallback(
-        async (pageId: string) => {
+        async (pageId: string, options: { targetIssueId?: string } = {}) => {
             const requestedInput = inputRef.current;
             const requestedInputKey = inputKeyRef.current;
             const draft = currentDraft();
@@ -287,13 +299,14 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                 setError("单页生成目标不存在");
                 return null;
             }
+            // Ignore duplicate clicks while this page is already repairing.
+            if (pageRequestState.loading && pageRequestState.pageId === pageId && pageRequestState.inputKey === requestedInputKey) return null;
+
             const target = draft.pageSpecs[targetIndex];
             const titleOf = (page: typeof target) => page.contentBlocks.find((block) => block.kind === "title")?.text || "未命名页";
             const claim = target.contentBlocks.find((block) => block.kind === "primary_claim")?.text || "";
             const authoringInstructions = target.contentBlocks.map((block) => block.text).filter(isPptAuthoringInstruction);
-            const auditIssues = draft.audit.issues
-                .filter((issue) => issue.code !== "unresolved_gap" && issue.pageIds.includes(pageId))
-                .map((issue) => ({ code: issue.code, message: issue.message, ...(issue.field ? { field: issue.field } : {}), ...(issue.value ? { value: issue.value } : {}) }));
+            const auditIssues = selectPptPageRepairAuditIssues(draft, pageId, options.targetIssueId);
             const sourceById = new Map(target.sourceRefs.map((source) => [source.id, source]));
             const requestedRevision = draft.revision;
 
@@ -303,7 +316,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             requestTokenRef.current = token;
             controllerRef.current = controller;
             setRepairPreview(null);
-            setPageRequestState({ inputKey: requestedInputKey, pageId, loading: true, error: "", receivedCharacters: 0 });
+            setPageRequestState({ inputKey: requestedInputKey, pageId, loading: true, status: "loading", error: "", successMessage: "", receivedCharacters: 0 });
 
             try {
                 const raw = await requestPptContentPageRegeneration(
@@ -330,7 +343,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                     },
                     (text) => {
                         if (controller.signal.aborted || requestTokenRef.current !== token || inputKeyRef.current !== requestedInputKey) return;
-                        setPageRequestState({ inputKey: requestedInputKey, pageId, loading: true, error: "", receivedCharacters: text.length });
+                        setPageRequestState({ inputKey: requestedInputKey, pageId, loading: true, status: "loading", error: "", successMessage: "", receivedCharacters: text.length });
                     },
                     { signal: controller.signal },
                 );
@@ -346,22 +359,27 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                     normalized.pageSpecs[0],
                     normalized.audit.gaps.filter((gap) => gap.pageId === pageId),
                 );
+                // Success only after transactional replace and re-audit of requested/blocking issues.
                 assertPptPageAuditIssuesResolved(next, pageId, auditIssues);
                 commitDraft(requestedInputKey, next);
+                setPageRequestState({ inputKey: requestedInputKey, pageId, loading: false, status: "success", error: "", successMessage: "本页已更新", receivedCharacters: 0 });
                 return next;
             } catch (error) {
                 if (controller.signal.aborted || requestTokenRef.current !== token || inputKeyRef.current !== requestedInputKey) return null;
                 const errorMessage = error instanceof Error ? error.message : "单页生成失败";
-                setPageRequestState({ inputKey: requestedInputKey, pageId, loading: false, error: errorMessage, receivedCharacters: 0 });
+                // Failure keeps original draft (no commit) and surfaces the exact reason.
+                setPageRequestState({ inputKey: requestedInputKey, pageId, loading: false, status: "error", error: errorMessage, successMessage: "", receivedCharacters: 0 });
                 return null;
             } finally {
                 if (requestTokenRef.current === token) {
                     controllerRef.current = null;
-                    setPageRequestState((current) => (current.inputKey === requestedInputKey && current.pageId === pageId ? { ...current, loading: false } : current));
+                    setPageRequestState((current) =>
+                        current.inputKey === requestedInputKey && current.pageId === pageId && current.loading ? { ...current, loading: false, status: current.error ? "error" : current.status === "success" ? "success" : "idle" } : current,
+                    );
                 }
             }
         },
-        [cancel, commitDraft, currentDraft, setError],
+        [cancel, commitDraft, currentDraft, pageRequestState.inputKey, pageRequestState.loading, pageRequestState.pageId, setError],
     );
 
     const finalize = useCallback(

@@ -43,12 +43,48 @@ test("只有已解决记录时不再显示仍需确认语义", () => {
     assert.match(html, /ppt-gap-deck-resolved/);
 });
 
-function renderPlan(gaps) {
-    const planning = createPlanning(gaps);
+test("SHA-19/21：内容检查按钮按问题显示压缩本页或修复封面", () => {
+    const html = renderPlan([], {
+        issues: [issue("excessive", "excessive_copy", "单页文案共 374 字，请压缩内容或拆页后再生成"), issue("cover", "invalid_cover", "第一页应承担封面职责，只保留标题和一句定位语"), issue("other", "noise_text", "可能的异常文本")],
+    });
+    assert.match(html, /压缩本页/);
+    assert.match(html, /修复封面/);
+    assert.match(html, /修复本页/);
+    assert.doesNotMatch(html, /重新生成本页/);
+});
+
+test("SHA-20：页级修复可见 loading、success、error 终态且进行中禁用重复提交", () => {
+    const loading = renderPlan([], {
+        pageRequest: { pageId: "page-1", loading: true, status: "loading", error: "", successMessage: "" },
+        issues: [issue("excessive", "excessive_copy", "单页文案过长")],
+    });
+    assert.match(loading, /正在修复本页|取消本页生成/);
+    assert.match(loading, /disabled|aria-disabled|loading/);
+
+    const success = renderPlan([], {
+        pageRequest: { pageId: "page-1", loading: false, status: "success", error: "", successMessage: "本页已更新" },
+    });
+    assert.match(success, /本页已更新/);
+
+    const failed = renderPlan([], {
+        pageRequest: {
+            pageId: "page-1",
+            loading: false,
+            status: "error",
+            error: "本页重新生成后问题仍未解决：单页文案共 374 字；原页已保留",
+            successMessage: "",
+        },
+    });
+    assert.match(failed, /本页重新生成失败|问题仍未解决/);
+    assert.match(failed, /原页/);
+});
+
+function renderPlan(gaps, overrides = {}) {
+    const planning = createPlanning(gaps, overrides);
     return renderToStaticMarkup(React.createElement(PptContentPlanStep, { planning, onBack() {}, onConfirmed() {} }));
 }
 
-function createPlanning(gaps) {
+function createPlanning(gaps, overrides = {}) {
     const noop = () => {};
     return {
         draft: {
@@ -57,7 +93,7 @@ function createPlanning(gaps) {
                 {
                     pageId: "page-1",
                     purpose: "说明用途",
-                    contentForm: "narrative",
+                    contentForm: overrides.contentForm || "narrative",
                     layoutIntent: [],
                     visualEncoding: [],
                     sourceRefs: [],
@@ -67,16 +103,16 @@ function createPlanning(gaps) {
                     ],
                 },
             ],
-            audit: { issues: [], gaps },
+            audit: { issues: overrides.issues || [], gaps },
         },
         validation: { valid: false, issues: [] },
-        loading: false,
+        loading: Boolean(overrides.pageRequest?.loading),
         error: "",
         repairPreview: null,
         input: { sourceMaterial: "测试材料" },
         receivedCharacters: 0,
         streamProgress: { completedPages: [] },
-        pageRequest: { pageId: null, loading: false, error: "" },
+        pageRequest: overrides.pageRequest || { pageId: null, loading: false, status: "idle", error: "", successMessage: "" },
         cancel: noop,
         clearError: noop,
         generate: async () => {},
@@ -92,6 +128,17 @@ function createPlanning(gaps) {
         resolveGap: noop,
         dismissRepair: noop,
         applyRepair: noop,
+    };
+}
+
+function issue(id, code, message) {
+    return {
+        id: `issue-${id}`,
+        code,
+        severity: code === "invalid_cover" ? "blocking" : "warning",
+        pageIds: ["page-1"],
+        message,
+        actions: [{ kind: "regenerate_pages", pageIds: ["page-1"] }],
     };
 }
 

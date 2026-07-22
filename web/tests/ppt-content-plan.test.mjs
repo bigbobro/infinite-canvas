@@ -27,6 +27,9 @@ let previewPptContentAction;
 let replacePptContentDraftPage;
 let resolvePptInformationGap;
 let selectPptPageDescriptor;
+let selectPptPageRepairAuditIssues;
+let pptPageRepairActionLabel;
+let renderPptPageSpecText;
 let validatePptContentDraft;
 let validatePptPageSpec;
 let vite;
@@ -48,6 +51,9 @@ before(async () => {
         previewPptContentAction,
         replacePptContentDraftPage,
         resolvePptInformationGap,
+        selectPptPageRepairAuditIssues,
+        pptPageRepairActionLabel,
+        renderPptPageSpecText,
         validatePptContentDraft,
         validatePptPageSpec,
     } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
@@ -1447,3 +1453,178 @@ function targetFor(pageSpec) {
         extraTexts: [],
     };
 }
+
+// --- SHA-19 / SHA-21 page repair closure ---
+
+test("SHA-19：374 字超长页未压缩结果被拒绝，压缩后可通过", () => {
+    const title = "选型标题";
+    const claim = "一句话主张";
+    const body = "密".repeat(374 - [...title].length - [...claim].length);
+    const material = [title, claim, body, "合作伙伴", "完成选型", "从问题到方案"].join("\n");
+    const input = { title: "选型", sourceMaterial: material, requirements: "" };
+    const raw = {
+        brief: { audience: "合作伙伴", goal: "完成选型", narrative: "从问题到方案" },
+        pages: [
+            {
+                title,
+                titleSource: { source: "material", startLine: 1, endLine: 1 },
+                purpose: "说明选型",
+                primaryClaim: claim,
+                primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                contentForm: "narrative",
+                blocks: [{ key: "dense", kind: "body", text: body, source: { source: "material", startLine: 3, endLine: 3 } }],
+                layoutIntent: ["上下分区"],
+                visualEncoding: [],
+                gaps: [],
+            },
+        ],
+    };
+    const current = normalizePptContentDraft(raw, input);
+    const text = renderPptPageSpecText(current.pageSpecs[0]);
+    assert.equal([...text.replace(/\r?\n/g, "")].length, 374);
+    const excessive = current.audit.issues.filter((issue) => issue.code === "excessive_copy" && issue.pageIds.includes(current.pageSpecs[0].pageId));
+    assert.ok(excessive.length, "应检出超长文案");
+    assert.match(excessive[0].message, /374|压缩|拆页/);
+
+    const requested = selectPptPageRepairAuditIssues(current, current.pageSpecs[0].pageId, excessive[0].id);
+    assert.ok(requested.some((issue) => issue.code === "excessive_copy"));
+
+    const unchanged = normalizePptContentDraft(raw, { ...input, previousPageSpecs: current.pageSpecs });
+    const rejected = replacePptContentDraftPage(current, current.revision, current.pageSpecs[0].pageId, unchanged.pageSpecs[0], unchanged.audit.gaps);
+    assert.throws(() => assertPptPageAuditIssuesResolved(rejected, current.pageSpecs[0].pageId, requested), /问题仍未解决|原页已保留/);
+
+    const shortClaim = "选型要覆盖接入、容量、安全与成本";
+    const shortBody = "接入能力、并发容量、安全合规与总成本需一并评估。";
+    const shortMaterial = [title, shortClaim, shortBody, "合作伙伴", "完成选型", "从问题到方案"].join("\n");
+    const shortInput = { title: "选型", sourceMaterial: shortMaterial, requirements: "" };
+    const shortRaw = {
+        brief: raw.brief,
+        pages: [
+            {
+                title,
+                titleSource: { source: "material", startLine: 1, endLine: 1 },
+                purpose: "说明选型",
+                primaryClaim: shortClaim,
+                primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                contentForm: "narrative",
+                blocks: [{ key: "dense", kind: "body", text: shortBody, source: { source: "material", startLine: 3, endLine: 3 } }],
+                layoutIntent: ["上下分区"],
+                visualEncoding: [],
+                gaps: [],
+            },
+        ],
+    };
+    const compressed = normalizePptContentDraft(shortRaw, { ...shortInput, previousPageSpecs: current.pageSpecs });
+    const accepted = replacePptContentDraftPage(current, current.revision, current.pageSpecs[0].pageId, compressed.pageSpecs[0], compressed.audit.gaps);
+    assert.doesNotThrow(() => assertPptPageAuditIssuesResolved(accepted, current.pageSpecs[0].pageId, requested));
+    assert.equal(
+        accepted.audit.issues.some((issue) => issue.code === "excessive_copy" && issue.pageIds.includes(current.pageSpecs[0].pageId)),
+        false,
+    );
+    assert.equal(pptPageRepairActionLabel(excessive[0]), "压缩本页");
+});
+
+test("SHA-21：不合格封面拒绝替换，合格封面可通过", () => {
+    const material = ["PPT 工作台", "把内容规划连接到页面生成", "第一次接触产品的人", "理解产品价值", "从问题到价值", "正文页要点"].join("\n");
+    const input = { title: "PPT 工作台", sourceMaterial: material, requirements: "" };
+    const badCoverRaw = {
+        brief: { audience: "第一次接触产品的人", goal: "理解产品价值", narrative: "从问题到价值" },
+        pages: [
+            {
+                title: "PPT 工作台",
+                titleSource: { source: "material", startLine: 1, endLine: 1 },
+                purpose: "建立定位",
+                primaryClaim: "为什么需要、好在哪里、解决什么问题、为谁服务",
+                primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                contentForm: "cover",
+                blocks: [{ key: "extra", kind: "body", text: "正文页要点", source: { source: "material", startLine: 6, endLine: 6 } }],
+                layoutIntent: ["居中主视觉"],
+                visualEncoding: [],
+                gaps: [],
+            },
+            {
+                title: "正文页",
+                titleSource: { source: "material", startLine: 6, endLine: 6 },
+                purpose: "展开要点",
+                primaryClaim: "把内容规划连接到页面生成",
+                primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                contentForm: "narrative",
+                blocks: [],
+                layoutIntent: ["上下分区"],
+                visualEncoding: [],
+                gaps: [],
+            },
+        ],
+    };
+    const current = normalizePptContentDraft(badCoverRaw, input);
+    const coverIssues = current.audit.issues.filter((issue) => issue.code === "invalid_cover" && issue.pageIds.includes(current.pageSpecs[0].pageId));
+    assert.ok(coverIssues.length);
+    assert.equal(pptPageRepairActionLabel(coverIssues[0]), "修复封面");
+
+    const requested = selectPptPageRepairAuditIssues(current, current.pageSpecs[0].pageId, coverIssues[0].id);
+    assert.ok(requested.some((issue) => issue.code === "invalid_cover"));
+
+    const stillBad = normalizePptContentDraft(badCoverRaw, { ...input, previousPageSpecs: [current.pageSpecs[0]] });
+    const rejected = replacePptContentDraftPage(
+        current,
+        current.revision,
+        current.pageSpecs[0].pageId,
+        stillBad.pageSpecs[0],
+        stillBad.audit.gaps.filter((gap) => gap.pageId === current.pageSpecs[0].pageId),
+    );
+    assert.throws(() => assertPptPageAuditIssuesResolved(rejected, current.pageSpecs[0].pageId, requested), /问题仍未解决|原页已保留/);
+
+    const goodCoverRaw = {
+        brief: badCoverRaw.brief,
+        pages: [
+            {
+                title: "PPT 工作台",
+                titleSource: { source: "material", startLine: 1, endLine: 1 },
+                purpose: "建立定位",
+                primaryClaim: "把内容规划连接到页面生成",
+                primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                contentForm: "cover",
+                blocks: [],
+                layoutIntent: ["居中主视觉"],
+                visualEncoding: [],
+                gaps: [],
+            },
+        ],
+    };
+    const fixed = normalizePptContentDraft(goodCoverRaw, { ...input, previousPageSpecs: [current.pageSpecs[0]] });
+    const accepted = replacePptContentDraftPage(current, current.revision, current.pageSpecs[0].pageId, fixed.pageSpecs[0], fixed.audit.gaps);
+    assert.doesNotThrow(() => assertPptPageAuditIssuesResolved(accepted, current.pageSpecs[0].pageId, requested));
+    assert.equal(
+        accepted.audit.issues.some((issue) => issue.code === "invalid_cover" && issue.pageIds.includes(current.pageSpecs[0].pageId)),
+        false,
+    );
+});
+
+test("页级修复目标：选中问题并保留同页 blocking", () => {
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "伙伴", goal: "理解", narrative: "主线" },
+            pages: [
+                {
+                    title: "页",
+                    purpose: "说明",
+                    primaryClaim: "主张",
+                    contentForm: "narrative",
+                    blocks: [{ key: "b", kind: "body", text: "密".repeat(300) }],
+                    layoutIntent: ["上下分区"],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        { title: "页", sourceMaterial: `页\n主张\n${"密".repeat(300)}\n伙伴\n理解\n主线`, requirements: "" },
+    );
+    const pageId = draft.pageSpecs[0].pageId;
+    const warning = draft.audit.issues.find((issue) => issue.code === "excessive_copy" && issue.pageIds.includes(pageId));
+    assert.ok(warning);
+    const onlyTarget = selectPptPageRepairAuditIssues(draft, pageId, warning.id);
+    assert.ok(onlyTarget.some((issue) => issue.code === "excessive_copy"));
+    const all = selectPptPageRepairAuditIssues(draft, pageId);
+    assert.ok(all.length >= onlyTarget.length);
+    assert.equal(pptPageRepairActionLabel({ code: "noise_text" }), "修复本页");
+});
