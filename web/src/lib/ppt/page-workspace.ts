@@ -61,8 +61,8 @@ export function buildPptPageWorkspace(project: CanvasProject, page: CanvasProjec
         if (node.metadata?.batchRootId) addDownstream(node.metadata.batchRootId, node.id);
     });
 
-    const pageTakeList = page.takes;
-    const takeBoundaryIds = new Set((project.ppt?.pages || [page]).flatMap((projectPage) => projectPage.takes.flatMap((take) => [take.anchorNodeId, take.configNodeId])));
+    const pageTakeList = Array.isArray(page.takes) ? page.takes : [];
+    const takeBoundaryIds = new Set((project.ppt?.pages || [page]).flatMap((projectPage) => (Array.isArray(projectPage.takes) ? projectPage.takes : []).flatMap((take) => [take.anchorNodeId, take.configNodeId])));
     const seenOutputNodeIds = new Set<string>();
     const takes = pageTakeList.map<PptPageWorkspaceTake>((take, takeIndex) => {
         const anchorNode = nodeById.get(take.anchorNodeId);
@@ -165,10 +165,11 @@ function isBatchGroup(node: CanvasNodeData) {
     return Boolean(node.metadata?.batchChildIds?.length);
 }
 
-function belongsToTakeLedger(node: CanvasNodeData, pageId: string, takeId: string) {
+function belongsToTakeLedger(node: CanvasNodeData, pageId: string | undefined, takeId: string | undefined) {
+    if (!pageId || !takeId) return false;
     const request = node.metadata?.pptGenerationRequest;
     const run = node.metadata?.pptGenerationRun;
-    return (request?.pageId === pageId && request.takeId === takeId) || (run?.pageId === pageId && run.takeId === takeId);
+    return (request?.pageId === pageId && request?.takeId === takeId) || (run?.pageId === pageId && run?.takeId === takeId);
 }
 
 function collectReachableIds(pageConfigNodeId: string, pageId: string, takeId: string, nodeById: Map<string, CanvasNodeData>, downstreamById: Map<string, string[]>, blockedIds: Set<string>) {

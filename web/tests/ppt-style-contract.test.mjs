@@ -8,6 +8,7 @@ let applyPptPageSpecUpdate;
 let assertGenerationPlanCompilation;
 let buildPptCompilerModel;
 let buildPptDeckProject;
+let buildPptPageWorkspace;
 let collectImageStorageKeys;
 let compilePptPromptSnapshot;
 let createGenerationPlan;
@@ -26,6 +27,7 @@ before(async () => {
     ({ createPptVisualDirectionPresetContract, deriveDefaultPptLayoutRole, getPptVisualDirectionLabel, normalizePptStyleContract, PPT_LAYOUT_ROLES, PPT_VISUAL_DIRECTION_PRESETS } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
     ({ buildPptCompilerModel, compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ buildPptDeckProject } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
+    ({ buildPptPageWorkspace } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
     ({ assertGenerationPlanCompilation, createGenerationPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ applyPptPageSpecUpdate, useCanvasStore } = await vite.ssrLoadModule("/src/stores/canvas/use-canvas-store.ts"));
     ({ freezeGenerationPlanReferences } = await vite.ssrLoadModule("/src/pages/canvas/hooks/use-ppt-generation-module.ts"));
@@ -106,6 +108,52 @@ test("Contract 是唯一视觉事实源，要求与页面排版中的视觉覆�
 test("损坏 Contract 显示待修复而不是让工作台 render crash", () => {
     assert.equal(getPptVisualDirectionLabel({ source: undefined, direction: "深蓝专业", references: [] }), "待修复");
     assert.equal(getPptVisualDirectionLabel(createPptVisualDirectionPresetContract("clean-report")), "清晰专业");
+});
+
+test("PPT 列表读取缺少稳定身份或方案数组的本地工程时不会崩溃", () => {
+    for (const missingField of ["pageId", "takes"]) {
+        const partial = buildPptDeckProject({
+            title: "旧本地工程",
+            sourceMaterial: "第一页",
+            requirements: "",
+            styleContract: createPptVisualDirectionPresetContract(),
+            pages: [{ title: "第一页", outline: "第一页", visualHint: "" }],
+            mode: "extract",
+        });
+        const project = {
+            id: `legacy-local-project-${missingField}`,
+            createdAt: "2026-07-22T00:00:00.000Z",
+            updatedAt: "2026-07-22T00:00:00.000Z",
+            chatSessions: [],
+            activeChatId: null,
+            backgroundMode: "lines",
+            showImageInfo: false,
+            ...partial,
+        };
+        const page = project.ppt.pages[0];
+        assert.doesNotThrow(() => buildPptPageWorkspace(project, page));
+        const takeId = page.takes[0].takeId;
+        delete page[missingField];
+        if (missingField === "pageId") {
+            project.nodes.push({
+                id: "legacy-incomplete-ledger-image",
+                type: "image",
+                title: "旧台账图片",
+                position: { x: 0, y: 0 },
+                width: 320,
+                height: 180,
+                metadata: { status: "success", pptGenerationRequest: { pageId: undefined, takeId } },
+            });
+        }
+
+        const workspace = buildPptPageWorkspace(project, page);
+        if (missingField === "takes") assert.deepEqual(workspace.takes, []);
+        else
+            assert.equal(
+                workspace.takes[0].candidates.some((candidate) => candidate.id === "legacy-incomplete-ledger-image"),
+                false,
+            );
+    }
 });
 
 test("页面职责确定性推导且六种 role 都进入最终提示词", () => {
