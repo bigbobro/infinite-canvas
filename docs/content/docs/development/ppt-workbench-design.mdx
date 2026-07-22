@@ -458,7 +458,7 @@ createGenerationPlan(
 
 ## 14. PPT Prompt Compiler：生成请求的唯一提示词事实源
 
-structured 向导的三步名称固定为“材料与目标 / 内容方案 / 视觉方向”。文本模型返回的只是 raw proposal；`normalizePptContentDraft()` 才负责建立稳定 `pageId`、ContentBlock、sourceRef、信息缺口和审计问题，并把整套 brief 绑定到当时的 material + requirements hash。每页必须有唯一 title、唯一 primary claim、页面目的和有效内容结构；非占位正文必须由材料、要求、用户回答或已确认假设支持。无法溯源的结论、缺材料/证据、输入歧义、重复页、异常文本、无效 visualEncoding 和混入页面构图的 deck 级视觉描述都进入 audit。blocking 问题未解决时 `finalizePptContentDraft()` 拒绝确认；确认后 PageSpec 标为 `approved`，视觉信号转交第三步，不混在正文中。
+structured 向导的三步名称固定为“材料与目标 / 内容方案 / 视觉方向”。文本模型返回的只是 raw proposal；`normalizePptContentDraft()` 才负责建立稳定 `pageId`、ContentBlock、sourceRef、信息缺口和审计问题，并把整套 brief 绑定到当时的 material + requirements hash。Deck Brief、创作指令与观众可见正文是不同语义：来源有效不代表适合上屏，元话语即使能定位到原文也必须从 PageSpec 正文排除；分类只匹配明确的文档创作语境，不能把制造、采购等场景中的“材料”业务事实误删。多页方案只有第一页能承担无正文块的整套封面职责，封面的一句定位语不能变成整套目标问题清单；页数只执行 requirements 中明确写出的上限，不使用隐含固定范围。每页必须有唯一 title、唯一 primary claim、页面目的和有效内容结构；非占位正文必须由材料、要求、用户回答或已确认假设支持。无法溯源的结论、缺材料/证据、输入歧义、重复页、异常文本、无效 visualEncoding 和混入页面构图的 deck 级视觉描述都进入 audit。blocking 问题未解决时 `finalizePptContentDraft()` 拒绝确认；确认后 PageSpec 标为 `approved`，视觉信号转交第三步，不混在正文中。
 
 生成中的逐页卡片只是只读进度投影，不是半成品 ContentDraft。`previewPptContentPlanStream()` 只读取当前根对象 `pages` 数组中已经严格闭合、可直接 `JSON.parse` 的直接页面对象，不做 JSON 修复、不创建 `pageId`、不恢复来源，也不提供编辑或确认动作；半页、brief、旁路 diagnostics 数组和嵌套的 block / gap 对象不会被误当成页面。只有供应商完整结束且最终响应通过完整解析与 normalize 门禁后，预览才一次性切换为可编辑的 canonical 内容方案。
 
