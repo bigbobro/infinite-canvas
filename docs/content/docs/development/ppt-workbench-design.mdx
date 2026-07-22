@@ -442,6 +442,18 @@ createGenerationPlan(
 
 structured 向导的三步名称固定为“材料与目标 / 内容方案 / 视觉方向”。文本模型返回的只是 raw proposal；`normalizePptContentDraft()` 才负责建立稳定 `pageId`、ContentBlock、sourceRef、信息缺口和审计问题，并把整套 brief 绑定到当时的 material + requirements hash。每页必须有唯一 title、唯一 primary claim、页面目的和有效内容结构；非占位正文必须由材料、要求、用户回答或已确认假设支持。无法溯源的结论、缺材料/证据、输入歧义、重复页、异常文本、无效 visualEncoding 和混入页面构图的 deck 级视觉描述都进入 audit。blocking 问题未解决时 `finalizePptContentDraft()` 拒绝确认；确认后 PageSpec 标为 `approved`，视觉信号转交第三步，不混在正文中。
 
+生成中的逐页卡片只是只读进度投影，不是半成品 ContentDraft。`previewPptContentPlanStream()` 只读取当前根对象 `pages` 数组中已经严格闭合、可直接 `JSON.parse` 的直接页面对象，不做 JSON 修复、不创建 `pageId`、不恢复来源，也不提供编辑或确认动作；半页、brief、旁路 diagnostics 数组和嵌套的 block / gap 对象不会被误当成页面。只有供应商完整结束且最终响应通过完整解析与 normalize 门禁后，预览才一次性切换为可编辑的 canonical 内容方案。
+
+事实安全不等于把写作责任退回用户。材料稀疏时，模型仍须先给可审阅的专业建议：通用的页面结构、判断框架、计算方法和待验证假设写入 `gap.proposedAnswer`；需要在页面中先展示的完整建议块用 `gapKey` 绑定同一 gap，不能伪装成材料原文。用户可逐条或按页采纳，采纳后才转成 `confirmed_assumption` 来源并参与 lockedFacts。真实供应商选择、容量、金额、合作条件和既成结论仍不能自动确认；“请你给建议”等创作指令也不能作为页面正文。
+
+单页补全 adapter 接受单元素 `pages`、`page` 或裸页面三种常见有效形状，但空页、多页和无页面对象在 normalize 前失败且不自动重试。请求把当前正文和已确认的 `user_answer / confirmed_assumption` 都按 `{ kind, text }` 发送；模型必须逐字且保持内容块角色，normalize 只在相同角色与同文 occurrence 上一对一恢复原 block/source 身份，页面替换门禁再逐项确认同一来源仍绑定原内容块，正文来源不能仅凭同文迁移到标题。遗漏、同义改写或只返回部分确认内容都会原子拒绝。模型 gap 与系统自动 gap 使用独立内部 ID 命名空间；raw key 只负责单次响应内的 block-gap 绑定，跨轮对账使用由 gap kind 与规范化 question 生成、且不依赖 pageId 的 `lineageKey`。若模型逐字保留已确认正文却用不同 key 重新声明同一 gap，替换层会保留旧 resolution ledger、把内容块重新绑定旧 lineage 并删除冗余的新 gap，因此连续重生成和合并页面后的重生成仍保持幂等；同一 lineage 无法唯一归属时 fail-closed，问题已变的新 gap 或同一 gap 改换答案也不能借旧确认通过。页面替换继续按稳定 `pageId` 与 draft revision CAS 执行，失败始终保留旧页；用户手改 gap-bound 内容时同步把 resolution 和新 `user_answer` 来源更新到同一 lineage。
+
+文本 adapter 的响应边界先选取最后一个完整 fenced JSON，否则按字符串感知的 `{}` / `[]` 容器平衡提取完整对象候选；候选对象先严格解析，只在已完整闭合时修复尾逗号、裸换行等常见 JSON 瑕疵，随后仍须通过原有的方案结构门禁。未闭合对象或数组、嵌在未闭合外层容器里的局部方案、OpenAI Responses / Gemini 的 token 截断，以及流结束时缺少供应商完成终态，都不允许自动补齐；必须报告“模型返回不完整”并保留旧方案。
+
+“内容安全”和“可上屏”是两道不同检查。内容方案与页面 AI 精修都按“本页标题 / 一句核心信息 / 独立内容块”产出 slide-ready 文案，禁止把多个判断维度压进一个文章式长段落。页面 AI 精修不再只返回 plain text，而是同时返回 `contentForm`、blocks 和引用 block key 的 `visualEncoding`；结果通过结构、引用和文案负载检查后，才原子写回 PageSpec。未改写的内容块保留原 block ID 与 sourceRef，真正改写的块标为 `confirmed_assumption`；若改写引入新的 lockedFacts，必须拒绝并由用户走手工确认。手工全文编辑时，真正改写或新增的块不继承旧映射；规范化文本未变的正文块即使调整顺序，仍保留原 ID、kind 和 visualEncoding，并按新内容顺序重排编码引用、清除已过期的 lockedMapping。`auditPptPageCopyReadiness()` 对超长正文行和过量单页文案给出可修复 warning；AI 改写结果仍过密时不覆盖编辑器原稿。该检查不等于 Style Contract 的视觉密度，不管理字体、配色或母版。
+
+Compiler 保留 `renderPptPageSpecText()` 作为 canonical 投影与事实校验输入，但给图片模型的【本页内容】使用 B1、B2 等非可见结构编号标出 title、primary claim 和各类 ContentBlock；`contentForm` 编译为风格中立的对比、流程、架构、数据或主张—依据构图，`visualEncoding.contentBlockIds` 必须精确指向相应编号。正文仍只出现一次；可新增的只是不含文字、不引入新事实的图标、形状、连线、分区和图表容器。
+
 `CanvasProjectPpt` 与 `CompilationSnapshot` 都是同构的 canonical discriminated union。structured 分支保存 `compilePolicy: "structured" + DeckBrief + PageSpec[]`；verbatim 分支保存 `compilePolicy: "verbatim" + VerbatimSpec[] + confirmedGlobalSpec?`。项目不再保存或读取旧 `mode` 作为语义来源，也不把两类内容互相转换。`compilePptPromptSnapshot()` 是两类分支共享的唯一入口，但每个 snapshot 只深拷贝目标 policy 的 canonical 数据、target、最终提示词、来源、问题与输入 hash。
 
 页面标题与摘要不再住在 `pages` 账本或节点中。`selectPptPageDescriptor()` 统一验证页面身份、连续页序、page/spec 数量与 ID 双射，并从 structured 的唯一 title/primary claim 或 verbatim 的 title/exactText 派生显示；任何损坏都返回“内容规格待修复”及原因。列表和工作台只展示该 selector 的结果，GenerationPlan 对 invalid descriptor 创建 0 runs / 0 requests，ZIP/PPTX 导出也在读取首个 Blob 前失败。
