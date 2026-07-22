@@ -12,6 +12,7 @@ let buildPptDeckProject;
 let createGenerationPlan;
 let createPptCandidateEditPlan;
 let compilePptPromptSnapshot;
+let derivePptLockedFacts;
 let PPT_PAGE_PROMPT;
 let defaultConfig;
 let agentOpsTouchPptGenerationLedger;
@@ -19,13 +20,15 @@ let historyEntryTouchesPptGenerationLedger;
 let nodeIdsTouchPptControlledNodes;
 let sanitizeCopiedCanvasMetadata;
 let buildPptGenerationNotificationHref;
+let hashPptContentSource;
 
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ createPptGenerationModule } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
     ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
-    ({ PPT_PAGE_PROMPT } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
+    ({ derivePptLockedFacts } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
+    ({ PPT_PAGE_PROMPT, hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ hasPptRepeatBillingRisk, agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, sanitizeCopiedCanvasMetadata } = await vite.ssrLoadModule("/src/lib/ppt/generation-ledger.ts"));
     ({ buildPptDeckProject } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
@@ -101,24 +104,7 @@ test("落盘或 durable read-back 失败时 POST 次数为 0", async (context) =
 });
 
 test("request.prompt 与 Compiler 快照不一致时 POST 次数为 0", async () => {
-    const partial = buildPptDeckProject({
-        title: "Compiler durable gate",
-        sourceMaterial: "关键指标\n设备在线率 98.5%",
-        requirements: "目标：保留关键事实",
-        styleContract: styleContract("专业咨询风"),
-        pages: [{ title: "关键指标", outline: "关键指标\n设备在线率 98.5%", visualHint: "" }],
-        mode: "extract",
-    });
-    const project = {
-        id: "project-compiler-tamper",
-        createdAt: "2026-07-21T00:00:00.000Z",
-        updatedAt: "2026-07-21T00:00:00.000Z",
-        chatSessions: [],
-        activeChatId: null,
-        backgroundMode: "lines",
-        showImageInfo: false,
-        ...partial,
-    };
+    const project = compilerProject("compiler-tamper");
     const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
     plan.runs[0].requests[0].prompt += "\n未记录的篡改";
     const harness = createHarness(project);
@@ -517,7 +503,7 @@ test("Compiler 快照和请求同步篡改仍然 POST 次数为 0", async () => 
 test("快照之后 PageSpec 已升版时旧计划 POST 次数为 0", async () => {
     const project = compilerProject("compiler-stale-spec");
     const plan = createGenerationPlan({ kind: "generateSingle", takeId: project.ppt.pages[0].takes[0].takeId }, { project, effectiveConfig: defaultConfig });
-    project.ppt.pageSpecs[0] = { ...project.ppt.pageSpecs[0], version: project.ppt.pageSpecs[0].version + 1, reviewedAt: "2026-07-21T01:00:00.000Z" };
+    project.ppt.pageSpecs[0] = { ...project.ppt.pageSpecs[0], version: project.ppt.pageSpecs[0].version + 1 };
     const harness = createHarness(project);
     const module = createPptGenerationModule(harness.dependencies);
 
@@ -980,15 +966,53 @@ function styleContract(direction = "清晰专业的报告视觉") {
     return { source: { kind: "custom" }, direction, references: [] };
 }
 
+function structuredDeckBrief(direction = "清晰专业的报告视觉", sourceMaterial = "测试材料", requirements = "") {
+    return { version: 1, sourceHash: hashPptContentSource(sourceMaterial, requirements), audience: "", goal: "", narrative: "", styleContract: styleContract(direction), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
+}
+
+function structuredPageSpec(pageId, title, claim, layoutRole = "cover") {
+    const titleSourceId = `${pageId}:source:title`;
+    const claimSourceId = `${pageId}:source:claim`;
+    const pageSpec = {
+        pageId,
+        version: 1,
+        purpose: "验证生成可靠性",
+        contentForm: "narrative",
+        sourceRefs: [
+            { id: titleSourceId, source: "user_answer", excerpt: title },
+            { id: claimSourceId, source: "user_answer", excerpt: claim },
+        ],
+        contentBlocks: [
+            { id: `${pageId}:block:title`, kind: "title", text: title, sourceRefIds: [titleSourceId] },
+            { id: `${pageId}:block:claim`, kind: "primary_claim", text: claim, sourceRefIds: [claimSourceId] },
+        ],
+        contentState: { status: "approved", approvedAt: "2026-07-21T00:00:00.000Z" },
+        lockedFacts: [],
+        layoutRole,
+        layoutIntent: [],
+        visualEncoding: [],
+        assetRefs: [],
+        freedom: "不得新增或改写可见文案与事实",
+    };
+    pageSpec.lockedFacts = derivePptLockedFacts(pageSpec);
+    return pageSpec;
+}
+
+function structuredPageText(pageSpec) {
+    return pageSpec.contentBlocks.map((block) => block.text).join("\n");
+}
+
 function baseProject(suffix) {
+    const pageSpec = structuredPageSpec("page-1", "第一页", "测试提示词");
+    const pageText = structuredPageText(pageSpec);
     return {
         id: `project-${suffix}`,
         title: "可靠性测试",
         createdAt: "2026-07-21T00:00:00.000Z",
         updatedAt: "2026-07-21T00:00:00.000Z",
         nodes: [
-            canvasNode("anchor", "text", { content: "测试提示词", status: "success", pptPageId: "page-1", pptTakeId: "take-1", pptPageIndex: 1, pptRole: "outline" }),
-            canvasNode("config", "config", { prompt: "测试提示词", status: "success", model: "fake-image", count: 1, pptPageId: "page-1", pptTakeId: "take-1", pptPageIndex: 1 }),
+            canvasNode("anchor", "text", { content: pageText, status: "success", pptPageId: "page-1", pptTakeId: "take-1", pptPageIndex: 1, pptRole: "outline" }),
+            canvasNode("config", "config", { prompt: "", pptLayoutPrompt: PPT_PAGE_PROMPT, status: "success", model: "fake-image", count: 1, pptPageId: "page-1", pptTakeId: "take-1", pptPageIndex: 1 }),
         ],
         connections: [{ id: "anchor-config", fromNodeId: "anchor", toNodeId: "config" }],
         chatSessions: [],
@@ -997,39 +1021,26 @@ function baseProject(suffix) {
         showImageInfo: false,
         viewport: { x: 0, y: 0, k: 1 },
         ppt: {
+            compilePolicy: "structured",
             sourceMaterial: "测试材料",
             requirements: "",
-            pages: [{ pageId: "page-1", index: 1, title: "第一页", outline: "测试提示词", visualHint: "", takes: [{ takeId: "take-1", anchorNodeId: "anchor", configNodeId: "config" }] }],
-            deckBrief: { version: 1, audience: "", goal: "", narrative: "", styleContract: styleContract(), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] },
-            pageSpecs: [
-                {
-                    pageId: "page-1",
-                    version: 1,
-                    sourceRefs: [{ source: "material", excerpt: "测试提示词", startLine: 1, endLine: 1 }],
-                    lockedCopy: ["测试提示词"],
-                    lockedFacts: [],
-                    message: "第一页",
-                    layoutRole: "cover",
-                    layoutIntent: [],
-                    assetRefs: [],
-                    freedom: "可在不改变锁定内容的前提下优化视觉组织",
-                    requiresReview: false,
-                },
-            ],
+            pages: [{ pageId: "page-1", index: 1, takes: [{ takeId: "take-1", anchorNodeId: "anchor", configNodeId: "config" }] }],
+            deckBrief: structuredDeckBrief(),
+            pageSpecs: [pageSpec],
             compilationSnapshots: [],
-            mode: "outline",
         },
     };
 }
 
 function compilerProject(suffix) {
+    const pageSpec = structuredPageSpec("page-1", "关键指标", "设备在线率 98.5%");
     const partial = buildPptDeckProject({
+        compilePolicy: "structured",
         title: "Compiler durable gate",
         sourceMaterial: "关键指标\n设备在线率 98.5%",
         requirements: "目标：保留关键事实",
-        styleContract: styleContract("专业咨询风"),
-        pages: [{ title: "关键指标", outline: "关键指标\n设备在线率 98.5%", visualHint: "" }],
-        mode: "extract",
+        deckBrief: structuredDeckBrief("专业咨询风", "关键指标\n设备在线率 98.5%", "目标：保留关键事实"),
+        pageSpecs: [pageSpec],
     });
     return {
         id: `project-${suffix}`,
@@ -1102,22 +1113,10 @@ function attachCandidateLineage(project, candidate) {
 
 function generationPlan(count, suffix) {
     const createdAt = "2026-07-21T00:00:00.000Z";
-    const deckBrief = { version: 1, audience: "", goal: "", narrative: "", styleContract: styleContract(), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
-    const pageSpec = {
-        pageId: "page-1",
-        version: 1,
-        sourceRefs: [{ source: "material", excerpt: "测试提示词", startLine: 1, endLine: 1 }],
-        lockedCopy: ["测试提示词"],
-        lockedFacts: [],
-        message: "第一页",
-        layoutRole: "cover",
-        layoutIntent: [],
-        assetRefs: [],
-        freedom: "可在不改变锁定内容的前提下优化视觉组织",
-        requiresReview: false,
-    };
-    const target = { pageId: "page-1", takeId: "take-1", semanticText: "测试提示词", layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, extraTexts: [], override: undefined, overrideConfirmed: false };
-    const compilation = compilePptPromptSnapshot({ snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], targets: [target] });
+    const deckBrief = structuredDeckBrief();
+    const pageSpec = structuredPageSpec("page-1", "第一页", "测试提示词");
+    const target = { pageId: "page-1", takeId: "take-1", semanticText: structuredPageText(pageSpec), layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, extraTexts: [], override: undefined, overrideConfirmed: false };
+    const compilation = compilePptPromptSnapshot({ compilePolicy: "structured", snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], targets: [target] });
     const prompt = compilation.prompts[0].finalPrompt;
     const rootNodeId = `root-${suffix}`;
     const requestNodeIds = count === 1 ? [rootNodeId] : Array.from({ length: count }, (_, index) => `slot-${suffix}-${index}`);
@@ -1177,13 +1176,15 @@ function projectWithRequest(suffix, { status, remoteTaskId, pageId = "page-1", t
     if (pageId !== "page-1" || takeId !== "take-1") {
         const anchorNodeId = `anchor-${suffix}`;
         configNodeId = `config-${suffix}`;
+        const pageSpec = structuredPageSpec(pageId, "跨页", "跨页测试提示词", "content");
+        const pageText = structuredPageText(pageSpec);
         project.nodes.push(
-            canvasNode(anchorNodeId, "text", { content: "跨页测试提示词", status: "success", pptPageId: pageId, pptTakeId: takeId, pptPageIndex: pageIndex, pptRole: "outline" }),
-            canvasNode(configNodeId, "config", { prompt: "跨页测试提示词", status: "success", model: "fake-image", count: 1, pptPageId: pageId, pptTakeId: takeId, pptPageIndex: pageIndex }),
+            canvasNode(anchorNodeId, "text", { content: pageText, status: "success", pptPageId: pageId, pptTakeId: takeId, pptPageIndex: pageIndex, pptRole: "outline" }),
+            canvasNode(configNodeId, "config", { prompt: "", pptLayoutPrompt: PPT_PAGE_PROMPT, status: "success", model: "fake-image", count: 1, pptPageId: pageId, pptTakeId: takeId, pptPageIndex: pageIndex }),
         );
         project.connections.push({ id: `${anchorNodeId}-${configNodeId}`, fromNodeId: anchorNodeId, toNodeId: configNodeId });
-        project.ppt.pages.push({ pageId, index: pageIndex, title: "跨页", outline: "跨页测试提示词", visualHint: "", takes: [{ takeId, anchorNodeId, configNodeId }] });
-        project.ppt.pageSpecs.push({ ...project.ppt.pageSpecs[0], pageId, message: "跨页" });
+        project.ppt.pages.push({ pageId, index: pageIndex, takes: [{ takeId, anchorNodeId, configNodeId }] });
+        project.ppt.pageSpecs.push(pageSpec);
     }
     project.nodes.push(
         canvasNode(`root-${suffix}`, "image", {

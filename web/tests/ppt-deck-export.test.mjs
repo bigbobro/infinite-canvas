@@ -8,12 +8,14 @@ let inspectPptDeckExport;
 let resolvePptCandidateCompilationSnapshot;
 let setPptPageConfirmedNode;
 let compilePptPromptSnapshot;
+let hashPptContentSource;
 
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ inspectPptDeckExport } = await vite.ssrLoadModule("/src/lib/ppt/deck-export.ts"));
     ({ resolvePptCandidateCompilationSnapshot, setPptPageConfirmedNode } = await vite.ssrLoadModule("/src/lib/ppt/page-confirmation.ts"));
     ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
+    ({ hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
 });
 
 after(async () => {
@@ -48,6 +50,39 @@ test("页序按 index 解析，混合比例只阻止 PPTX", async () => {
     assert.equal(inspection.pptxReady, false);
     assert.deepEqual(inspection.pages[0].pptxIssues, []);
     assert.match(inspection.pages[1].pptxIssues[0], /比例.*第 1 页不一致/);
+});
+
+test("内容规格与页面账本身份漂移时，全 deck 不读取 Blob", async () => {
+    const project = projectWithPages([1, 2]);
+    project.ppt.pageSpecs[1].pageId = "drifted-page";
+    const harness = dependencies({ 1: [1600, 900], 2: [1600, 900] });
+
+    const inspection = await inspectPptDeckExport(project, harness.dependencies);
+
+    assert.equal(inspection.ready, false);
+    assert.deepEqual(harness.blobCalls, []);
+    assert.ok(inspection.pages.every((item) => item.descriptor.status === "invalid"));
+    assert.match(inspection.pages[0].issues[0], /内容规格待修复/);
+});
+
+test("逐字工程缺失 VerbatimSpec 时，全 deck 不读取 Blob", async () => {
+    const project = projectWithPages([1, 2]);
+    project.ppt = {
+        compilePolicy: "verbatim",
+        sourceMaterial: project.ppt.sourceMaterial,
+        requirements: project.ppt.requirements,
+        pages: project.ppt.pages,
+        compilationSnapshots: [],
+        verbatimSpecs: [{ pageId: "page-1", version: 1, title: "页面 A", exactText: pageSemantic(1), origin: { kind: "user_edited" } }],
+    };
+    const harness = dependencies({ 1: [1600, 900], 2: [1600, 900] });
+
+    const inspection = await inspectPptDeckExport(project, harness.dependencies);
+
+    assert.equal(inspection.ready, false);
+    assert.deepEqual(harness.blobCalls, []);
+    assert.ok(inspection.pages.every((item) => item.descriptor.status === "invalid"));
+    assert.match(inspection.pages[1].issues[0], /VerbatimSpec|内容规格/);
 });
 
 test("缺失和读取失败的 Blob 按页分别诊断", async () => {
@@ -355,7 +390,8 @@ function compiledPrompt(project, pageId, takeId) {
 }
 
 function pageSemantic(index) {
-    return `页面${String.fromCharCode(64 + index)}已编译`;
+    const label = String.fromCharCode(64 + index);
+    return `页面${label}\n页面${label}已编译`;
 }
 
 function convertPageCandidateToBatch(project, index, { omitSecond = false, secondSlot = 1, secondStatus = "completed", runStatus = secondStatus === "completed" ? "completed" : "partial" } = {}) {
@@ -415,14 +451,12 @@ function projectWithPages(indices) {
     const pages = indices.map((index) => ({
         pageId: `page-${index}`,
         index,
-        title: `第${index}页`,
-        outline: pageSemantic(index),
-        visualHint: "",
         confirmedNodeId: `candidate-${index}`,
         takes: [{ takeId: `take-${index}`, anchorNodeId: `anchor-${index}`, configNodeId: `config-${index}` }],
     }));
     const deckBrief = {
         version: 1,
+        sourceHash: hashPptContentSource("", ""),
         audience: "",
         goal: "",
         narrative: "",
@@ -431,19 +465,28 @@ function projectWithPages(indices) {
         forbiddenRules: [],
         lockedDeckFacts: [],
     };
-    const pageSpecs = indices.map((index) => ({
-        pageId: `page-${index}`,
-        version: 1,
-        sourceRefs: [],
-        lockedCopy: [pageSemantic(index)],
-        lockedFacts: [],
-        message: `第${index}页`,
-        layoutRole: index === indices[0] ? "cover" : "content",
-        layoutIntent: [],
-        assetRefs: [],
-        freedom: "可在不改变锁定内容的前提下优化视觉组织",
-        requiresReview: false,
-    }));
+    const pageSpecs = indices.map((index) => {
+        const label = String.fromCharCode(64 + index);
+        const sourceRefId = `page-${index}:source`;
+        return {
+            pageId: `page-${index}`,
+            version: 1,
+            purpose: "验证 PPT 页面导出",
+            contentForm: index === indices[0] ? "cover" : "narrative",
+            sourceRefs: [{ id: sourceRefId, source: "confirmed_assumption", excerpt: pageSemantic(index) }],
+            contentBlocks: [
+                { id: `page-${index}:title`, kind: "title", text: `页面${label}`, sourceRefIds: [sourceRefId] },
+                { id: `page-${index}:claim`, kind: "primary_claim", text: `页面${label}已编译`, sourceRefIds: [sourceRefId] },
+            ],
+            contentState: { status: "approved", approvedAt: "2026-07-21T00:00:00.000Z" },
+            lockedFacts: [],
+            layoutRole: index === indices[0] ? "cover" : "content",
+            layoutIntent: [],
+            visualEncoding: [],
+            assetRefs: [],
+            freedom: "只允许在已批准内容内优化视觉组织",
+        };
+    });
     const targets = indices.map((index) => ({
         pageId: `page-${index}`,
         takeId: `take-${index}`,
@@ -453,6 +496,7 @@ function projectWithPages(indices) {
         extraTexts: [],
     }));
     const compilation = compilePptPromptSnapshot({
+        compilePolicy: "structured",
         snapshotId: "snapshot-deck",
         compiledAt: "2026-07-21T00:00:00.000Z",
         deckBrief,
@@ -488,6 +532,7 @@ function projectWithPages(indices) {
         showImageInfo: false,
         viewport: { x: 0, y: 0, k: 1 },
         ppt: {
+            compilePolicy: "structured",
             sourceMaterial: "",
             requirements: "",
             pages,
