@@ -8,6 +8,7 @@ let inspectPptDeckExport;
 let resolvePptCandidateCompilationSnapshot;
 let setPptPageConfirmedNode;
 let compilePptPromptSnapshot;
+let createPptVisualDirectionPresetContract;
 let hashPptContentSource;
 
 before(async () => {
@@ -16,6 +17,7 @@ before(async () => {
     ({ resolvePptCandidateCompilationSnapshot, setPptPageConfirmedNode } = await vite.ssrLoadModule("/src/lib/ppt/page-confirmation.ts"));
     ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
+    ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
 });
 
 after(async () => {
@@ -457,10 +459,11 @@ function projectWithPages(indices) {
     const deckBrief = {
         version: 1,
         sourceHash: hashPptContentSource("", ""),
+        contentRevision: `${hashPptContentSource("", "")}:r1`,
         audience: "",
         goal: "",
         narrative: "",
-        styleContract: { source: { kind: "custom" }, direction: "清晰专业的报告视觉", references: [] },
+        styleContract: createPptVisualDirectionPresetContract("clean-report"),
         globalRules: [],
         forbiddenRules: [],
         lockedDeckFacts: [],

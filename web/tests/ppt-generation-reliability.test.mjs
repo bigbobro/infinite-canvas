@@ -11,6 +11,7 @@ let hasPptRepeatBillingRisk;
 let buildPptDeckProject;
 let createGenerationPlan;
 let createPptCandidateEditPlan;
+let createPptVisualDirectionPresetContract;
 let compilePptPromptSnapshot;
 let derivePptLockedFacts;
 let PPT_PAGE_PROMPT;
@@ -33,6 +34,7 @@ before(async () => {
     ({ buildPptDeckProject } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
     ({ buildPptGenerationNotificationHref } = await vite.ssrLoadModule("/src/pages/canvas/hooks/use-ppt-generation-module.ts"));
+    ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
 });
 
 after(async () => {
@@ -517,7 +519,7 @@ test("快照之后视觉方向 Contract 已升版时旧计划 POST 次数为 0",
     project.ppt.deckBrief = {
         ...project.ppt.deckBrief,
         version: project.ppt.deckBrief.version + 1,
-        styleContract: { source: { kind: "custom" }, direction: "新的视觉方向", references: [] },
+        styleContract: styleContract("新的视觉方向"),
     };
     const harness = createHarness(project);
 
@@ -577,7 +579,7 @@ test("POST 前视觉方向 Contract 才升版时明确失败且 POST 为 0", asy
                         deckBrief: {
                             ...current.ppt.deckBrief,
                             version: current.ppt.deckBrief.version + 1,
-                            styleContract: { source: { kind: "custom" }, direction: "迟到的视觉方向", references: [] },
+                            styleContract: styleContract("迟到的视觉方向"),
                         },
                     },
                 }),
@@ -796,7 +798,7 @@ test("已有 task ID 在 Contract 变化后仍只 resume 原任务", async () =>
     project.ppt.deckBrief = {
         ...project.ppt.deckBrief,
         version: project.ppt.deckBrief.version + 1,
-        styleContract: { source: { kind: "custom" }, direction: "恢复时的新视觉方向", references: [] },
+        styleContract: styleContract("恢复时的新视觉方向"),
     };
     const harness = createHarness(project);
     const recovered = await createPptGenerationModule(harness.dependencies).recover({ type: "reconcileProject" });
@@ -963,11 +965,15 @@ test("远端成功但结果不可取时持久化重复计费风险", async () =>
 });
 
 function styleContract(direction = "清晰专业的报告视觉") {
-    return { source: { kind: "custom" }, direction, references: [] };
+    const contract = createPptVisualDirectionPresetContract("clean-report");
+    contract.source = { kind: "custom" };
+    contract.modelStyle.mood = [direction];
+    return contract;
 }
 
 function structuredDeckBrief(direction = "清晰专业的报告视觉", sourceMaterial = "测试材料", requirements = "") {
-    return { version: 1, sourceHash: hashPptContentSource(sourceMaterial, requirements), audience: "", goal: "", narrative: "", styleContract: styleContract(direction), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
+    const sourceHash = hashPptContentSource(sourceMaterial, requirements);
+    return { version: 1, sourceHash, contentRevision: `${sourceHash}:r1`, audience: "", goal: "", narrative: "", styleContract: styleContract(direction), globalRules: [], forbiddenRules: [], lockedDeckFacts: [] };
 }
 
 function structuredPageSpec(pageId, title, claim, layoutRole = "cover") {

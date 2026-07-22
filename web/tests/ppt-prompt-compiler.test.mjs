@@ -13,8 +13,10 @@ let derivePptLockedFacts;
 let derivePptStyleRules;
 let renderPptPageSpecText;
 let createGenerationPlan;
+let createPptVisualDirectionPresetContract;
 let assertGenerationPlanCompilation;
 let applyGenerationPlanPptOps;
+let setPptPageConfirmedNode;
 let defaultConfig;
 let hasBlockingCompilationIssues;
 let hashPptContentSource;
@@ -25,6 +27,8 @@ before(async () => {
     ({ derivePptLockedFacts, renderPptPageSpecText } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
     ({ buildPptDeckProject, hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ createGenerationPlan, assertGenerationPlanCompilation, applyGenerationPlanPptOps } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
+    ({ setPptPageConfirmedNode } = await vite.ssrLoadModule("/src/lib/ppt/page-confirmation.ts"));
+    ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
 });
 
@@ -41,7 +45,7 @@ test("8 页结构化规格按输入顺序建立 canonical PageSpec", () => {
     );
     assert.equal(pageSpecs.length, 8);
     assert.equal(deckBrief.audience, "集团管理层");
-    assert.equal(deckBrief.styleContract.direction, fixture.styleDescription);
+    assert.deepEqual(deckBrief.styleContract.modelStyle.mood, fixture.styleDescription.split("\n"));
     assert.ok(pageSpecs.every((pageSpec) => pageSpec.contentState.status === "approved"));
     assert.ok(pageSpecs.every((pageSpec) => pageSpec.sourceRefs[0].source === "material"));
     assert.ok(pageSpecs.every((pageSpec) => Number.isInteger(pageSpec.sourceRefs[0].startLine)));
@@ -135,7 +139,7 @@ test("Compiler 把已批准文案按语义块编译，并允许无文字视觉�
     const comparisonPrompt = compilePptPromptSnapshot(snapshotInputForPage(deckBrief, comparison, "take-comparison")).prompts[0].finalPrompt;
     assert.notEqual(comparisonPrompt, prompt);
     assert.match(comparisonPrompt, /按可对齐的维度并列表达差异与取舍/);
-    assert.doesNotMatch(comparisonPrompt, /配色|字体|背景色/);
+    assert.match(comparisonPrompt, /【整套视觉系统】/);
 });
 
 test("视觉方向 Contract 中的禁止项只进入禁止段，不在视觉方向中重复", () => {
@@ -155,7 +159,8 @@ test("视觉方向 Contract 中的禁止项只进入禁止段，不在视觉方�
     });
 
     assert.equal(snapshot.prompts[0].finalPrompt.split("禁止渐变").length - 1, 1);
-    assert.match(snapshot.prompts[0].finalPrompt, /【视觉方向】\n专业咨询报告风\n深蓝配色/);
+    assert.match(snapshot.prompts[0].finalPrompt, /【整套视觉系统】/);
+    assert.match(snapshot.prompts[0].finalPrompt, /专业咨询报告风、深蓝配色/);
     assert.equal("styleTexts" in snapshot.targets[0], false);
     assert.equal(
         snapshot.issues.some((issue) => issue.code === "duplicate_instruction"),
@@ -523,7 +528,7 @@ test("参考图只改变请求类型与输入快照，不改变编译后提示�
     }
 });
 
-test("首页锚定开关只为后续页增加图片参考，不改变后续页提示词", () => {
+test("代表页校样只为其余页面增加图片参考，不改变页面提示词", () => {
     const { deckBrief, pageSpecs } = modelForFixturePages(["page-1", "page-4"]);
     const partial = buildPptDeckProject({
         compilePolicy: "structured",
@@ -543,18 +548,19 @@ test("首页锚定开关只为后续页增加图片参考，不改变后续页�
         showImageInfo: false,
         ...partial,
     };
-    const secondPage = project.ppt.pages[1];
     const directPlan = createGenerationPlan({ kind: "startBatch", anchorFirst: false }, { project, effectiveConfig: defaultConfig });
-    const directRun = directPlan.runs.find((run) => run.pageId === secondPage.pageId);
-    const firstPage = project.ppt.pages[0];
-    const firstTake = firstPage.takes[0];
-    const firstRun = directPlan.runs.find((run) => run.pageId === firstPage.pageId);
-    const firstRequest = firstRun.requests[0];
-    const firstCompiledPrompt = directPlan.compilation.prompts.find((prompt) => prompt.pageId === firstPage.pageId && prompt.takeId === firstTake.takeId).finalPrompt;
+    const proofPlan = createGenerationPlan({ kind: "startBatch", anchorFirst: true }, { project, effectiveConfig: defaultConfig });
+    const proofRun = proofPlan.runs[0];
+    const proofPage = project.ppt.pages.find((page) => page.pageId === proofRun.pageId);
+    const proofTake = proofPage.takes.find((take) => take.takeId === proofRun.takeId);
+    const proofRequest = proofRun.requests[0];
+    const proofCompiledPrompt = proofPlan.compilation.prompts.find((prompt) => prompt.pageId === proofPage.pageId && prompt.takeId === proofTake.takeId).finalPrompt;
+    const remainingPage = project.ppt.pages.find((page) => page.pageId !== proofPage.pageId);
+    const directRun = directPlan.runs.find((run) => run.pageId === remainingPage.pageId);
     const candidate = {
-        id: "compiler-anchor-candidate",
+        id: proofRun.rootNodeId,
         type: "image",
-        title: "首页锚定",
+        title: "代表页校样",
         position: { x: 0, y: 0 },
         width: 320,
         height: 180,
@@ -562,53 +568,49 @@ test("首页锚定开关只为后续页增加图片参考，不改变后续页�
             content: "data:image/png;base64,AA==",
             storageKey: "image:compiler-anchor",
             mimeType: "image/png",
-            prompt: firstCompiledPrompt,
+            prompt: proofCompiledPrompt,
             status: "success",
-            pptPageId: firstPage.pageId,
-            pptTakeId: firstTake.takeId,
-            pptPageIndex: firstPage.index,
+            pptPageId: proofPage.pageId,
+            pptTakeId: proofTake.takeId,
+            pptPageIndex: proofPage.index,
             pptGenerationRequest: {
-                requestId: firstRequest.requestId,
-                runId: firstRun.runId,
-                batchId: directPlan.batchId,
-                pageId: firstPage.pageId,
-                takeId: firstTake.takeId,
-                slotIndex: firstRequest.slotIndex,
-                requestType: firstRequest.requestType,
-                model: firstRequest.model,
-                providerIdentity: firstRequest.providerIdentity,
-                compilationSnapshotId: directPlan.compilation.snapshotId,
+                requestId: proofRequest.requestId,
+                runId: proofRun.runId,
+                batchId: proofPlan.batchId,
+                pageId: proofPage.pageId,
+                takeId: proofTake.takeId,
+                slotIndex: proofRequest.slotIndex,
+                requestType: proofRequest.requestType,
+                model: proofRequest.model,
+                providerIdentity: proofRequest.providerIdentity,
+                compilationSnapshotId: proofPlan.compilation.snapshotId,
                 status: "completed",
-                createdAt: directPlan.createdAt,
-                updatedAt: directPlan.createdAt,
+                createdAt: proofPlan.createdAt,
+                updatedAt: proofPlan.createdAt,
                 recentEvents: [],
             },
             pptGenerationRun: {
-                runId: firstRun.runId,
-                batchId: directPlan.batchId,
-                pageId: firstPage.pageId,
-                takeId: firstTake.takeId,
-                requestIds: [firstRequest.requestId],
+                runId: proofRun.runId,
+                batchId: proofPlan.batchId,
+                pageId: proofPage.pageId,
+                takeId: proofTake.takeId,
+                requestIds: [proofRequest.requestId],
                 plannedCount: 1,
                 status: "completed",
-                createdAt: directPlan.createdAt,
-                updatedAt: directPlan.createdAt,
+                createdAt: proofPlan.createdAt,
+                updatedAt: proofPlan.createdAt,
             },
         },
     };
-    const anchoredProject = {
+    const withCandidate = {
         ...project,
         nodes: [...project.nodes, candidate],
-        connections: [...project.connections, { id: "compiler-anchor-output", fromNodeId: firstTake.configNodeId, toNodeId: candidate.id }],
-        ppt: {
-            ...project.ppt,
-            compilationSnapshots: [...project.ppt.compilationSnapshots, directPlan.compilation],
-            skipAnchor: false,
-            pages: project.ppt.pages.map((page) => (page.pageId === firstPage.pageId ? { ...page, confirmedNodeId: candidate.id } : page)),
-        },
+        connections: [...project.connections, { id: "compiler-anchor-output", fromNodeId: proofTake.configNodeId, toNodeId: candidate.id }],
+        ppt: applyGenerationPlanPptOps(project.ppt, proofPlan.pptOps),
     };
+    const anchoredProject = { ...withCandidate, ppt: setPptPageConfirmedNode(withCandidate, proofPage.pageId, candidate.id) };
     const anchoredPlan = createGenerationPlan({ kind: "generateRest" }, { project: anchoredProject, effectiveConfig: defaultConfig });
-    const anchoredRun = anchoredPlan.runs.find((run) => run.pageId === secondPage.pageId);
+    const anchoredRun = anchoredPlan.runs.find((run) => run.pageId === remainingPage.pageId);
     const directRequest = directRun.requests[0];
     const anchoredRequest = anchoredRun.requests[0];
 
@@ -666,10 +668,11 @@ function modelForFixturePages(pageIds) {
     const deckBrief = {
         version: 1,
         sourceHash: hashPptContentSource(fixture.sourceMaterial, fixture.requirements),
+        contentRevision: `${hashPptContentSource(fixture.sourceMaterial, fixture.requirements)}:r1`,
         audience: "集团管理层",
         goal: "在8页内形成可决策的工业智能方案",
         narrative: "判断、原则、指标、路径、行动",
-        styleContract: styleContract(styleRules.direction),
+        styleContract: styleContract(fixture.styleDescription),
         globalRules: ["保留全部数据"],
         forbiddenRules: styleRules.forbiddenRules,
         lockedDeckFacts: [],
@@ -691,15 +694,16 @@ function modelForFixturePages(pageIds) {
 }
 
 function singlePageModel({ pageId, title, text, requirements = "", styleContract: contract = styleContract(), layoutIntent = [], globalRules = [], forbiddenRules, sourceMaterial = text }) {
-    const styleRules = derivePptStyleRules(requirements, contract.direction);
+    const styleRules = derivePptStyleRules(requirements);
     return {
         deckBrief: {
             version: 1,
             sourceHash: hashPptContentSource(sourceMaterial, requirements),
+            contentRevision: `${hashPptContentSource(sourceMaterial, requirements)}:r1`,
             audience: "",
             goal: "",
             narrative: "",
-            styleContract: { ...contract, direction: styleRules.direction },
+            styleContract: contract,
             globalRules,
             forbiddenRules: forbiddenRules ?? styleRules.forbiddenRules,
             lockedDeckFacts: [],
@@ -786,7 +790,15 @@ function snapshotInputForPage(deckBrief, pageSpec, takeId) {
 }
 
 function styleContract(direction = "清晰专业的报告视觉") {
-    return { source: { kind: "custom" }, direction, references: [] };
+    const contract = createPptVisualDirectionPresetContract("clean-report");
+    contract.source = { kind: "custom" };
+    const lines = direction
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    contract.modelStyle.mood = lines.filter((line) => !/(?:不要|禁止|不得|避免)/.test(line));
+    contract.modelStyle.forbiddenRules = lines.filter((line) => /(?:不要|禁止|不得|避免)/.test(line));
+    return contract;
 }
 
 function promptFor(snapshot, pageId) {

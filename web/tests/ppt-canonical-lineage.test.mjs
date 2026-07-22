@@ -7,6 +7,7 @@ let assertGenerationPlanCompilation;
 let assertGenerationPlanCurrentTargets;
 let buildPptDeckProject;
 let createGenerationPlan;
+let createPptVisualDirectionPresetContract;
 let createPptGenerationModule;
 let defaultConfig;
 let hashPptSourceText;
@@ -22,6 +23,7 @@ before(async () => {
     ({ createPptGenerationModule } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
     ({ resolvePptCandidateCompilationSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/page-confirmation.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
+    ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
 });
 
 after(async () => {
@@ -206,8 +208,8 @@ test("structured 候选稿不能在全局来源或 PageSpec 变更后继续确�
     assert.throws(() => resolvePptCandidateCompilationSnapshot(briefDrift, candidateId), /全局内容规格已变化/);
 
     const styleOnlyDrift = structuredClone(durable);
-    styleOnlyDrift.ppt.deckBrief = { ...styleOnlyDrift.ppt.deckBrief, version: styleOnlyDrift.ppt.deckBrief.version + 1, styleContract: { source: { kind: "custom" }, direction: "用户改选的新视觉方向", references: [] } };
-    assert.equal(resolvePptCandidateCompilationSnapshot(styleOnlyDrift, candidateId).snapshotId, plan.compilation.snapshotId);
+    styleOnlyDrift.ppt.deckBrief = { ...styleOnlyDrift.ppt.deckBrief, version: styleOnlyDrift.ppt.deckBrief.version + 1, styleContract: createPptVisualDirectionPresetContract("visual-story") };
+    assert.throws(() => resolvePptCandidateCompilationSnapshot(styleOnlyDrift, candidateId), /全局内容规格已变化|视觉方向已变化/);
 });
 
 function planFor(project) {
@@ -245,10 +247,11 @@ function structuredProject(suffix) {
         deckBrief: {
             version: 1,
             sourceHash: hashPptContentSource(sourceMaterial, ""),
+            contentRevision: `${hashPptContentSource(sourceMaterial, "")}:r1`,
             audience: "项目伙伴",
             goal: "建立共同理解",
             narrative: "先讲价值，再讲行动",
-            styleContract: { source: { kind: "custom" }, direction: "清晰专业的报告视觉", references: [] },
+            styleContract: createPptVisualDirectionPresetContract("clean-report"),
             globalRules: [],
             forbiddenRules: [],
             lockedDeckFacts: [],

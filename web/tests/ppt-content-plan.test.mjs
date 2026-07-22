@@ -14,6 +14,7 @@ let buildPptDeckProject;
 let buildPptPageWorkspace;
 let compilePptPromptSnapshot;
 let createPptContentRepairPreview;
+let createPptVisualDirectionPresetContract;
 let derivePptLockedFacts;
 let finalizePptContentDraft;
 let hashPptSourceText;
@@ -52,6 +53,7 @@ before(async () => {
     ({ buildPptDeckProject, hashPptSourceText } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ applyPptCanonicalPageRewrite, applyPptCanonicalPageTextEdit, approvePptCanonicalPageContent, buildPptPageWorkspace, getPptCanonicalPageText } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
     ({ selectPptPageDescriptor } = await vite.ssrLoadModule("/src/lib/ppt/page-descriptor.ts"));
+    ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
 });
 
 after(async () => {
@@ -296,6 +298,9 @@ test("居中布局等纯几何要求可直接通过，仍不放行夹带事实",
 
     assert.equal(isPptLayoutIntentSupported(page, "居中布局"), true);
     assert.equal(isPptLayoutIntentSupported(page, "居中布局并突出服务器投入 999 台"), false);
+    assert.equal(isPptLayoutIntentSupported(page, "上方架构图，下方说明"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "上下分区"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "下方说明服务器投入 999 台"), false);
     assert.equal(
         validatePptContentDraft(draft).issues.some((issue) => issue.message === "页面排版要求包含未经批准的文案或事实"),
         false,
@@ -710,12 +715,12 @@ test("安全 repair 绑定 draft revision，过期 patch 原子失败", () => {
     const preview = createPptContentRepairPreview(draft, [issue.id]);
     const repaired = applyPptContentRepair(draft, preview);
     assert.deepEqual(repaired.pageSpecs[0].layoutIntent, ["左右分栏"]);
-    assert.ok(repaired.brief.visualSignals.includes("深蓝科技风"));
+    assert.deepEqual(repaired.brief.visualSignals, []);
     assert.throws(() => applyPptContentRepair(repaired, preview), /已变更|过期/);
 
     const finalized = finalizePptContentDraft(resolveAllGaps(draft), "2026-07-22T08:01:00.000Z");
     assert.deepEqual(finalized.pageSpecs[0].layoutIntent, ["左右分栏"]);
-    assert.ok(finalized.brief.visualSignals.includes("深蓝科技风"));
+    assert.deepEqual(finalized.brief.visualSignals, []);
 
     const combined = structuredClone(draft);
     combined.pageSpecs[0].layoutIntent = ["左右对比 · 深蓝科技风", "深蓝科技风，右侧突出服务器投入 999 台"];
@@ -746,8 +751,36 @@ test("安全 repair 绑定 draft revision，过期 patch 原子失败", () => {
         ),
     );
     assert.deepEqual(combinedRepaired.pageSpecs[0].layoutIntent, ["左右对比", "右侧突出服务器投入 999 台"]);
-    assert.deepEqual(combinedRepaired.brief.visualSignals, ["深蓝科技风"]);
+    assert.deepEqual(combinedRepaired.brief.visualSignals, []);
     assert.equal(validatePptContentDraft(combinedRepaired).valid, false);
+});
+
+test("内容阶段不会用 raw strip 删掉无法安全分离的信息构图", () => {
+    const raw = rawDraft();
+    raw.pages[0].layoutIntent = ["左右双栏使用深蓝背景", "对比表使用微软雅黑字体"];
+    const draft = normalizePptContentDraft(raw, sourceInput());
+    const styleIssues = draft.audit.issues.filter((issue) => issue.code === "deck_style_signal");
+    const safeIssue = styleIssues.find((issue) => issue.message.includes("深蓝背景"));
+    const unsafeIssue = styleIssues.find((issue) => issue.message.includes("微软雅黑"));
+
+    assert.ok(safeIssue?.repair);
+    assert.equal(unsafeIssue?.repair, undefined);
+    assert.deepEqual(
+        unsafeIssue?.actions.map((action) => action.kind),
+        ["regenerate_pages"],
+    );
+    const preview = createPptContentRepairPreview(
+        draft,
+        styleIssues.map((issue) => issue.id),
+    );
+    assert.equal(preview.operations.length, 1);
+    const repaired = applyPptContentRepair(draft, preview);
+    assert.deepEqual(repaired.pageSpecs[0].layoutIntent, ["左右双栏", "对比表使用微软雅黑字体"]);
+
+    const finalized = finalizePptContentDraft(resolveAllGaps(draft), "2026-07-22T08:01:00.000Z");
+    assert.deepEqual(finalized.pageSpecs[0].layoutIntent, ["左右双栏", "对比表使用微软雅黑字体"]);
+    assert.deepEqual(finalized.brief.visualSignals, []);
+    assert.equal(isPptLayoutIntentSupported(finalized.pageSpecs[0], "对比表使用微软雅黑字体"), true);
 });
 
 test("本地编辑 command 绑定 revision，不要求 UI 直接 spread PageSpec", () => {
@@ -1190,10 +1223,11 @@ function deckBriefFrom(brief) {
     return {
         version: 1,
         sourceHash: brief.sourceHash,
+        contentRevision: `${brief.sourceHash}:r${brief.version}`,
         audience: brief.audience,
         goal: brief.goal,
         narrative: brief.narrative,
-        styleContract: { source: { kind: "custom" }, direction: "清晰、专业、克制", references: [] },
+        styleContract: createPptVisualDirectionPresetContract("clean-report"),
         globalRules: [],
         forbiddenRules: [],
         lockedDeckFacts: [],

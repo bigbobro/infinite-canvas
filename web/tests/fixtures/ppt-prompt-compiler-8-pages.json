@@ -9,7 +9,7 @@
             "takeId": "take-1",
             "title": "工业智能增长方案",
             "content": "工业智能增长方案\n副标题：从设备连接到持续收益",
-            "layoutIntent": "标题居中"
+            "layoutIntent": "整页居中"
         },
         {
             "pageId": "page-2",
