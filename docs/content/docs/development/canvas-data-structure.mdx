@@ -70,19 +70,57 @@ PPT 工程以 `compilePolicy` 区分两类互不兜底的 canonical 内容；页
 
 ```ts
 type CanvasProjectPptStyleContract = {
+  schemaVersion: 1;
   source:
     | {
         kind: "preset";
         presetId: "clean-report" | "visual-story" | "brand-led";
       }
+    | { kind: "generated"; candidateId: string }
     | { kind: "custom" };
-  direction: string;
+  modelStyle: {
+    mood: string[];
+    density: "airy" | "balanced" | "dense";
+    palette: {
+      background: string;
+      surface: string;
+      text: string;
+      mutedText: string;
+      primary: string;
+      accent: string;
+    };
+    typography: {
+      headingClass: "sans" | "serif" | "display";
+      bodyClass: "sans" | "serif";
+      hierarchy: "quiet" | "balanced" | "strong";
+      brandFontHint?: string;
+    };
+    shell: {
+      safeArea: "compact" | "regular" | "generous";
+      titleRegion: "top-left" | "top-center" | "center";
+      header: "none" | "deck-title" | "section-label";
+      footer: "none" | "page-number" | "deck-title-and-page-number";
+    };
+    graphicLanguage: {
+      card: string;
+      chart: string;
+      icon: string;
+      illustration: string;
+      imageTreatment: string;
+    };
+    roleMasters: Record<
+      "cover" | "section" | "content" | "evidence" | "comparison" | "close",
+      string
+    >;
+    forbiddenRules: string[];
+  };
   references: Array<{ storageKey: string }>;
 };
 
 type CanvasProjectPptDeckBrief = {
   version: number;
   sourceHash: string;
+  contentRevision: string;
   audience: string;
   goal: string;
   narrative: string;
@@ -174,6 +212,14 @@ type CanvasProjectPptBase = {
   pages: CanvasProjectPptPage[];
   compilationSnapshots: CanvasProjectPptCompilationSnapshot[];
   anchorConfirmed?: boolean;
+  styleProofPageId?: string;
+  styleProof?: {
+    pageId: string;
+    candidateNodeId: string;
+    styleFingerprint: string;
+    contentRevision: string;
+  };
+  styleProofCandidateIds?: string[];
   skipAnchor?: boolean;
 };
 
@@ -198,6 +244,7 @@ type CanvasProjectPptCompilationSnapshot =
           compilePolicy: "structured";
           deckBriefVersion: number;
           pageSpecsVersion: number;
+          styleFingerprint: string;
           deckBrief: CanvasProjectPptDeckBrief;
           pageSpecs: CanvasProjectPptPageSpec[];
         }
@@ -209,12 +256,14 @@ type CanvasProjectPptCompilationSnapshot =
     );
 ```
 
-- `deckBrief.styleContract` 是唯一可编辑的 deck 级视觉事实源。`presetId` 只记录选择来源，真正参与 Compiler 的是当时冻结的 `direction`。
+- `deckBrief.styleContract` 是唯一可编辑的 deck 级视觉事实源。preset/candidate ID 只记录选择来源；Compiler 只消费冻结的 `modelStyle` 并编译为全局规则、六类角色母版和 `styleFingerprint`。
 - `styleContract.references` 只保存本地图片 `storageKey`，不会为参考图伪造画布节点。图片清理会把这些 key 计入使用集合。
+- 视觉检查同时审查 Contract、`globalRules`、PageSpec 和当前方案构图。页级字体、背景、色板或气质覆盖会 fail-closed；确定性 repair patch 必须绑定 action ID、draft revision 和 review fingerprint，应用前重算全部 operation。
 - structured 的标题、核心信息和其他正文都在 `contentBlocks`；每个非占位块必须引用能支持该文字的 `sourceRef`。`DeckBrief.sourceHash` 将整套受众、目标和叙事定位绑定到生成内容方案时的 material + requirements；页级来源则在 Builder、生成计划和 provider POST 前重新按行号切片并比对 excerpt。任一层漂移或 `contentState` 未到 `approved` 都会阻断生成。
 - `PageSpec.layoutRole` 是页级职责，和只作用于当前方案的排版要求分开保存；`layoutIntent` 只能表达几何布局，`visualEncoding` 只能表达如何区分、强调、排序、分组或展示关系，两者都不能携带新的可见文案或事实。内容改写、占位或不呈现时，对应的 `lockedMapping` 和失效编码必须同步裁剪。
 - verbatim 的 `exactText` 是唯一正文来源；原文切片必须带匹配的 source hash 和合法行号，用户明确编辑后改记 `user_edited`。`confirmedGlobalSpec` 只有经用户确认才逐字附加，不存在默认 Style Contract。
 - Contract 真正变化会提升 DeckBrief 版本并清除全部页面确认；页面职责或布局变化只提升目标 PageSpec 版本并清除目标页确认。两者都保留方案、候选和 `compilationSnapshots`。
+- 代表性风格校样用 `styleProof` 绑定已确认候选、Contract fingerprint 和内容版本；`styleProofCandidateIds` 记录历史校样身份。生成其余页只能引用当前校样且恰好一次，“直接生成全部”排除所有历史校样。
 - 项目不读取旧 `mode`、页面 `title/outline/visualHint` 或节点文本作为 canonical 兼容路径；缺少 `compilePolicy` 的旧结构只能安全显示为待修复，不能进入生成或导出。
 
 structured 新建向导在工程落盘前使用临时内容草稿承载缺口与审核：
