@@ -133,6 +133,7 @@ function compileVerbatimSnapshot(input: Extract<CompilePptPromptSnapshotInput, {
 
 function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: CanvasProjectPptPageSpec | undefined, target: PptCompilationTarget) {
     const pageContent = pageSpec ? renderPptPageSpecText(pageSpec) : "";
+    const promptPageContent = pageSpec ? renderPptPromptBlocks(pageSpec) : "";
     const globalRules = deckBrief.globalRules.filter((instruction) => !findPptVisualDirectionInstructions(instruction).length);
     const layoutInstructions = unique(
         [...(pageSpec?.layoutIntent || []), ...target.layoutIntent].filter((instruction) => !findPptVisualDirectionInstructions(instruction).length && Boolean(pageSpec && isSupportedLayoutInstruction(pageSpec, instruction))),
@@ -140,7 +141,8 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
     const forbiddenStyle = new Set(deckBrief.forbiddenRules.flatMap(meaningfulLines).map(normalize));
     const styleInstructions = unique(meaningfulLines(deckBrief.styleContract.direction).filter((instruction) => !forbiddenStyle.has(normalize(instruction)) && !FORBIDDEN_PATTERN.test(instruction)));
     const roleInstruction = pageSpec && isPptLayoutRole(pageSpec.layoutRole) ? getPptLayoutRoleInstruction(pageSpec.layoutRole) : "";
-    const encodingInstructions = pageSpec ? pageSpec.visualEncoding.map(visualEncodingInstruction) : [];
+    const structureInstructions = pageSpec ? pptContentStructureInstructions(pageSpec) : [];
+    const encodingInstructions = pageSpec ? pageSpec.visualEncoding.map((encoding) => visualEncodingInstruction(encoding, pageSpec)) : [];
     const visibleDeckBlocks = [deckBrief.audience, deckBrief.goal, deckBrief.narrative, ...globalRules];
     const globalFactLines = unique(deckBrief.lockedDeckFacts.filter((fact) => !visibleDeckBlocks.some((block) => containsFragment(block, fact.value))).map((fact) => fact.sourceExcerpt || fact.value));
     const sections: Array<[string, string[]]> = [
@@ -150,7 +152,8 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
         ["全局规则", globalRules],
         ["全局锁定事实", globalFactLines],
         ["禁止项", deckBrief.forbiddenRules],
-        ["本页内容", [pageContent]],
+        ["本页内容", [promptPageContent]],
+        ["内容结构", structureInstructions],
         ["页面职责", [roleInstruction]],
         ["信息表达", encodingInstructions],
         ["本页布局", layoutInstructions],
@@ -164,15 +167,54 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
     return {
         finalPrompt,
         pageContent,
-        requiredInstructions: unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, roleInstruction, ...encodingInstructions, ...layoutInstructions, ...styleInstructions, pageSpec?.freedom || ""]),
+        requiredInstructions: unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, roleInstruction, ...structureInstructions, ...encodingInstructions, ...layoutInstructions, ...styleInstructions, pageSpec?.freedom || ""]),
     };
 }
 
-function visualEncodingInstruction(encoding: CanvasProjectPptPageSpec["visualEncoding"][number]) {
+function renderPptPromptBlocks(pageSpec: CanvasProjectPptPageSpec) {
+    return pageSpec.contentBlocks
+        .filter((block) => block.kind !== "placeholder")
+        .map((block, index) => `[B${index + 1} · ${pptBlockRole(block.kind)}] ${block.text}`)
+        .join("\n");
+}
+
+function pptBlockRole(kind: CanvasProjectPptPageSpec["contentBlocks"][number]["kind"]) {
+    return {
+        title: "标题",
+        primary_claim: "核心信息",
+        supporting_claim: "支持判断",
+        body: "正文",
+        list: "要点列表",
+        table: "表格内容",
+        chart_data: "图表数据",
+        placeholder: "占位",
+    }[kind];
+}
+
+function pptContentStructureInstructions(pageSpec: CanvasProjectPptPageSpec) {
+    const formInstruction = {
+        cover: "以主标题和核心信息建立开场层级，不把封面做成正文页。",
+        comparison: "按可对齐的维度并列表达差异与取舍，不用连续段落代替对比关系。",
+        architecture: "用节点、分层与连线表达系统组成和交互关系。",
+        process: "按时序或因果将已批准步骤组织成连续流程。",
+        timeline: "沿单一时间轴组织里程碑，保持先后关系清晰。",
+        data: "以关键数据为视觉主体，使用图表或指标层级表达数值关系。",
+        narrative: "采用标题—核心信息—支持内容的主张与依据结构，将正文拆成独立信息块。",
+        closing: "用核心结论和行动信息收束，不在收尾页堆叠新正文。",
+    }[pageSpec.contentForm];
+    return ["结构编号 B1、B2等只用于标识内容块，不作为可见文案。", formInstruction, "先做信息设计，不得只把各段文字上下堆成大文本卡片。", "允许新增不含文字的图标、形状、连线、分区和图表容器来表达已批准内容；不得新增事实或可见标签。"];
+}
+
+function visualEncodingInstruction(encoding: CanvasProjectPptPageSpec["visualEncoding"][number], pageSpec: CanvasProjectPptPageSpec) {
     const channel = { color: "颜色", shape: "形状", position: "位置", size: "大小", line: "连线", icon: "图标" }[encoding.channel];
     const intent = { differentiate: "区分内容类别", emphasize: "强调重点", sequence: "表达顺序", group: "表达分组", show_relationship: "表达关系" }[encoding.intent];
     const mapping = unique((encoding.lockedMapping || []).map((item) => item.token)).join("、");
-    return `使用${channel}${intent}${mapping ? `，保留已确认映射：${mapping}` : ""}`;
+    const visibleBlocks = pageSpec.contentBlocks.filter((block) => block.kind !== "placeholder");
+    const targets = encoding.contentBlockIds.flatMap((blockId) => {
+        const index = visibleBlocks.findIndex((block) => block.id === blockId);
+        return index < 0 ? [] : [`B${index + 1}`];
+    });
+    return `对 ${targets.join("、") || "已引用内容块"} 使用${channel}${intent}${mapping ? `，保留已确认映射：${mapping}` : ""}`;
 }
 
 function isSupportedLayoutInstruction(pageSpec: CanvasProjectPptPageSpec, instruction: string) {

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Input, Modal } from "antd";
 import { LoaderCircle, RotateCcw, Sparkles, Square, WandSparkles } from "lucide-react";
 
-import { requestImageQuestion, type AiTextMessage } from "@/services/api/image";
+import { auditPptPageCopyReadiness, type PptPageRewriteSpec } from "@/lib/ppt/content-plan";
+import { requestImageQuestion } from "@/services/api/image";
+import { buildPptPageRewriteMessages, requirePptPageRewriteResult } from "@/services/api/ppt-content";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 
 type Props = {
@@ -10,26 +12,37 @@ type Props = {
     initialValue: string;
     lockedTake: boolean;
     textModelReady: boolean;
-    onSave: (value: string) => void;
-    onSaveAndGenerate: (value: string) => void;
+    contentForm?: string;
+    onSave: (value: string, rewrite?: PptPageRewriteSpec) => void;
+    onSaveAndGenerate: (value: string, rewrite?: PptPageRewriteSpec) => void;
     onCancel: () => void;
 };
 
-const REWRITE_SYSTEM_PROMPT = `你是 PPT 页面规格编辑器。根据用户的修改要求改写当前页面规格。
-只返回改写后的页面规格，不解释、不加标题、不使用代码块；保留用户没有要求删除的事实、结构与约束。`;
+const CONTENT_FORM_LABELS: Record<PptPageRewriteSpec["contentForm"], string> = {
+    cover: "封面页",
+    comparison: "对比页",
+    architecture: "架构页",
+    process: "流程页",
+    timeline: "时间线",
+    data: "数据页",
+    narrative: "内容页",
+    closing: "收尾页",
+};
 
-export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textModelReady, onSave, onSaveAndGenerate, onCancel }: Props) {
+export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textModelReady, contentForm, onSave, onSaveAndGenerate, onCancel }: Props) {
     const { message } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const [editorDraft, setEditorDraft] = useState(initialValue);
     const [instruction, setInstruction] = useState("");
     const [undoDraft, setUndoDraft] = useState<string>();
+    const [structuredRewrite, setStructuredRewrite] = useState<PptPageRewriteSpec>();
     const [aiRunning, setAiRunning] = useState(false);
     const [errorDetails, setErrorDetails] = useState("");
     const requestTokenRef = useRef(0);
     const controllerRef = useRef<AbortController | null>(null);
-    const editorChanged = editorDraft !== initialValue;
+    const editorChanged = editorDraft !== initialValue || Boolean(structuredRewrite);
+    const copyReadinessIssues = auditPptPageCopyReadiness(editorDraft);
 
     useEffect(() => {
         if (open) {
@@ -39,6 +52,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
             setEditorDraft(initialValue);
             setInstruction("");
             setUndoDraft(undefined);
+            setStructuredRewrite(undefined);
             setAiRunning(false);
             setErrorDetails("");
         } else {
@@ -67,6 +81,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
     const updateDraft = (value: string) => {
         if (aiRunning) invalidateAiRequest();
         setEditorDraft(value);
+        setStructuredRewrite(undefined);
         setErrorDetails("");
     };
 
@@ -85,17 +100,16 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
         const beforeRewrite = editorDraft;
         setAiRunning(true);
         setErrorDetails("");
-        const messages: AiTextMessage[] = [
-            { role: "system", content: REWRITE_SYSTEM_PROMPT },
-            { role: "user", content: `当前页面规格：\n${beforeRewrite}\n\n修改要求：\n${instruction.trim()}` },
-        ];
+        const messages = buildPptPageRewriteMessages(beforeRewrite, instruction, contentForm);
         try {
             // requestImageQuestion 优先读 config.model，必须显式覆盖为文本模型。
             const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
             const answer = await requestImageQuestion(requestConfig, messages, () => undefined, { signal: controller.signal });
             if (controller.signal.aborted || requestTokenRef.current !== token) return;
+            const rewritten = requirePptPageRewriteResult(answer);
             setUndoDraft(beforeRewrite);
-            setEditorDraft(answer);
+            setStructuredRewrite(rewritten);
+            setEditorDraft(rewritten.canonicalText);
             setInstruction("");
         } catch (error) {
             if (controller.signal.aborted || requestTokenRef.current !== token) return;
@@ -119,8 +133,9 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
             return;
         }
         invalidateAiRequest();
-        if (saveAndGenerate) onSaveAndGenerate(editorDraft);
-        else onSave(editorDraft);
+        const rewrite = structuredRewrite?.canonicalText === editorDraft ? structuredRewrite : undefined;
+        if (saveAndGenerate) onSaveAndGenerate(editorDraft, rewrite);
+        else onSave(editorDraft, rewrite);
     };
 
     return (
@@ -141,6 +156,12 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
                         aria-label="方案页面规格"
                         onChange={(event) => updateDraft(event.target.value)}
                     />
+                    {copyReadinessIssues.length ? <Alert className="mt-3" type="warning" showIcon message="当前文案不适合直接生图" description={copyReadinessIssues.map((issue) => issue.message).join("；")} /> : null}
+                    {structuredRewrite ? (
+                        <div className="mt-2 text-xs text-muted-foreground" role="status">
+                            AI 结构：{CONTENT_FORM_LABELS[structuredRewrite.contentForm]} · {structuredRewrite.blocks.length} 个内容块 · {structuredRewrite.visualEncoding.length} 条信息表达
+                        </div>
+                    ) : null}
                 </div>
 
                 <div className="rounded-xl border border-border/70 bg-muted/35 p-3">
@@ -158,6 +179,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
                                 invalidateAiRequest();
                                 setEditorDraft(undoDraft || "");
                                 setUndoDraft(undefined);
+                                setStructuredRewrite(undefined);
                                 setErrorDetails("");
                             }}
                         >
@@ -168,7 +190,7 @@ export function CanvasPptPromptEditor({ open, initialValue, lockedTake, textMode
                         <Input
                             value={instruction}
                             disabled={!textModelReady}
-                            placeholder={textModelReady ? "例如：要点改成三条，口吻更硬" : "先在配置中设置文本模型"}
+                            placeholder={textModelReady ? "例如：压缩长段落，整理成四个 PPT 信息块" : "先在配置中设置文本模型"}
                             onChange={(event) => updateInstruction(event.target.value)}
                             onPressEnter={() => void rewriteWithAi()}
                         />

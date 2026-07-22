@@ -52,13 +52,15 @@ type ResponseApiToolDefinition = {
 type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
 type ResponseApiPayload = {
     id?: string;
+    status?: string;
+    incomplete_details?: { reason?: string };
     output?: ResponseApiOutputItem[];
     output_text?: string;
     error?: { message?: string };
     code?: number;
     msg?: string;
 };
-type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; error?: string };
+type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; completed?: boolean; error?: string };
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
@@ -83,9 +85,11 @@ type GeminiPayload = {
     error?: { message?: string };
     promptFeedback?: { blockReason?: string };
 };
-type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
+type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; completed?: boolean; error?: string };
 /** onProgress / onTaskCreated 仅对 maolao 异步渠道有意义，其余格式忽略之。 */
 type RequestOptions = MaolaoRequestOptions;
+
+const INCOMPLETE_TEXT_RESPONSE_MESSAGE = "模型返回不完整，请缩短内容、检查内容限制或调整文本模型后重试";
 
 export class ImageRequestRejectedError extends Error {
     override name = "ImageRequestRejectedError";
@@ -389,6 +393,7 @@ function stringValue(value: unknown) {
 function validateResponsePayload(payload: ResponseApiPayload) {
     if (typeof payload.code === "number" && payload.code !== 0) throw new Error(payload.msg || "请求失败");
     if (payload.error?.message) throw new Error(payload.error.message);
+    if (payload.status === "incomplete" || ["max_tokens", "max_output_tokens"].includes(payload.incomplete_details?.reason || "")) throw new Error(INCOMPLETE_TEXT_RESPONSE_MESSAGE);
 }
 
 function validateGeminiPayload(payload: GeminiPayload) {
@@ -426,8 +431,9 @@ function consumeResponseStreamBlock(block: string, state: ResponseStreamState, o
         state.text = event.text;
         onDelta?.(state.text);
     }
-    if (type === "response.completed" && isRecord(event.response)) {
+    if ((type === "response.completed" || type === "response.incomplete") && isRecord(event.response)) {
         state.payload = event.response as ResponseApiPayload;
+        state.completed = type === "response.completed";
     } else if (Array.isArray(event.output)) {
         state.payload = event as ResponseApiPayload;
     }
@@ -473,7 +479,7 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
     }
     consumeResponseStreamText(state, decoder.decode(), onDelta, true);
     if (state.error) throw new Error(state.error);
-    if (!state.payload) return { content: state.text, toolCalls: [] };
+    if (!state.payload || !state.completed) throw new Error(INCOMPLETE_TEXT_RESPONSE_MESSAGE);
     validateResponsePayload(state.payload);
     const result = parseToolResponse(state.payload);
     return { ...result, content: state.text || result.content };
@@ -571,6 +577,7 @@ async function requestGeminiStreamingResponse(config: AiConfig, body: Record<str
     }
     consumeGeminiStreamText(state, decoder.decode(), onDelta, true);
     if (state.error) throw new Error(state.error);
+    if (!state.completed) throw new Error(INCOMPLETE_TEXT_RESPONSE_MESSAGE);
     return { content: state.text, toolCalls: state.toolCalls };
 }
 
@@ -597,7 +604,9 @@ function consumeGeminiStreamBlock(block: string, state: GeminiStreamState, onDel
         .join("\n")
         .trim();
     if (!data || data === "[DONE]") return;
-    const result = parseGeminiToolResponse(JSON.parse(data) as GeminiPayload);
+    const payload = JSON.parse(data) as GeminiPayload;
+    const result = parseGeminiToolResponse(payload);
+    if (payload.candidates?.some((candidate) => candidate.finishReason === "STOP")) state.completed = true;
     if (result.content) {
         state.text += result.content;
         onDelta?.(state.text);
@@ -607,6 +616,7 @@ function consumeGeminiStreamBlock(block: string, state: GeminiStreamState, onDel
 
 function parseGeminiToolResponse(payload: GeminiPayload): ToolResponseResult {
     validateGeminiPayload(payload);
+    if (payload.candidates?.some((candidate) => candidate.finishReason === "MAX_TOKENS")) throw new Error(INCOMPLETE_TEXT_RESPONSE_MESSAGE);
     const parts = payload.candidates?.flatMap((candidate) => candidate.content?.parts || []) || [];
     const content = parts.map((part) => part.text || "").join("");
     const toolCalls = parts

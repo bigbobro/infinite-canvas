@@ -1,6 +1,6 @@
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
-import { derivePptLockedFacts, renderPptPageSpecText, validatePptPageSpec } from "@/lib/ppt/content-plan";
+import { derivePptLockedFacts, isPptLayoutIntentSupported, renderPptPageSpecText, requirePptPageRewriteSpec, validatePptPageSpec, type PptPageRewriteSpec } from "@/lib/ppt/content-plan";
 import { hasPptRepeatBillingRisk } from "@/lib/ppt/generation-ledger";
 import { assertPptPageCandidateCanBeConfirmed } from "@/lib/ppt/page-confirmation";
 import { selectPptPageDescriptor, type PptPageDescriptor } from "@/lib/ppt/page-descriptor";
@@ -216,23 +216,44 @@ export function applyPptCanonicalPageTextEdit(ppt: CanvasProjectPpt, pageId: str
     if (lines.length < 2) throw new Error("结构化页面至少需要标题和核心信息两行");
     return applyPptPageSpecUpdate(ppt, pageId, expectedVersion, (pageSpec) => {
         const previousBlocks = pageSpec.contentBlocks.filter((block) => block.kind !== "placeholder");
+        const exactBlockByLine = new Map<number, CanvasProjectPptContentBlock>();
+        const exactBlockIds = new Set<string>();
+        for (const [index, text] of lines.entries()) {
+            const requiredKind = index === 0 ? "title" : index === 1 ? "primary_claim" : undefined;
+            const candidates = previousBlocks.filter(
+                (block) => !exactBlockIds.has(block.id) && (requiredKind ? block.kind === requiredKind : block.kind !== "title" && block.kind !== "primary_claim") && normalizePptEditableText(block.text) === normalizePptEditableText(text),
+            );
+            const match = candidates.find((block) => block.id === previousBlocks[index]?.id) || candidates[0];
+            if (!match) continue;
+            exactBlockByLine.set(index, match);
+            exactBlockIds.add(match.id);
+        }
+        const preservedBlockIds = new Set<string>();
         const sourceRefs = lines.map((text, index) => ({ id: `${pageId}:source:user-answer:${pageSpec.version + 1}:${index + 1}`, source: "user_answer" as const, excerpt: text }));
         const contentBlocks = lines.map<CanvasProjectPptContentBlock>((text, index) => {
-            const previous = previousBlocks[index];
-            const kind = index === 0 ? "title" : index === 1 ? "primary_claim" : previous && previous.kind !== "title" && previous.kind !== "primary_claim" ? previous.kind : "body";
+            const requiredKind = index === 0 ? "title" : index === 1 ? "primary_claim" : undefined;
+            const positional = previousBlocks[index];
+            const previous = exactBlockByLine.get(index);
+            const positionalKind = requiredKind || previous?.kind || (positional && !exactBlockIds.has(positional.id) && positional.kind !== "title" && positional.kind !== "primary_claim" ? positional.kind : "body");
+            if (previous) preservedBlockIds.add(previous.id);
             return {
                 id: previous?.id || `${pageId}:block:user-answer:${pageSpec.version + 1}:${index + 1}`,
-                kind,
+                kind: positionalKind,
                 text,
                 sourceRefIds: [sourceRefs[index].id],
             };
+        });
+        const contentOrder = new Map(contentBlocks.map((block, index) => [block.id, index]));
+        const visualEncoding = pageSpec.visualEncoding.flatMap((encoding) => {
+            const contentBlockIds = encoding.contentBlockIds.filter((id) => preservedBlockIds.has(id)).sort((left, right) => contentOrder.get(left)! - contentOrder.get(right)!);
+            return contentBlockIds.length ? [{ ...encoding, contentBlockIds, lockedMapping: undefined }] : [];
         });
         const next = {
             ...pageSpec,
             sourceRefs,
             contentBlocks,
             contentState: approvedAt ? ({ status: "approved", approvedAt } as const) : ({ status: "reviewable" } as const),
-            visualEncoding: [],
+            visualEncoding,
         };
         next.lockedFacts = derivePptLockedFacts(next);
         if (approvedAt) {
@@ -241,6 +262,72 @@ export function applyPptCanonicalPageTextEdit(ppt: CanvasProjectPpt, pageId: str
         }
         return next;
     });
+}
+
+export function applyPptCanonicalPageRewrite(ppt: CanvasProjectPpt, pageId: string, expectedVersion: number, rewrite: PptPageRewriteSpec, approvedAt?: string): CanvasProjectPpt {
+    const checkedRewrite = requirePptPageRewriteSpec(rewrite);
+    if (rewrite.canonicalText !== checkedRewrite.canonicalText) throw new Error("AI 改写结果与结构化内容不一致");
+    if (ppt.compilePolicy !== "structured") return applyPptCanonicalPageTextEdit(ppt, pageId, expectedVersion, checkedRewrite.canonicalText, approvedAt);
+    if (approvedAt !== undefined && !approvedAt.trim()) throw new Error("内容批准时间不能为空");
+
+    return applyPptPageSpecUpdate(ppt, pageId, expectedVersion, (pageSpec) => {
+        const visibleBlocks = [{ key: "__title", kind: "title" as const, text: checkedRewrite.title }, { key: "__primary_claim", kind: "primary_claim" as const, text: checkedRewrite.primaryClaim }, ...checkedRewrite.blocks];
+        const previousSourceById = new Map(pageSpec.sourceRefs.map((sourceRef) => [sourceRef.id, sourceRef]));
+        const usedPreviousBlockIds = new Set<string>();
+        const sourceRefById = new Map<string, (typeof pageSpec.sourceRefs)[number]>();
+        const contentBlocks = visibleBlocks.map<CanvasProjectPptContentBlock>((block, index) => {
+            const previous = pageSpec.contentBlocks.find((candidate) => !usedPreviousBlockIds.has(candidate.id) && candidate.kind === block.kind && normalizePptEditableText(candidate.text) === normalizePptEditableText(block.text));
+            if (previous) {
+                usedPreviousBlockIds.add(previous.id);
+                for (const sourceRefId of previous.sourceRefIds) {
+                    const sourceRef = previousSourceById.get(sourceRefId);
+                    if (sourceRef) sourceRefById.set(sourceRef.id, sourceRef);
+                }
+                return previous;
+            }
+            const sourceRef = { id: `${pageId}:source:ai-rewrite:${pageSpec.version + 1}:${index + 1}`, source: "confirmed_assumption" as const, excerpt: block.text };
+            sourceRefById.set(sourceRef.id, sourceRef);
+            return {
+                id: `${pageId}:block:ai-rewrite:${pageSpec.version + 1}:${index + 1}`,
+                kind: block.kind,
+                text: block.text,
+                sourceRefIds: [sourceRef.id],
+            };
+        });
+        const sourceRefs = [...sourceRefById.values()];
+        const blockIdByKey = new Map(checkedRewrite.blocks.map((block, index) => [block.key, contentBlocks[index + 2].id]));
+        const visualEncoding = checkedRewrite.visualEncoding.map((encoding, index) => ({
+            id: `${pageId}:encoding:ai-rewrite:${pageSpec.version + 1}:${index + 1}`,
+            contentBlockIds: encoding.contentKeys.map((key) => {
+                const blockId = blockIdByKey.get(key);
+                if (!blockId) throw new Error(`AI 改写的信息表达引用了不存在的内容块：${key}`);
+                return blockId;
+            }),
+            intent: encoding.intent,
+            channel: encoding.channel,
+        }));
+        const next = {
+            ...pageSpec,
+            contentForm: checkedRewrite.contentForm,
+            contentFormNote: undefined,
+            sourceRefs,
+            contentBlocks,
+            visualEncoding,
+            contentState: approvedAt ? ({ status: "approved", approvedAt } as const) : ({ status: "reviewable" } as const),
+        };
+        next.layoutIntent = next.layoutIntent.filter((intent) => isPptLayoutIntentSupported(next, intent));
+        next.lockedFacts = derivePptLockedFacts(next);
+        const previousFacts = new Set(pageSpec.lockedFacts.map((fact) => `${fact.kind}\u0000${normalizePptEditableText(fact.value)}`));
+        const newFacts = next.lockedFacts.filter((fact) => !previousFacts.has(`${fact.kind}\u0000${normalizePptEditableText(fact.value)}`));
+        if (newFacts.length) throw new Error(`AI 改写新增了未批准的事实：${newFacts.map((fact) => fact.value).join("、")}`);
+        const issues = validatePptPageSpec(approvedAt ? next : { ...next, contentState: { status: "approved", approvedAt: "validation" } }, { sourceMaterial: ppt.sourceMaterial, requirements: ppt.requirements });
+        if (issues.length) throw new Error(`AI 改写结果无法写入页面规格：${issues.map((issue) => issue.message).join("；")}`);
+        return next;
+    });
+}
+
+function normalizePptEditableText(value: string) {
+    return value.trim().replace(/\s+/g, " ");
 }
 
 export function approvePptCanonicalPageContent(ppt: CanvasProjectPpt, pageId: string, expectedVersion: number, approvedAt: string): CanvasProjectPpt {

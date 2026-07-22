@@ -13,10 +13,11 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { GENERATION_COUNT_MAX, GENERATION_COUNT_MIN, getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
+import type { PptPageRewriteSpec } from "@/lib/ppt/content-plan";
 import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createGenerationPlan, previewGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
-import { applyPptCanonicalPageTextEdit, approvePptCanonicalPageContent, buildPptPageWorkspace, getPptCanonicalPageText, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
+import { applyPptCanonicalPageRewrite, applyPptCanonicalPageTextEdit, approvePptCanonicalPageContent, buildPptPageWorkspace, getPptCanonicalPageText, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
 import { getPptVisualDirectionLabel, PPT_LAYOUT_ROLES } from "@/lib/ppt/style-contract";
 import { canEnablePptWorkspaceSplitter, clampPptWorkspaceUpperHeight, PPT_WORKSPACE_LOWER_MIN_HEIGHT, PPT_WORKSPACE_SPLITTER_SIZE, PPT_WORKSPACE_UPPER_MIN_HEIGHT, resizePptWorkspaceByDrag, resizePptWorkspaceByKey } from "@/lib/ppt/workspace-layout";
 import { cn } from "@/lib/utils";
@@ -365,9 +366,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         return canvasContext.applyTrustedOps(ops);
     };
 
-    const editCanonicalContent = (value: string, approve: boolean) => {
+    const editCanonicalContent = (value: string, approve: boolean, rewrite?: PptPageRewriteSpec) => {
         if (canonicalSpecVersion === undefined) throw new Error(`第 ${page.index} 页缺少 canonical 内容规格`);
-        return applyPptCanonicalPageTextEdit(ppt, page.pageId, canonicalSpecVersion, value, approve && ppt.compilePolicy === "structured" ? new Date().toISOString() : undefined);
+        const approvedAt = approve && ppt.compilePolicy === "structured" ? new Date().toISOString() : undefined;
+        return rewrite ? applyPptCanonicalPageRewrite(ppt, page.pageId, canonicalSpecVersion, rewrite, approvedAt) : applyPptCanonicalPageTextEdit(ppt, page.pageId, canonicalSpecVersion, value, approvedAt);
     };
 
     const executeGenerationPlan = async (plan: GenerationPlan) => {
@@ -560,7 +562,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         message.success("生成配置已更新");
     };
 
-    const savePrompt = async (value: string) => {
+    const savePrompt = async (value: string, rewrite?: PptPageRewriteSpec) => {
         if (!canvasContext || !activeTake?.anchorNode || !activeTake.canEditPrompt) return;
         if (!value.trim()) {
             message.warning("方案提示词不能为空");
@@ -568,7 +570,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         }
         let nextPpt;
         try {
-            nextPpt = editCanonicalContent(value, false);
+            nextPpt = editCanonicalContent(value, false, rewrite);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "页面内容规格保存失败");
             return;
@@ -706,7 +708,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         else discardPendingPrompt(controls.onOpenFinalReview);
     };
 
-    const createTakeFromPrompt = async (prompt: string, sourceTake: PptPageWorkspaceTake | undefined, autoGenerate: boolean) => {
+    const createTakeFromPrompt = async (prompt: string, sourceTake: PptPageWorkspaceTake | undefined, autoGenerate: boolean, rewrite?: PptPageRewriteSpec) => {
         if (!canvasContext) {
             message.warning("画布尚未就绪，请稍后再试");
             return;
@@ -721,7 +723,7 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
         }
         let pptWithContent;
         try {
-            pptWithContent = editCanonicalContent(prompt, autoGenerate);
+            pptWithContent = editCanonicalContent(prompt, autoGenerate, rewrite);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "页面内容规格无法更新");
             return;
@@ -1749,11 +1751,12 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                     initialValue={activeTake.prompt}
                     lockedTake={!activeTake.canEditPrompt}
                     textModelReady={textModelReady}
-                    onSave={(value) => {
-                        if (activeTake.canEditPrompt) savePrompt(value);
-                        else createTakeFromPrompt(value, activeTake, false);
+                    contentForm={pageSpec?.contentForm}
+                    onSave={(value, rewrite) => {
+                        if (activeTake.canEditPrompt) savePrompt(value, rewrite);
+                        else createTakeFromPrompt(value, activeTake, false, rewrite);
                     }}
-                    onSaveAndGenerate={(value) => createTakeFromPrompt(value, activeTake, true)}
+                    onSaveAndGenerate={(value, rewrite) => createTakeFromPrompt(value, activeTake, true, rewrite)}
                     onCancel={() => setPromptEditorOpen(false)}
                 />
             ) : null}

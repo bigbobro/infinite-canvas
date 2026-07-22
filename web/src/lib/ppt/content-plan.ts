@@ -42,6 +42,7 @@ export type PptInformationGapResolution =
 
 export type PptInformationGap = {
     id: string;
+    lineageKey: string;
     pageId?: string;
     kind: "missing_detail" | "missing_evidence" | "unsupported_claim" | "ambiguous_input";
     question: string;
@@ -56,7 +57,7 @@ export type PptContentAuditAction = { kind: "focus_gap"; gapId: string } | { kin
 
 export type PptContentAuditIssue = {
     id: string;
-    code: "unresolved_gap" | "invalid_content_structure" | "invalid_content_provenance" | "invalid_visual_encoding" | "duplicate_page" | "noise_text" | "deck_style_signal";
+    code: "unresolved_gap" | "invalid_content_structure" | "invalid_content_provenance" | "invalid_visual_encoding" | "duplicate_page" | "noise_text" | "deck_style_signal" | "monolithic_content" | "excessive_copy";
     severity: "blocking" | "warning";
     pageIds: string[];
     message: string;
@@ -75,6 +76,15 @@ export type PptContentDraft = {
 
 export type PptContentValidationResult = { valid: boolean; issues: PptContentAuditIssue[] };
 
+export type PptPageRewriteSpec = {
+    canonicalText: string;
+    title: string;
+    primaryClaim: string;
+    contentForm: PptContentForm;
+    blocks: Array<{ key: string; kind: "supporting_claim" | "body" | "list" | "table" | "chart_data"; text: string }>;
+    visualEncoding: Array<Pick<CanvasProjectPptVisualEncoding, "intent" | "channel"> & { contentKeys: string[] }>;
+};
+
 export type PptContentRepairPreview = {
     draftRevision: number;
     operations: Array<{ kind: "route_deck_style"; pageId: string; value: string; replacement: string; signals: string[] }>;
@@ -91,6 +101,8 @@ export type PptContentActionPreview = { draftRevision: number; action: PptConten
 
 const CONTENT_FORMS = new Set<PptContentForm>(["cover", "comparison", "architecture", "process", "timeline", "data", "narrative", "closing"]);
 const BLOCK_KINDS = new Set<CanvasProjectPptContentBlock["kind"]>(["supporting_claim", "body", "list", "table", "chart_data", "placeholder"]);
+const REWRITE_BLOCK_KINDS = new Set<PptPageRewriteSpec["blocks"][number]["kind"]>(["supporting_claim", "body", "list", "table", "chart_data"]);
+const RELATIONAL_REWRITE_FORMS = new Set<PptContentForm>(["comparison", "architecture", "process", "timeline"]);
 const GAP_KINDS = new Set<PptInformationGap["kind"]>(["missing_detail", "missing_evidence", "unsupported_claim", "ambiguous_input"]);
 const ENCODING_INTENTS = new Set<CanvasProjectPptVisualEncoding["intent"]>(["differentiate", "emphasize", "sequence", "group", "show_relationship"]);
 const ENCODING_CHANNELS = new Set<CanvasProjectPptVisualEncoding["channel"]>(["color", "shape", "position", "size", "line", "icon"]);
@@ -100,9 +112,10 @@ const NUMBER_PATTERN = /(?:[$¥€£]\s*)?\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:亿元|
 const ASCII_TERM_PATTERN = /\b[A-Z][A-Z0-9-]{1,}\b/g;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*•]\s+|\d+[.)、]\s*)/;
 const LAYOUT_GEOMETRY_PATTERN =
-    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|双栏|分栏|网格|矩阵|时间线|流程图|概念图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
+    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|布局|排版|构图|双栏|分栏|网格|矩阵|时间线|流程图|概念图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
 const LAYOUT_GEOMETRY_COUNT_PATTERN = /(?:[0-9一二三四五六七八九十两]+(?:个)?(?:柱状图|折线图|饼图|概念图|图表|图片|列|行|栏|区|块|图|层|组|卡片|模块))/g;
 const LAYOUT_CONTENT_COUNT_PATTERN = /([0-9一二三四五六七八九十两]+)(?:个)?(?:指标|要点)|([0-9一二三四五六七八九十两]+)(?:条)?行动建议/g;
+const AUTHORING_INSTRUCTION_PATTERN = /^(?:(?:我)?(?:希望|想让)(?:你|AI|模型)|(?:请|麻烦)(?:你|AI|模型)|帮我).{0,40}(?:建议|补充|完善|起草|生成|写|整理)/i;
 
 export function normalizePptContentDraft(rawInput: unknown, sourceInput: PptContentSourceInput): PptContentDraft {
     const raw = asRecord(rawInput) as RawDraft;
@@ -126,6 +139,7 @@ export function normalizePptContentDraft(rawInput: unknown, sourceInput: PptCont
         if (value && sourceSupportsText(combinedSource, value)) continue;
         gaps.push({
             id: `brief:gap:${field}`,
+            lineageKey: `brief:${field}`,
             kind: value ? "unsupported_claim" : "missing_detail",
             question: `请确认整套材料的${field === "audience" ? "受众" : field === "goal" ? "目标" : "叙事主线"}`,
             reason: value ? "该描述无法从原始输入中定位" : "内容方案缺少整套定位",
@@ -176,12 +190,12 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
                     block.sourceRefIds = [];
                 }
             } else {
-                page.contentBlocks.push({ id: `${page.pageId}:block:${stableKey(gapId)}`, kind: "placeholder", text: resolution.text.trim(), sourceRefIds: [], gapId });
+                page.contentBlocks.push({ id: `${gapId}:block:resolution`, kind: "placeholder", text: resolution.text.trim(), sourceRefIds: [], gapId });
             }
         } else {
             prunePptVisualEncoding(page, boundBlockIds, false);
             const sourceRef: CanvasProjectPptSourceRef = {
-                id: `${page.pageId}:source:${resolution.kind}:${stableKey(gapId)}`,
+                id: `${gapId}:source:${resolution.kind}`,
                 source: resolution.kind,
                 excerpt: resolution.text.trim(),
                 gapId,
@@ -192,7 +206,7 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
                 block.text = resolution.text.trim();
                 block.sourceRefIds = [sourceRef.id];
             }
-            if (!boundBlocks.length) page.contentBlocks.push({ id: `${page.pageId}:block:${stableKey(gapId)}`, kind: "body", text: resolution.text.trim(), sourceRefIds: [sourceRef.id], gapId });
+            if (!boundBlocks.length) page.contentBlocks.push({ id: `${gapId}:block:resolution`, kind: "body", text: resolution.text.trim(), sourceRefIds: [sourceRef.id], gapId });
         }
         page.version += 1;
         pruneUnusedPptSourceRefs(page);
@@ -200,6 +214,21 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
     }
     next.revision += 1;
     return rebuildDraft(next);
+}
+
+export function acceptPptPageSuggestions(draft: PptContentDraft, pageId: string, acceptedAt: string) {
+    if (!draft.pageSpecs.some((page) => page.pageId === pageId)) throw new Error("建议所属页不存在");
+    const suggestions = draft.audit.gaps.filter((gap) => gap.pageId === pageId && !gap.resolution && gap.proposedAnswer?.trim());
+    if (!suggestions.length) throw new Error("本页暂无可采纳的 AI 建议");
+    return suggestions.reduce(
+        (current, gap) =>
+            resolvePptInformationGap(current, gap.id, {
+                kind: "confirmed_assumption",
+                text: gap.proposedAnswer!,
+                resolvedAt: acceptedAt,
+            }),
+        draft,
+    );
 }
 
 export function createPptContentRepairPreview(draft: PptContentDraft, issueIds: string[]): PptContentRepairPreview {
@@ -265,20 +294,28 @@ export function applyPptContentAction(draft: PptContentDraft, preview: PptConten
         } else {
             const block = page.contentBlocks.find((item) => item.id === action.blockId)!;
             const editedText = action.text.trim();
+            const confirmedGapIds = unique(
+                block.sourceRefIds.flatMap((sourceRefId) => {
+                    const sourceRef = page.sourceRefs.find((item) => item.id === sourceRefId);
+                    return isConfirmedSourceRef(sourceRef) && sourceRef.gapId && next.audit.gaps.some((gap) => gap.id === sourceRef.gapId) ? [sourceRef.gapId] : [];
+                }),
+            );
+            const lineageGapId = block.gapId || (confirmedGapIds.length === 1 ? confirmedGapIds[0] : undefined);
             const sourceRef: CanvasProjectPptSourceRef = {
-                id: `${page.pageId}:source:user-answer:${stableKey(block.id)}:${page.version + 1}`,
+                id: `${page.pageId}:source:user-answer:${encodeURIComponent(block.id)}:${page.version + 1}`,
                 source: "user_answer",
                 excerpt: editedText,
-                ...(block.gapId ? { gapId: block.gapId } : {}),
+                ...(lineageGapId ? { gapId: lineageGapId } : {}),
             };
             page.sourceRefs.push(sourceRef);
             block.text = editedText;
             block.sourceRefIds = [sourceRef.id];
+            if (lineageGapId) block.gapId = lineageGapId;
             prunePptVisualEncoding(page, new Set([block.id]), false);
             if (block.kind === "placeholder") block.kind = "body";
-            if (block.gapId) {
-                const gap = next.audit.gaps.find((item) => item.id === block.gapId);
-                if (gap && !gap.resolution) gap.resolution = { kind: "user_answer", text: editedText, resolvedAt: action.editedAt };
+            if (lineageGapId) {
+                const gap = next.audit.gaps.find((item) => item.id === lineageGapId);
+                if (gap) gap.resolution = { kind: "user_answer", text: editedText, resolvedAt: action.editedAt };
             }
         }
         page.version += 1;
@@ -295,9 +332,15 @@ export function replacePptContentDraftPage(draft: PptContentDraft, expectedRevis
     if (replacement.pageId !== pageId) throw new Error("单页生成结果改变了页面身份");
     const current = draft.pageSpecs.find((page) => page.pageId === pageId);
     if (!current) throw new Error("单页生成目标不存在");
+    assertRegeneratedPagePreservesConfirmedSources(current, replacement);
+    const currentPageGaps = draft.audit.gaps.filter((gap) => gap.pageId === pageId);
+    const reconciled = reconcileRegeneratedConfirmedGaps(current, currentPageGaps, replacement, replacementGaps);
+    const resolvedLineage = currentPageGaps.filter((gap) => gap.resolution);
+    const reopenedLineageKeys = new Set(reconciled.gaps.map((gap) => gap.lineageKey));
+    if (resolvedLineage.some((gap) => reopenedLineageKeys.has(gap.lineageKey))) throw new Error("本页生成结果重新开启或改变了已确认信息缺口；原页已保留");
     const next = structuredClone(draft);
-    next.pageSpecs = next.pageSpecs.map((page) => (page.pageId === pageId ? { ...structuredClone(replacement), version: current.version + 1 } : page));
-    next.audit.gaps = [...next.audit.gaps.filter((gap) => gap.pageId !== pageId), ...structuredClone(replacementGaps).map((gap) => ({ ...gap, pageId }))];
+    next.pageSpecs = next.pageSpecs.map((page) => (page.pageId === pageId ? { ...structuredClone(reconciled.page), version: current.version + 1 } : page));
+    next.audit.gaps = [...next.audit.gaps.filter((gap) => gap.pageId !== pageId), ...structuredClone(resolvedLineage), ...structuredClone(reconciled.gaps).map((gap) => ({ ...gap, pageId }))];
     next.revision += 1;
     return rebuildDraft(next);
 }
@@ -360,6 +403,7 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
         !claimBlocks[0]?.text.trim() ||
         !pageSpec.purpose.trim() ||
         !CONTENT_FORMS.has(pageSpec.contentForm) ||
+        pageSpec.contentBlocks.some((block) => block.kind !== "title" && block.kind !== "primary_claim" && !BLOCK_KINDS.has(block.kind)) ||
         blockIds.some((id) => !id.trim()) ||
         new Set(blockIds).size !== blockIds.length
     ) {
@@ -459,18 +503,72 @@ export function renderPptPageSpecText(pageSpec: CanvasProjectPptPageSpec) {
         .join("\n");
 }
 
+export function auditPptPageCopyReadiness(value: string) {
+    const lines = meaningfulLines(value);
+    const issues: Array<{ code: "monolithic_content" | "excessive_copy"; message: string }> = [];
+    const longestBodyLine = Math.max(0, ...lines.slice(2).map(copyLength));
+    const total = copyLength(lines.join(""));
+    if (longestBodyLine > 100) issues.push({ code: "monolithic_content", message: `正文存在 ${longestBodyLine} 字的连续长段落，请拆分为可独立排版的信息块` });
+    if (total > 280) issues.push({ code: "excessive_copy", message: `单页文案共 ${total} 字，请压缩内容或拆页后再生成` });
+    return issues;
+}
+
+export function requirePptPageRewriteSpec(value: unknown): PptPageRewriteSpec {
+    const page = asRecord(value);
+    const title = text(page.title);
+    const primaryClaim = text(page.primaryClaim);
+    if (!title || !primaryClaim) throw new Error("AI 改写结果缺少本页标题或核心信息");
+    if (title.includes("|")) throw new Error("AI 改写结果的标题仍混入整套 PPT 名称");
+    if (!isContentForm(page.contentForm)) throw new Error("AI 改写结果的内容形态无效");
+
+    const blocks = (Array.isArray(page.blocks) ? page.blocks : []).map((raw) => {
+        const block = asRecord(raw);
+        const key = text(block.key);
+        const kind = block.kind;
+        const blockText = text(block.text);
+        if (!key || !REWRITE_BLOCK_KINDS.has(kind as PptPageRewriteSpec["blocks"][number]["kind"]) || !blockText) throw new Error("AI 改写结果包含无效的内容块");
+        return { key, kind: kind as PptPageRewriteSpec["blocks"][number]["kind"], text: blockText };
+    });
+    const blockKeys = new Set(blocks.map((block) => block.key));
+    if (blockKeys.size !== blocks.length) throw new Error("AI 改写结果的内容块 key 重复");
+    const minimumBlocks = RELATIONAL_REWRITE_FORMS.has(page.contentForm) ? 2 : page.contentForm === "cover" || page.contentForm === "closing" ? 0 : 1;
+    if (blocks.length < minimumBlocks) throw new Error(`AI 改写结果的 ${page.contentForm} 内容形态至少需要 ${minimumBlocks} 个内容块`);
+
+    const rawEncodings = Array.isArray(page.visualEncoding) ? page.visualEncoding : [];
+    if (blocks.length && !rawEncodings.length) throw new Error("AI 改写结果缺少定向信息表达");
+    const visualEncoding = rawEncodings.map((raw) => {
+        const encoding = asRecord(raw);
+        const contentKeys = unique(stringArray(encoding.contentKeys));
+        if (!contentKeys.length || contentKeys.some((key) => !blockKeys.has(key))) throw new Error("AI 改写结果的信息表达引用了不存在的内容块");
+        if (!isEncodingIntent(encoding.intent) || !isEncodingChannel(encoding.channel)) throw new Error("AI 改写结果的信息表达无效");
+        return { contentKeys, intent: encoding.intent, channel: encoding.channel };
+    });
+    const canonicalText = [title, primaryClaim, ...blocks.map((block) => block.text)].join("\n");
+    const issues = auditPptPageCopyReadiness(canonicalText);
+    if (issues.length) throw new Error(`改写结果仍不适合单页展示：${issues.map((issue) => issue.message).join("；")}`);
+    return { canonicalText, title, primaryClaim, contentForm: page.contentForm, blocks, visualEncoding };
+}
+
+export function isPptAuthoringInstruction(value: string) {
+    return AUTHORING_INSTRUCTION_PATTERN.test(value.trim());
+}
+
 function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentSourceInput, gaps: PptInformationGap[]): CanvasProjectPptPageSpec {
-    const pageId = sourceInput.previousPageSpecs?.[index]?.pageId || nanoid();
+    const previousPageSpec = sourceInput.previousPageSpecs?.[index];
+    const pageId = previousPageSpec?.pageId || nanoid();
     const rawGaps = Array.isArray(rawPage.gaps) ? (rawPage.gaps as RawGap[]) : [];
     const gapByKey = new Map<string, PptInformationGap>();
     for (const [gapIndex, rawGap] of rawGaps.entries()) {
         const key = text(rawGap.key) || `gap-${gapIndex + 1}`;
         if (gapByKey.has(key)) throw new Error(`信息缺口 key 重复：${key}`);
+        const kind = isGapKind(rawGap.kind) ? rawGap.kind : "missing_detail";
+        const question = text(rawGap.question) || "请补充本页所需信息";
         const gap: PptInformationGap = {
-            id: `${pageId}:gap:${gapIndex + 1}-${stableKey(key)}`,
+            id: `${pageId}:gap:raw:${encodeURIComponent(key)}:${kind}:${encodeURIComponent(normalize(question))}`,
+            lineageKey: gapLineageKey(kind, question),
             pageId,
-            kind: isGapKind(rawGap.kind) ? rawGap.kind : "missing_detail",
-            question: text(rawGap.question) || "请补充本页所需信息",
+            kind,
+            question,
             reason: text(rawGap.reason) || "当前材料不足以支持本页生成",
             blocking: rawGap.blocking !== false,
             ...(text(rawGap.proposedAnswer) ? { proposedAnswer: text(rawGap.proposedAnswer) } : {}),
@@ -480,16 +578,23 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
     }
     const sourceRefs: CanvasProjectPptSourceRef[] = [];
     const blockByKey = new Map<string, CanvasProjectPptContentBlock>();
+    const consumedPreviousBlockIds = new Set<string>();
     const addBlock = (key: string, identity: string, kind: CanvasProjectPptContentBlock["kind"], value: string, rawSource?: RawSourceRange, gapKey?: string) => {
         if (blockByKey.has(key)) throw new Error(`页面内容 key 重复：${key}`);
-        const blockId = `${pageId}:block:${identity}`;
-        const sourceRef = resolveSourceRef(pageId, key, value, rawSource, sourceInput);
-        if (sourceRef) sourceRefs.push(sourceRef);
+        const previousMatch = resolvePreviousConfirmedBlock(previousPageSpec, kind, value, consumedPreviousBlockIds);
+        const blockId = previousMatch?.blockId || `${pageId}:block:${identity}`;
+        const inputSourceRef = previousMatch ? undefined : resolveSourceRef(pageId, key, value, rawSource, sourceInput);
+        const blockSourceRefs = previousMatch?.sourceRefs || (inputSourceRef ? [inputSourceRef] : []);
+        for (const sourceRef of blockSourceRefs) {
+            if (!sourceRefs.some((item) => item.id === sourceRef.id)) sourceRefs.push(sourceRef);
+        }
         let gap = gapKey ? gapByKey.get(gapKey) : undefined;
-        if (!sourceRef && kind !== "placeholder" && !gap) {
+        if (!blockSourceRefs.length && kind !== "placeholder" && !gap) {
             const generatedKey = `source-${key}`;
+            const autoGapKey = generatedKey === "source-title" || generatedKey === "source-primary_claim" ? generatedKey : `source-${identity}`;
             gap = {
-                id: `${pageId}:gap:${generatedKey === "source-title" || generatedKey === "source-primary_claim" ? generatedKey : `source-${identity}`}`,
+                id: `${pageId}:gap:auto:${encodeURIComponent(autoGapKey)}`,
+                lineageKey: gapLineageKey("unsupported_claim", `请确认或补充：${value || "本页内容"}`),
                 pageId,
                 kind: "unsupported_claim",
                 question: `请确认或补充：${value || "本页内容"}`,
@@ -497,14 +602,13 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
                 blocking: true,
                 ...(value ? { proposedAnswer: value } : {}),
             };
-            gapByKey.set(generatedKey, gap);
             gaps.push(gap);
         }
         const block: CanvasProjectPptContentBlock = {
             id: blockId,
             kind,
             text: value,
-            sourceRefIds: sourceRef ? [sourceRef.id] : [],
+            sourceRefIds: blockSourceRefs.map((sourceRef) => sourceRef.id),
             ...(gap ? { gapId: gap.id } : {}),
         };
         blockByKey.set(key, block);
@@ -524,7 +628,7 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
     const pageGaps = gaps.filter((gap) => gap.pageId === pageId);
     const page: CanvasProjectPptPageSpec = {
         pageId,
-        version: sourceInput.previousPageSpecs?.[index]?.version || 1,
+        version: previousPageSpec?.version || 1,
         purpose: text(rawPage.purpose),
         contentForm: isContentForm(rawPage.contentForm) ? rawPage.contentForm : "narrative",
         ...(text(rawPage.contentFormNote) ? { contentFormNote: text(rawPage.contentFormNote) } : {}),
@@ -536,7 +640,7 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
         layoutIntent: unique(stringArray(rawPage.layoutIntent)),
         visualEncoding,
         assetRefs: unique(blocks.flatMap((block) => [...block.text.matchAll(/@\[node:([^\]]+)\]/g)].map((match) => match[1]))),
-        freedom: "不得新增或改写可见文案、数字、组件、参数、型号、成本或结论；只允许在已批准内容内优化视觉组织",
+        freedom: "不得新增或改写可见文案、数字、业务组件名称、参数、型号、成本或结论；允许新增不含文字的图标、形状、连线、分区和装饰图形，只用于组织已批准内容",
     };
     page.lockedFacts = derivePptLockedFacts(page);
     return page;
@@ -612,6 +716,114 @@ function resolveSourceRef(pageId: string, key: string, value: string, raw: RawSo
     return { id: `${pageId}:source:${stableKey(key)}:${source}:${startLine}-${endLine}`, source, excerpt, startLine, endLine } satisfies CanvasProjectPptSourceRef;
 }
 
+function resolvePreviousConfirmedBlock(previousPageSpec: CanvasProjectPptPageSpec | undefined, kind: CanvasProjectPptContentBlock["kind"], value: string, consumedBlockIds: Set<string>) {
+    if (!previousPageSpec || !value) return undefined;
+    const sourceById = new Map(previousPageSpec.sourceRefs.map((sourceRef) => [sourceRef.id, sourceRef]));
+    const block = previousPageSpec.contentBlocks.find(
+        (candidate) =>
+            !consumedBlockIds.has(candidate.id) &&
+            candidate.kind === kind &&
+            normalize(candidate.text) === normalize(value) &&
+            candidate.sourceRefIds.some((sourceRefId) => {
+                const sourceRef = sourceById.get(sourceRefId);
+                return isConfirmedSourceRef(sourceRef) && normalize(sourceRef.excerpt) === normalize(value);
+            }),
+    );
+    if (!block) return undefined;
+    consumedBlockIds.add(block.id);
+    return {
+        blockId: block.id,
+        sourceRefs: block.sourceRefIds.flatMap((sourceRefId) => {
+            const sourceRef = sourceById.get(sourceRefId);
+            return sourceRef ? [structuredClone(sourceRef)] : [];
+        }),
+    };
+}
+
+function assertRegeneratedPagePreservesConfirmedSources(current: CanvasProjectPptPageSpec, replacement: CanvasProjectPptPageSpec) {
+    const protectedSourceIds = confirmedSourceIds(current);
+    const replacementSources = new Map(replacement.sourceRefs.map((sourceRef) => [sourceRef.id, sourceRef]));
+    const missing = current.sourceRefs.some((sourceRef) => {
+        if (!protectedSourceIds.has(sourceRef.id)) return false;
+        const replacementSource = replacementSources.get(sourceRef.id);
+        const currentBindings = current.contentBlocks.filter((block) => block.kind !== "placeholder" && block.sourceRefIds.includes(sourceRef.id));
+        const bindingsPreserved =
+            currentBindings.length > 0 &&
+            currentBindings.every((currentBlock) =>
+                replacement.contentBlocks.some((block) => block.id === currentBlock.id && block.kind === currentBlock.kind && block.sourceRefIds.includes(sourceRef.id) && normalize(block.text) === normalize(currentBlock.text)),
+            );
+        return !replacementSource || replacementSource.source !== sourceRef.source || replacementSource.excerpt !== sourceRef.excerpt || replacementSource.gapId !== sourceRef.gapId || !bindingsPreserved;
+    });
+    if (missing) throw new Error("本页生成结果遗漏或改写了已确认内容；原页已保留");
+}
+
+function reconcileRegeneratedConfirmedGaps(current: CanvasProjectPptPageSpec, currentGaps: PptInformationGap[], replacement: CanvasProjectPptPageSpec, gaps: PptInformationGap[]) {
+    const protectedSourceIds = confirmedSourceIds(current);
+    const sourceById = new Map(replacement.sourceRefs.map((sourceRef) => [sourceRef.id, sourceRef]));
+    const currentLineageCounts = new Map<string, number>();
+    for (const gap of currentGaps) currentLineageCounts.set(gap.lineageKey, (currentLineageCounts.get(gap.lineageKey) || 0) + 1);
+    const replacementLineageCounts = new Map<string, number>();
+    for (const gap of gaps) replacementLineageCounts.set(gap.lineageKey, (replacementLineageCounts.get(gap.lineageKey) || 0) + 1);
+    const reconciledGapIds = new Map<string, string>();
+    for (const gap of gaps) {
+        if (currentLineageCounts.get(gap.lineageKey) !== 1 || replacementLineageCounts.get(gap.lineageKey) !== 1) continue;
+        const proposedAnswer = normalize(gap.proposedAnswer || "");
+        if (!proposedAnswer) continue;
+        const candidates = currentGaps.filter((previousGap) => {
+            const resolution = previousGap.resolution;
+            return previousGap.lineageKey === gap.lineageKey && resolution && (resolution.kind === "user_answer" || resolution.kind === "confirmed_assumption") && normalize(resolution.text) === proposedAnswer;
+        });
+        if (candidates.length !== 1) continue;
+        const previousGap = candidates[0];
+        const isConfirmedBlock = (block: CanvasProjectPptContentBlock) =>
+            block.kind !== "placeholder" &&
+            normalize(block.text) === proposedAnswer &&
+            block.sourceRefIds.some((sourceRefId) => {
+                const sourceRef = sourceById.get(sourceRefId);
+                return protectedSourceIds.has(sourceRefId) && sourceRef?.gapId === previousGap.id && normalize(sourceRef.excerpt) === proposedAnswer;
+            });
+        const boundBlocks = replacement.contentBlocks.filter((block) => block.gapId === gap.id);
+        const confirmedBlocks = replacement.contentBlocks.filter(isConfirmedBlock);
+        if (!confirmedBlocks.length || (boundBlocks.length > 0 && !boundBlocks.every(isConfirmedBlock))) continue;
+        reconciledGapIds.set(gap.id, previousGap.id);
+    }
+    if (!reconciledGapIds.size) return { page: replacement, gaps };
+    const page = structuredClone(replacement);
+    page.contentBlocks = page.contentBlocks.map((block) => {
+        const previousGapId = block.gapId ? reconciledGapIds.get(block.gapId) : undefined;
+        if (previousGapId) return { ...block, gapId: previousGapId };
+        if (block.gapId) return block;
+        const confirmedGapIds = unique(
+            block.sourceRefIds.flatMap((sourceRefId) => {
+                const sourceRef = sourceById.get(sourceRefId);
+                return isConfirmedSourceRef(sourceRef) && sourceRef.gapId && currentGaps.some((gap) => gap.id === sourceRef.gapId) ? [sourceRef.gapId] : [];
+            }),
+        );
+        return confirmedGapIds.length === 1 ? { ...block, gapId: confirmedGapIds[0] } : block;
+    });
+    return { page, gaps: gaps.filter((gap) => !reconciledGapIds.has(gap.id)) };
+}
+
+function gapLineageKey(kind: PptInformationGap["kind"], question: string) {
+    return `${kind}:${encodeURIComponent(normalize(question))}`;
+}
+
+function isConfirmedSourceRef(sourceRef: CanvasProjectPptSourceRef | undefined): sourceRef is CanvasProjectPptSourceRef {
+    return sourceRef?.source === "user_answer" || sourceRef?.source === "confirmed_assumption";
+}
+
+function confirmedSourceIds(page: CanvasProjectPptPageSpec) {
+    return new Set(
+        page.contentBlocks
+            .filter((block) => block.kind !== "placeholder")
+            .flatMap((block) => block.sourceRefIds)
+            .filter((sourceRefId) => {
+                const sourceRef = page.sourceRefs.find((item) => item.id === sourceRefId);
+                return isConfirmedSourceRef(sourceRef);
+            }),
+    );
+}
+
 function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPageSpec[], gaps: PptInformationGap[]) {
     const issues: PptContentAuditIssue[] = [];
     if (!brief.audience.trim() || !brief.goal.trim() || !brief.narrative.trim()) {
@@ -644,6 +856,16 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
                 issues.push({ id: `issue:${page.pageId}:noise:${block.id}`, code: "noise_text", severity: "warning", pageIds: [page.pageId], message: `可能的异常文本：${block.text}`, actions: [{ kind: "regenerate_pages", pageIds: [page.pageId] }] });
             }
         }
+        for (const copyIssue of auditPptPageCopyReadiness(renderPptPageSpecText(page))) {
+            issues.push({
+                id: `issue:${page.pageId}:${copyIssue.code}`,
+                code: copyIssue.code,
+                severity: "warning",
+                pageIds: [page.pageId],
+                message: copyIssue.message,
+                actions: [{ kind: "regenerate_pages", pageIds: [page.pageId] }],
+            });
+        }
         for (const value of page.layoutIntent) {
             const signals = extractDeckStyleSignals(value);
             if (!signals.length) continue;
@@ -671,6 +893,7 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
 }
 
 function rebuildDraft(draft: PptContentDraft): PptContentDraft {
+    if (new Set(draft.audit.gaps.map((gap) => gap.id)).size !== draft.audit.gaps.length) throw new Error("信息缺口身份重复，请重新生成内容方案");
     const unresolved = draft.audit.gaps.filter((gap) => !gap.resolution && gap.blocking);
     const pageSpecs = draft.pageSpecs.map((page) => ({ ...page, contentState: contentStateFor(unresolved.filter((gap) => gap.pageId === page.pageId)), lockedFacts: derivePptLockedFacts(page) }));
     const audit = { gaps: draft.audit.gaps, issues: deriveAuditIssues(draft.brief, pageSpecs, draft.audit.gaps) };
@@ -778,6 +1001,10 @@ function stringArray(value: unknown) {
 
 function text(value: unknown) {
     return typeof value === "string" ? value.trim() : "";
+}
+
+function copyLength(value: string) {
+    return [...value.trim().replace(/\r?\n/g, "")].length;
 }
 
 function stableKey(value: string) {

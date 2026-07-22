@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+    acceptPptPageSuggestions,
     applyPptContentAction,
     applyPptContentRepair,
     createPptContentRepairPreview,
     finalizePptContentDraft,
+    isPptAuthoringInstruction,
     normalizePptContentDraft,
     previewPptContentAction,
     replacePptContentDraftPage,
@@ -15,12 +17,14 @@ import {
     type PptContentRepairPreview,
     type PptInformationGapResolution,
 } from "@/lib/ppt/content-plan";
-import { requestPptContentPageRegeneration, requestPptContentPlan, type PptContentPlanRequest } from "@/services/api/ppt-content";
+import { previewPptContentPlanStream, requestPptContentPageRegeneration, requestPptContentPlan, type PptContentPlanRequest, type PptContentStreamProgress } from "@/services/api/ppt-content";
 import type { AiConfig } from "@/stores/use-config-store";
 
 type DraftEntry = { inputKey: string; draft: PptContentDraft | null };
-type RequestState = { inputKey: string; loading: boolean; error: string; receivedCharacters: number };
+type RequestState = { inputKey: string; loading: boolean; error: string; receivedCharacters: number; streamProgress: PptContentStreamProgress };
 type PageRequestState = { inputKey: string; pageId: string | null; loading: boolean; error: string; receivedCharacters: number };
+
+const EMPTY_STREAM_PROGRESS: PptContentStreamProgress = { completedPages: [] };
 
 export type PptContentPlanningController = ReturnType<typeof usePptContentPlanning>;
 export type FinalizedPptContent = ReturnType<typeof finalizePptContentDraft>;
@@ -38,7 +42,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
     const draftRef = useRef<PptContentDraft | null>(null);
     const draftKeyRef = useRef(inputKey);
     const [draftEntry, setDraftEntry] = useState<DraftEntry>({ inputKey, draft: null });
-    const [requestState, setRequestState] = useState<RequestState>({ inputKey, loading: false, error: "", receivedCharacters: 0 });
+    const [requestState, setRequestState] = useState<RequestState>({ inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
     const [pageRequestState, setPageRequestState] = useState<PageRequestState>({ inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
     const [repairPreview, setRepairPreview] = useState<PptContentRepairPreview | null>(null);
 
@@ -50,7 +54,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         controllerRef.current?.abort();
         controllerRef.current = null;
         requestTokenRef.current += 1;
-        setRequestState((current) => (current.loading ? { ...current, loading: false } : current));
+        setRequestState((current) => (current.loading ? { ...current, loading: false, streamProgress: EMPTY_STREAM_PROGRESS } : current));
         setPageRequestState((current) => (current.loading ? { ...current, loading: false } : current));
     }, []);
 
@@ -61,7 +65,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         draftKeyRef.current = inputKey;
         setDraftEntry({ inputKey, draft: cached });
         setRepairPreview(null);
-        setRequestState({ inputKey, loading: false, error: "", receivedCharacters: 0 });
+        setRequestState({ inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
         setPageRequestState({ inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
     }, [cancel, inputKey, requestConfigKey]);
 
@@ -75,7 +79,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
 
     const visibleDraft = draftEntry.inputKey === inputKey ? draftEntry.draft : (cacheRef.current.get(inputKey) ?? null);
     const validation = useMemo(() => (visibleDraft ? validatePptContentDraft(visibleDraft) : null), [visibleDraft]);
-    const visibleRequest = requestState.inputKey === inputKey ? requestState : { inputKey, loading: false, error: "", receivedCharacters: 0 };
+    const visibleRequest = requestState.inputKey === inputKey ? requestState : { inputKey, loading: false, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS };
     const visiblePageRequest = pageRequestState.inputKey === inputKey ? pageRequestState : { inputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 };
 
     const commitDraft = useCallback((targetInputKey: string, draft: PptContentDraft) => {
@@ -98,6 +102,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             loading: current.inputKey === key ? current.loading : false,
             error: message,
             receivedCharacters: current.inputKey === key ? current.receivedCharacters : 0,
+            streamProgress: current.inputKey === key ? current.streamProgress : EMPTY_STREAM_PROGRESS,
         }));
     }, []);
 
@@ -127,7 +132,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             controllerRef.current = controller;
             setRepairPreview(null);
             setPageRequestState({ inputKey: requestedInputKey, pageId: null, loading: false, error: "", receivedCharacters: 0 });
-            setRequestState({ inputKey: requestedInputKey, loading: true, error: "", receivedCharacters: 0 });
+            setRequestState({ inputKey: requestedInputKey, loading: true, error: "", receivedCharacters: 0, streamProgress: EMPTY_STREAM_PROGRESS });
 
             try {
                 const raw = await requestPptContentPlan(
@@ -135,7 +140,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                     requestedInput,
                     (text) => {
                         if (controller.signal.aborted || requestTokenRef.current !== token || inputKeyRef.current !== requestedInputKey) return;
-                        setRequestState({ inputKey: requestedInputKey, loading: true, error: "", receivedCharacters: text.length });
+                        setRequestState({ inputKey: requestedInputKey, loading: true, error: "", receivedCharacters: text.length, streamProgress: previewPptContentPlanStream(text) });
                     },
                     { signal: controller.signal },
                 );
@@ -157,7 +162,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             } finally {
                 if (requestTokenRef.current === token) {
                     controllerRef.current = null;
-                    setRequestState((current) => (current.inputKey === requestedInputKey ? { ...current, loading: false } : current));
+                    setRequestState((current) => (current.inputKey === requestedInputKey ? { ...current, loading: false, streamProgress: EMPTY_STREAM_PROGRESS } : current));
                 }
             }
         },
@@ -237,6 +242,29 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         [commitDraft, currentDraft, setError],
     );
 
+    const acceptPageSuggestions = useCallback(
+        (pageId: string) => {
+            const draft = currentDraft();
+            if (!draft) return null;
+            const suggestions = draft.audit.gaps.filter((gap) => gap.pageId === pageId && !gap.resolution && gap.proposedAnswer?.trim());
+            if (!suggestions.length) {
+                setError("本页暂无可采纳的 AI 建议");
+                return null;
+            }
+            try {
+                const next = acceptPptPageSuggestions(draft, pageId, new Date().toISOString());
+                commitDraft(inputKeyRef.current, next);
+                setRepairPreview(null);
+                setError("");
+                return next;
+            } catch (error) {
+                setError(error instanceof Error ? error.message : "采纳本页建议失败");
+                return null;
+            }
+        },
+        [commitDraft, currentDraft, setError],
+    );
+
     const regeneratePage = useCallback(
         async (pageId: string) => {
             const requestedInput = inputRef.current;
@@ -250,6 +278,8 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             const target = draft.pageSpecs[targetIndex];
             const titleOf = (page: typeof target) => page.contentBlocks.find((block) => block.kind === "title")?.text || "未命名页";
             const claim = target.contentBlocks.find((block) => block.kind === "primary_claim")?.text || "";
+            const authoringInstructions = target.contentBlocks.map((block) => block.text).filter(isPptAuthoringInstruction);
+            const sourceById = new Map(target.sourceRefs.map((source) => [source.id, source]));
             const requestedRevision = draft.revision;
 
             cancel();
@@ -270,9 +300,15 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                         targetPage: {
                             title: titleOf(target),
                             purpose: target.purpose,
-                            primaryClaim: claim,
-                            contentBlocks: target.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim").map((block) => block.text),
+                            primaryClaim: isPptAuthoringInstruction(claim) ? "" : claim,
+                            contentBlocks: target.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim" && !isPptAuthoringInstruction(block.text)).map((block) => ({ kind: block.kind, text: block.text })),
                         },
+                        authoringInstructions,
+                        confirmedInputs: target.contentBlocks.flatMap((block) => {
+                            if (isPptAuthoringInstruction(block.text)) return [];
+                            const source = block.sourceRefIds.map((sourceRefId) => sourceById.get(sourceRefId)).find((candidate) => candidate?.source === "user_answer" || candidate?.source === "confirmed_assumption");
+                            return source ? [{ source: source.source as "user_answer" | "confirmed_assumption", kind: block.kind, text: block.text }] : [];
+                        }),
                         unresolvedGaps: draft.audit.gaps.filter((gap) => gap.pageId === pageId && !gap.resolution).map((gap) => ({ question: gap.question, reason: gap.reason, ...(gap.proposedAnswer ? { proposedAnswer: gap.proposedAnswer } : {}) })),
                         otherPageTitles: draft.pageSpecs.filter((page) => page.pageId !== pageId).map(titleOf),
                     },
@@ -329,11 +365,13 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         loading: visibleRequest.loading || visiblePageRequest.loading,
         error: visibleRequest.error,
         receivedCharacters: visibleRequest.receivedCharacters,
+        streamProgress: visibleRequest.streamProgress,
         pageRequest: visiblePageRequest,
         generate,
         regeneratePage,
         cancel,
         resolveGap,
+        acceptPageSuggestions,
         editBlock: (pageId: string, blockId: string, text: string) => applyAction({ kind: "edit_block", pageId, blockId, text, editedAt: new Date().toISOString() }),
         editPurpose: (pageId: string, purpose: string) => applyAction({ kind: "edit_purpose", pageId, purpose }),
         removePage: (pageId: string) => applyAction({ kind: "remove_page", pageId }),

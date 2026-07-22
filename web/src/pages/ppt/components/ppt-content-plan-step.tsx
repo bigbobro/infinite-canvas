@@ -88,10 +88,7 @@ export function PptContentPlanStep({ planning, onBack, onConfirmed }: Props) {
                 <ContentPlanHeader planning={planning} />
                 {planning.error ? <Alert type="error" showIcon message="内容方案未生成" description={planning.error} /> : null}
                 {planning.loading ? (
-                    <div className="space-y-4 border-y border-stone-200 py-6 dark:border-stone-800">
-                        <Skeleton active title={{ width: "38%" }} paragraph={{ rows: 5 }} />
-                        <p className="text-center text-xs text-stone-500">{planning.receivedCharacters ? "正在整理逐页内容与信息缺口…" : "正在理解材料…"}</p>
-                    </div>
+                    <ContentPlanStreamPreview planning={planning} />
                 ) : (
                     <div className="flex min-h-56 flex-col items-center justify-center gap-3 border-y border-stone-200 text-center dark:border-stone-800">
                         <FileText className="size-6 text-stone-400" aria-hidden="true" />
@@ -235,6 +232,41 @@ function ContentPlanHeader({ planning }: { planning: PptContentPlanningControlle
     );
 }
 
+function ContentPlanStreamPreview({ planning }: { planning: PptContentPlanningController }) {
+    const pages = planning.streamProgress.completedPages;
+    const pendingOrdinal = planning.streamProgress.pendingPageOrdinal ?? pages.length + 1;
+    return (
+        <section className="border-y border-stone-200 py-5 dark:border-stone-800" data-testid="ppt-content-stream-preview" aria-live="polite">
+            <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                    <p className="text-sm font-medium">生成中预览</p>
+                    <p className="mt-1 text-xs text-stone-500">完整页面会依次出现；来源与内容检查完成后才能编辑。</p>
+                </div>
+                <span className="font-mono text-xs tabular-nums text-stone-400">已接收 {pages.length} 页</span>
+            </div>
+            <div className="space-y-3">
+                {pages.map((page) => (
+                    <article key={`${page.ordinal}:${page.title}`} className="grid gap-3 border border-stone-200 px-4 py-4 sm:grid-cols-[44px_minmax(0,1fr)_auto] dark:border-stone-800" data-testid="ppt-content-stream-page">
+                        <span className="font-mono text-xs tabular-nums text-stone-400">{String(page.ordinal).padStart(2, "0")}</span>
+                        <div className="min-w-0">
+                            <h3 className="truncate text-sm font-semibold">{page.title}</h3>
+                            {page.primaryClaim ? <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-500">{page.primaryClaim}</p> : null}
+                        </div>
+                        <span className="text-xs text-emerald-700 dark:text-emerald-300">已接收 · {page.blockCount} 块</span>
+                    </article>
+                ))}
+                <article className="grid gap-3 border border-dashed border-stone-200 px-4 py-4 sm:grid-cols-[44px_minmax(0,1fr)] dark:border-stone-800" data-testid="ppt-content-stream-pending">
+                    <span className="font-mono text-xs tabular-nums text-stone-400">{String(pendingOrdinal).padStart(2, "0")}</span>
+                    <div>
+                        <Skeleton active title={{ width: "34%" }} paragraph={{ rows: pages.length ? 1 : 3 }} />
+                        <p className="mt-1 text-xs text-stone-500">{planning.receivedCharacters ? "正在整理下一页内容与信息缺口…" : "正在理解材料…"}</p>
+                    </div>
+                </article>
+            </div>
+        </section>
+    );
+}
+
 function SummaryValue({ label, value, danger = false }: { label: string; value: number; danger?: boolean }) {
     return (
         <div className="border-r border-stone-200 px-4 first:pl-0 last:border-r-0 last:pr-0 dark:border-stone-800">
@@ -280,6 +312,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
     const contentBlocks = page.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim");
     const sourceById = useMemo(() => new Map(page.sourceRefs.map((source) => [source.id, source])), [page.sourceRefs]);
     const unresolvedCount = gaps.filter((gap) => !gap.resolution).length;
+    const suggestionCount = gaps.filter((gap) => !gap.resolution && gap.proposedAnswer?.trim()).length;
     const pageRequest = planning.pageRequest.pageId === page.pageId ? planning.pageRequest : null;
     const nextPageId = pageIds[index + 1];
     const move = (offset: -1 | 1) => {
@@ -306,10 +339,17 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                                 取消本页生成
                             </Button>
                         ) : (
-                            <Button size="small" type="text" icon={<RefreshCw className="size-3.5" />} onClick={() => void planning.regeneratePage(page.pageId)}>
-                                重新生成本页
+                            <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} onClick={() => void planning.regeneratePage(page.pageId)}>
+                                让 AI 补全本页
                             </Button>
                         )}
+                        {suggestionCount ? (
+                            <Popconfirm title={`采纳本页 ${suggestionCount} 条 AI 建议？`} description="建议会作为已确认内容写入本页，之后仍可继续编辑。" okText="采纳" cancelText="取消" onConfirm={() => planning.acceptPageSuggestions(page.pageId)}>
+                                <Button size="small" type="text" icon={<Check className="size-3.5" />}>
+                                    采纳本页建议
+                                </Button>
+                            </Popconfirm>
+                        ) : null}
                         <Button size="small" type="text" icon={<ArrowUp className="size-3.5" />} disabled={index === 0} aria-label="上移一页" onClick={() => move(-1)} />
                         <Button size="small" type="text" icon={<ArrowDown className="size-3.5" />} disabled={index === pageIds.length - 1} aria-label="下移一页" onClick={() => move(1)} />
                         {nextPageId ? (
@@ -532,15 +572,20 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
                 </div>
             ) : null}
             <div className="mt-3 flex gap-2">
-                <Input.TextArea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="补充你确认的信息" autoSize={{ minRows: 1, maxRows: 4 }} />
+                <Input.TextArea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="填写你确认的正文或事实" autoSize={{ minRows: 1, maxRows: 4 }} />
                 <Button type="primary" disabled={!answer.trim()} onClick={submitAnswer}>
-                    采用补充
+                    采用为正文
                 </Button>
             </div>
             <div className="mt-2 flex flex-wrap gap-x-1 gap-y-1">
                 {gap.proposedAnswer ? (
                     <Button size="small" type="text" onClick={() => planning.resolveGap(gap.id, { kind: "confirmed_assumption", text: gap.proposedAnswer!, resolvedAt: new Date().toISOString() })}>
                         采纳 AI 建议
+                    </Button>
+                ) : null}
+                {!gap.proposedAnswer && gap.pageId ? (
+                    <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} loading={planning.pageRequest.loading && planning.pageRequest.pageId === gap.pageId} onClick={() => void planning.regeneratePage(gap.pageId!)}>
+                        让 AI 给建议
                     </Button>
                 ) : null}
                 {!requiresConcreteContent ? (
