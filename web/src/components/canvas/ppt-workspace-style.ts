@@ -1,5 +1,5 @@
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
-import { findPptDeckStyleOverrides, previewPptStyleClauseRepair, type PptStyleOverride } from "@/lib/ppt/style-contract";
+import { compilePptStyleContract, findPptDeckStyleOverrides, previewPptStyleClauseRepair, type PptStyleOverride } from "@/lib/ppt/style-contract";
 import type { CanvasProjectPptStyleContract } from "@/stores/canvas/use-canvas-store";
 
 const DENSITY_LABELS: Record<CanvasProjectPptStyleContract["modelStyle"]["density"], string> = {
@@ -26,8 +26,16 @@ const FOOTER_LABELS: Record<CanvasProjectPptStyleContract["modelStyle"]["shell"]
     "deck-title-and-page-number": "页脚显示标题和页码",
 };
 
-export function getPptWorkspaceStyleSummary(contract: CanvasProjectPptStyleContract) {
-    const { modelStyle } = contract;
+export function getPptWorkspaceStyleSummary(contract: unknown) {
+    const compiled = compilePptStyleContract(contract);
+    if (!compiled.ok) {
+        return {
+            palette: [],
+            moodAndDensity: "视觉 Contract 不完整",
+            shell: "点击修复整套视觉系统",
+        };
+    }
+    const { modelStyle } = compiled.value.canonical;
     return {
         palette: [modelStyle.palette.background, modelStyle.palette.surface, modelStyle.palette.primary, modelStyle.palette.accent, modelStyle.palette.text],
         moodAndDensity: `${modelStyle.mood.join(" / ")} · ${DENSITY_LABELS[modelStyle.density]}`,
