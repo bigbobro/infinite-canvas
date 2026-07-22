@@ -263,6 +263,26 @@ test("内容方案 prompt 不要求模型生成稳定 ID、action 或 lockedFact
     assert.deepEqual(parsePptContentPlanResponse('```json\n{"brief":{},"pages":[]}\n```'), { brief: {}, pages: [] });
 });
 
+test("内容方案 prompt 先分离 Deck Brief 与上屏正文，再规划最少的非重复页面", () => {
+    const messages = buildPptContentPlanMessages({
+        title: "PPT 工作台介绍",
+        sourceMaterial: "我想做一份介绍 PPT 工作台的材料\n这份材料要让第一次接触的人明确理解四件事",
+        requirements: "最多 9 页\n希望回答为什么需要使用 PPT 工作台",
+    });
+    const systemPrompt = messages[0].content;
+
+    assert.match(systemPrompt, /Deck Brief/);
+    assert.match(systemPrompt, /创作意图[^\n]*观众可见正文/);
+    assert.match(systemPrompt, /我想做一份[^\n]*这份材料要让[^\n]*希望回答/);
+    assert.match(systemPrompt, /第一页[^\n]*contentForm[^\n]*cover/);
+    assert.match(systemPrompt, /封面[^\n]*blocks[^\n]*为空/);
+    assert.match(systemPrompt, /先规划整套叙事[^\n]*最少/);
+    assert.match(systemPrompt, /不按[^\n]*段落[^\n]*拆页/);
+    assert.match(systemPrompt, /最多 N 页[^\n]*N 页以内/);
+    assert.match(systemPrompt, /没有明确页数[^\n]*固定上限/);
+    assert.match(messages[1].content, /补充要求（行号\|原文）：\n1\|最多 9 页\n2\|希望回答/);
+});
+
 test("页面 AI 改写返回 slide-ready 内容块与定向信息表达", () => {
     const messages = buildPptPageRewriteMessages("中转站介绍\n核心判断\n很长的正文", "重新改写本页");
     assert.match(messages[0].content, /只返回 JSON/);
@@ -333,10 +353,20 @@ test("单页重新生成只发起一次请求，并锁定其他页", async () =>
             { source: "confirmed_assumption", kind: "supporting_claim", text: "先比较托管与自建两类方案" },
         ],
         unresolvedGaps: [{ question: "候选组件有哪些？", reason: "材料没有具体候选项", proposedAnswer: "CPA 与 SUB2API" }],
+        auditIssues: [
+            {
+                code: "authoring_instruction_as_copy",
+                field: "primaryClaim",
+                value: "我想做一份中转站介绍材料",
+                message: "核心信息包含创作意图，不应作为观众可见正文",
+            },
+        ],
         otherPageTitles: ["封面", "架构方案"],
     };
     const messages = buildPptContentPageRegenerationMessages(input);
     assert.match(messages[0].content, /pages 必须且只能返回 1 页/);
+    assert.match(messages[0].content, /整套第 2 页[^\n]*不得使用 cover/);
+    assert.match(messages[0].content, /唯一返回页[^\n]*整套第一页/);
     assert.match(messages[1].content, /当前内容版本：4/);
     assert.match(messages[1].content, /只重新生成第 2 页/);
     assert.match(messages[1].content, /候选组件有哪些/);
@@ -346,6 +376,12 @@ test("单页重新生成只发起一次请求，并锁定其他页", async () =>
     assert.match(messages[0].content, /text 与 kind 都必须原样保留/);
     assert.match(messages[1].content, /"kind":"list"/);
     assert.match(messages[1].content, /优先考虑低运维成本/);
+    assert.match(messages[0].content, /逐项消除[^\n]*审核问题/);
+    assert.match(messages[1].content, /本页必须修复的审核问题/);
+    assert.match(messages[1].content, /"code":"authoring_instruction_as_copy"/);
+    assert.match(messages[1].content, /"field":"primaryClaim"/);
+    assert.match(messages[1].content, /"value":"我想做一份中转站介绍材料"/);
+    assert.match(messages[1].content, /核心信息包含创作意图/);
     assert.match(messages[1].content, /其他页标题已锁定/);
     assert.match(messages[1].content, /1\. 封面\n2\. 架构方案/);
 
@@ -373,8 +409,11 @@ test("单页重新生成兼容裸页面，并拒绝空页或多页响应", async
         authoringInstructions: [],
         confirmedInputs: [],
         unresolvedGaps: [],
+        auditIssues: [],
         otherPageTitles: [],
     };
+    const coverMessages = buildPptContentPageRegenerationMessages(input);
+    assert.match(coverMessages[0].content, /整套第 1 页[^\n]*必须使用 cover/);
     const request = (response) => requestPptContentPageRegeneration({ model: "image", textModel: "text" }, input, () => {}, { requester: async () => response });
 
     const bare = await request('{"title":"中转站介绍","purpose":"说明项目","primaryClaim":"给出建设建议"}');

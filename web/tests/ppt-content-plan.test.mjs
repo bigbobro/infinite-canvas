@@ -5,6 +5,7 @@ import { createServer } from "vite";
 
 let applyPptContentAction;
 let applyPptContentRepair;
+let assertPptPageAuditIssuesResolved;
 let applyPptCanonicalPageTextEdit;
 let applyPptCanonicalPageRewrite;
 let acceptPptPageSuggestions;
@@ -36,6 +37,7 @@ before(async () => {
         acceptPptPageSuggestions,
         applyPptContentAction,
         applyPptContentRepair,
+        assertPptPageAuditIssuesResolved,
         auditPptPageCopyReadiness,
         createPptContentRepairPreview,
         derivePptLockedFacts,
@@ -300,19 +302,218 @@ test("居中布局等纯几何要求可直接通过，仍不放行夹带事实",
     assert.equal(isPptLayoutIntentSupported(page, "居中布局并突出服务器投入 999 台"), false);
     assert.equal(isPptLayoutIntentSupported(page, "上方架构图，下方说明"), true);
     assert.equal(isPptLayoutIntentSupported(page, "上下分区"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "居中主视觉 · 上下分区"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "四宫格"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "纵向编号列表"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "四宫格或纵向编号列表"), true);
+    assert.equal(isPptLayoutIntentSupported(page, "2×2 网格"), true);
     assert.equal(isPptLayoutIntentSupported(page, "下方说明服务器投入 999 台"), false);
+    assert.equal(isPptLayoutIntentSupported(page, "四宫格展示腾讯云、阿里云"), false);
+    assert.equal(isPptLayoutIntentSupported(page, "999个模块"), false);
+    assert.equal(isPptLayoutIntentSupported(page, "999张卡片"), false);
+    assert.equal(isPptLayoutIntentSupported(page, "999宫格"), false);
+    assert.equal(isPptLayoutIntentSupported(page, "编号列表增加第五项"), false);
+    const pageWithApprovedCount = structuredClone(page);
+    pageWithApprovedCount.contentBlocks.push({ id: "approved-count", kind: "body", text: "系统包含 4 个模块", sourceRefIds: [] });
+    assert.equal(isPptLayoutIntentSupported(pageWithApprovedCount, "4 个模块"), true);
     assert.equal(
         validatePptContentDraft(draft).issues.some((issue) => issue.message === "页面排版要求包含未经批准的文案或事实"),
         false,
     );
 });
 
+test("无法识别的布局指出原值，并可按 revision 只移除目标布局", () => {
+    const raw = rawDraft();
+    raw.pages[0].blocks = raw.pages[0].blocks.filter((block) => block.key === "known");
+    raw.pages[0].gaps = [];
+    raw.pages[0].visualEncoding = [];
+    raw.pages[0].layoutIntent = ["左右分栏", "四宫格展示腾讯云、阿里云"];
+    const draft = normalizePptContentDraft(raw, sourceInput());
+    const issue = draft.audit.issues.find((item) => item.field === "layoutIntent");
+
+    assert.ok(issue);
+    assert.equal(issue.value, "四宫格展示腾讯云、阿里云");
+    assert.match(issue.message, /四宫格展示腾讯云、阿里云/);
+    assert.equal(issue.repair?.kind, "remove_layout_intent");
+    const preview = createPptContentRepairPreview(draft, [issue.id]);
+    const repaired = applyPptContentRepair(draft, preview);
+    assert.deepEqual(repaired.pageSpecs[0].layoutIntent, ["左右分栏"]);
+    assert.deepEqual(repaired.pageSpecs[0].contentBlocks, draft.pageSpecs[0].contentBlocks);
+    assert.deepEqual(repaired.pageSpecs[0].sourceRefs, draft.pageSpecs[0].sourceRefs);
+    assert.throws(() => applyPptContentRepair(repaired, preview), /已变更|过期/);
+});
+
 test("要求 AI 给建议的用户补充会作为创作指令，不会当成页面正文", () => {
     assert.equal(isPptAuthoringInstruction("我希望你来给我按照我的内容来去给这个建议"), true);
     assert.equal(isPptAuthoringInstruction("请你给建议"), true);
     assert.equal(isPptAuthoringInstruction("帮我补充这一页"), true);
+    assert.equal(isPptAuthoringInstruction("我想做一份介绍“PPT 工作台”的材料"), true);
+    assert.equal(isPptAuthoringInstruction("想做一份介绍 PPT 工作台的材料"), true);
+    assert.equal(isPptAuthoringInstruction("我想做一个中转站的介绍材料"), true);
+    assert.equal(isPptAuthoringInstruction("我希望能做一个中转站的介绍材料。"), true);
+    assert.equal(isPptAuthoringInstruction("我想做一份介绍 PPT 工作台的材料。"), true);
+    assert.equal(isPptAuthoringInstruction("我想要做一个中转站的介绍材料。"), true);
+    assert.equal(isPptAuthoringInstruction("我做这份材料的核心受众和目的主要有三个"), true);
+    assert.equal(isPptAuthoringInstruction("这份材料不是简单罗列功能"), true);
+    assert.equal(isPptAuthoringInstruction("这份材料要让第一次接触它的人明确理解四件事"), true);
     assert.equal(isPptAuthoringInstruction("我们希望合作伙伴获得清晰的建设建议"), false);
+    assert.equal(isPptAuthoringInstruction("我希望材料利用率提高到 90%"), false);
+    assert.equal(isPptAuthoringInstruction("我需要材料成本控制在 100 万元以内"), false);
+    assert.equal(isPptAuthoringInstruction("本材料需要耐受 1200°C"), false);
+    assert.equal(isPptAuthoringInstruction("我想做一种耐高温材料"), false);
+    assert.equal(isPptAuthoringInstruction("为什么需要 PPT 工作台"), false);
+    assert.equal(isPptAuthoringInstruction("PPT 工作台解决了什么问题"), false);
     assert.equal(isPptAuthoringInstruction("优先考虑低运维成本"), false);
+});
+
+test("有合法来源的 Deck Brief 元话语仍不能成为观众可见正文", () => {
+    const sourceMaterial = [
+        "我想做一份介绍“PPT 工作台”的材料",
+        "这份材料不是简单罗列功能",
+        "这份材料要让第一次接触它的人明确理解四件事",
+        "为什么需要 PPT 工作台",
+        "PPT 工作台解决了什么问题",
+        "我们希望合作伙伴获得清晰的建设建议",
+        "PPT 工作台把内容规划连接到页面生成",
+        "PPT 工作台介绍",
+    ].join("\n");
+    const draft = normalizePptContentDraft(
+        {
+            brief: { audience: "第一次接触它的人", goal: "明确理解四件事", narrative: "为什么需要 PPT 工作台" },
+            pages: [
+                {
+                    title: "PPT 工作台介绍",
+                    titleSource: { source: "material", startLine: 8, endLine: 8 },
+                    purpose: "解释产品价值",
+                    primaryClaim: "PPT 工作台把内容规划连接到页面生成",
+                    primaryClaimSource: { source: "material", startLine: 7, endLine: 7 },
+                    contentForm: "narrative",
+                    blocks: [
+                        { key: "meta", kind: "body", text: "这份材料要让第一次接触它的人明确理解四件事", source: { source: "material", startLine: 3, endLine: 3 } },
+                        { key: "business", kind: "body", text: "我们希望合作伙伴获得清晰的建设建议", source: { source: "material", startLine: 6, endLine: 6 } },
+                    ],
+                    layoutIntent: ["上下分区"],
+                    visualEncoding: [],
+                    gaps: [],
+                },
+            ],
+        },
+        { title: "PPT 工作台介绍", sourceMaterial, requirements: "" },
+    );
+
+    const issue = draft.audit.issues.find((item) => item.code === "authoring_instruction_as_copy");
+    assert.ok(issue);
+    assert.equal(issue.value, "这份材料要让第一次接触它的人明确理解四件事");
+    assert.match(issue.message, /创作目标|上屏/);
+    assert.equal(
+        draft.audit.issues.some((item) => item.code === "authoring_instruction_as_copy" && item.value === "我们希望合作伙伴获得清晰的建设建议"),
+        false,
+    );
+});
+
+test("单页重生成未消除触发问题时拒绝接纳新版本", () => {
+    const sourceMaterial = "PPT 工作台介绍\nPPT 工作台把内容规划连接到页面生成\n这份材料要让第一次接触它的人明确理解四件事\n第一次接触它的人\n明确理解四件事";
+    const raw = {
+        brief: { audience: "第一次接触它的人", goal: "明确理解四件事", narrative: "PPT 工作台把内容规划连接到页面生成" },
+        pages: [
+            {
+                title: "PPT 工作台介绍",
+                titleSource: { source: "material", startLine: 1, endLine: 1 },
+                purpose: "解释产品价值",
+                primaryClaim: "PPT 工作台把内容规划连接到页面生成",
+                primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                contentForm: "narrative",
+                blocks: [{ key: "meta", kind: "body", text: "这份材料要让第一次接触它的人明确理解四件事", source: { source: "material", startLine: 3, endLine: 3 } }],
+                layoutIntent: ["上下分区"],
+                visualEncoding: [],
+                gaps: [],
+            },
+        ],
+    };
+    const input = { title: "PPT 工作台介绍", sourceMaterial, requirements: "" };
+    const current = normalizePptContentDraft(raw, input);
+    const triggering = current.audit.issues.filter((issue) => issue.code === "authoring_instruction_as_copy");
+    const regenerated = normalizePptContentDraft(raw, { ...input, previousPageSpecs: current.pageSpecs });
+    const next = replacePptContentDraftPage(current, current.revision, current.pageSpecs[0].pageId, regenerated.pageSpecs[0], regenerated.audit.gaps);
+
+    assert.throws(() => assertPptPageAuditIssuesResolved(next, current.pageSpecs[0].pageId, triggering), /问题仍未解决|原页已保留/);
+});
+
+test("多页方案的第一页必须是无正文块封面，不能按页序静默改角色", () => {
+    const cover = { ...rawDraft().pages[0], contentForm: "cover", blocks: [], gaps: [], visualEncoding: [], layoutIntent: ["居中主视觉"] };
+    const content = { ...rawDraft().pages[0], contentForm: "narrative", blocks: [], gaps: [], visualEncoding: [], layoutIntent: ["上下分区"] };
+    const valid = normalizePptContentDraft({ brief: rawDraft().brief, pages: [cover, content] }, sourceInput());
+
+    assert.equal(valid.pageSpecs[0].layoutRole, "cover");
+    assert.equal(valid.pageSpecs[1].layoutRole, "content");
+    assert.equal(
+        valid.audit.issues.some((item) => item.code === "invalid_cover"),
+        false,
+    );
+
+    const narrativeFirst = normalizePptContentDraft({ brief: rawDraft().brief, pages: [content, content] }, sourceInput());
+    assert.equal(narrativeFirst.pageSpecs[0].layoutRole, "content");
+    assert.ok(narrativeFirst.audit.issues.some((item) => item.code === "invalid_cover" && item.severity === "blocking"));
+
+    const bodyCover = normalizePptContentDraft({ brief: rawDraft().brief, pages: [{ ...cover, blocks: [rawDraft().pages[0].blocks[0]] }, content] }, sourceInput());
+    assert.ok(bodyCover.audit.issues.some((item) => item.code === "invalid_cover" && item.severity === "blocking"));
+
+    const secondCover = structuredClone(valid.pageSpecs[1]);
+    secondCover.contentForm = "cover";
+    secondCover.layoutRole = "cover";
+    const regenerated = replacePptContentDraftPage(valid, valid.revision, secondCover.pageId, secondCover, []);
+    assert.ok(regenerated.audit.issues.some((item) => item.code === "invalid_cover" && item.pageIds.includes(secondCover.pageId)));
+    assert.throws(() => assertPptPageAuditIssuesResolved(regenerated, secondCover.pageId, []), /问题仍未解决|原页已保留/);
+    assert.doesNotThrow(() => assertPptPageAuditIssuesResolved(valid, valid.pageSpecs[0].pageId, [{ code: "invalid_cover", field: "contentForm", message: "第一页应为封面" }]));
+});
+
+test("封面核心信息必须是一句定位语，不能用四项目标清单冒充", () => {
+    const createCover = (primaryClaim) =>
+        normalizePptContentDraft(
+            {
+                brief: { audience: "第一次接触产品的人", goal: "理解产品价值", narrative: "从问题到价值" },
+                pages: [
+                    {
+                        title: "PPT 工作台",
+                        titleSource: { source: "material", startLine: 1, endLine: 1 },
+                        purpose: "建立产品定位",
+                        primaryClaim,
+                        primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                        contentForm: "cover",
+                        blocks: [],
+                        layoutIntent: ["居中主视觉"],
+                        visualEncoding: [],
+                        gaps: [],
+                    },
+                ],
+            },
+            {
+                title: "PPT 工作台",
+                sourceMaterial: ["PPT 工作台", primaryClaim, "第一次接触产品的人", "理解产品价值", "从问题到价值"].join("\n"),
+                requirements: "",
+            },
+        );
+
+    const checklist = createCover("为什么需要、好在哪里、解决什么问题、为谁服务");
+    assert.ok(checklist.audit.issues.some((item) => item.code === "invalid_cover" && item.field === "primaryClaim"));
+
+    const tagline = createCover("把材料、内容规划、视觉方向和页面生成连接成可控流程");
+    assert.equal(
+        tagline.audit.issues.some((item) => item.code === "invalid_cover"),
+        false,
+    );
+});
+
+test("只执行用户明确给出的最大页数，不为未声明页数的长方案硬设上限", () => {
+    const pages = Array.from({ length: 3 }, () => ({ ...rawDraft().pages[0], contentForm: "narrative", blocks: [], gaps: [], visualEncoding: [] }));
+    const limited = normalizePptContentDraft({ brief: rawDraft().brief, pages }, { ...sourceInput(), requirements: `${sourceInput().requirements}\n控制在 2 页以内` });
+    assert.ok(limited.audit.issues.some((item) => item.code === "page_count_exceeded" && item.severity === "blocking" && /3 页/.test(item.message) && /2 页/.test(item.message)));
+
+    const unlimited = normalizePptContentDraft({ brief: rawDraft().brief, pages: Array.from({ length: 17 }, () => ({ ...rawDraft().pages[0], contentForm: "narrative", blocks: [], gaps: [], visualEncoding: [] })) }, sourceInput());
+    assert.equal(
+        unlimited.audit.issues.some((item) => item.code === "page_count_exceeded"),
+        false,
+    );
 });
 
 test("稀疏材料仍展示可采纳的完整 AI 建议，而不是只有请补充目录词", () => {

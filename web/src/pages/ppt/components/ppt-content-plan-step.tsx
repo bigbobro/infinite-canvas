@@ -65,6 +65,9 @@ export function PptContentPlanStep({ planning, onBack, onConfirmed }: Props) {
     const safeRepairIssueIds = draft?.audit.issues.filter((issue) => issue.repair).map((issue) => issue.id) ?? [];
     const unresolvedGaps = draft?.audit.gaps.filter((gap) => !gap.resolution) ?? [];
     const unresolvedBlockingGaps = unresolvedGaps.filter((gap) => gap.blocking);
+    const deckGaps = draft?.audit.gaps.filter((gap) => !gap.pageId) ?? [];
+    const unresolvedDeckGaps = deckGaps.filter((gap) => !gap.resolution);
+    const resolvedDeckGaps = deckGaps.filter((gap) => gap.resolution);
 
     useEffect(() => setConfirmError(""), [draft?.revision]);
 
@@ -176,16 +179,19 @@ export function PptContentPlanStep({ planning, onBack, onConfirmed }: Props) {
                 ))}
             </div>
 
-            {draft.audit.gaps.some((gap) => !gap.pageId) ? (
+            {deckGaps.length ? (
                 <section className="border-y border-stone-200 py-4 dark:border-stone-800">
-                    <h3 className="text-sm font-semibold">整套材料仍需确认</h3>
-                    <div className="mt-3 space-y-3">
-                        {draft.audit.gaps
-                            .filter((gap) => !gap.pageId)
-                            .map((gap) => (
-                                <InformationGapEditor key={gap.id} gap={gap} planning={planning} />
-                            ))}
-                    </div>
+                    {unresolvedDeckGaps.length ? (
+                        <>
+                            <h3 className="text-sm font-semibold">整套材料仍需确认</h3>
+                            <div className="mt-3 space-y-3">
+                                {unresolvedDeckGaps.map((gap) => (
+                                    <InformationGapEditor key={gap.id} gap={gap} planning={planning} />
+                                ))}
+                            </div>
+                        </>
+                    ) : null}
+                    {resolvedDeckGaps.length ? <ResolvedGapHistory gaps={resolvedDeckGaps} planning={planning} className={unresolvedDeckGaps.length ? "mt-4 border-t border-stone-200 pt-4 dark:border-stone-800" : ""} /> : null}
                 </section>
             ) : null}
 
@@ -298,7 +304,8 @@ function RepairPreview({ planning }: { planning: PptContentPlanningController })
             <ul className="mt-3 space-y-1 text-sm text-stone-600 dark:text-stone-300">
                 {preview.operations.map((operation, index) => (
                     <li key={`${operation.pageId}:${operation.value}:${index}`}>
-                        · 第 {pageNumberById.get(operation.pageId) ?? "?"} 页：从页面构图中移出「{operation.value}」，留到视觉方向阶段处理
+                        · 第 {pageNumberById.get(operation.pageId) ?? "?"} 页：
+                        {operation.kind === "route_deck_style" ? `从页面构图中移出「${operation.value}」，留到视觉方向阶段处理` : `移除无法安全识别的排版要求「${operation.value}」，正文与来源保持不变`}
                     </li>
                 ))}
             </ul>
@@ -311,8 +318,10 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
     const primaryClaim = page.contentBlocks.find((block) => block.kind === "primary_claim");
     const contentBlocks = page.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim");
     const sourceById = useMemo(() => new Map(page.sourceRefs.map((source) => [source.id, source])), [page.sourceRefs]);
-    const unresolvedCount = gaps.filter((gap) => !gap.resolution).length;
-    const suggestionCount = gaps.filter((gap) => !gap.resolution && gap.proposedAnswer?.trim()).length;
+    const unresolvedGaps = gaps.filter((gap) => !gap.resolution);
+    const resolvedGaps = gaps.filter((gap) => gap.resolution);
+    const unresolvedCount = unresolvedGaps.length;
+    const suggestionCount = unresolvedGaps.filter((gap) => gap.proposedAnswer?.trim()).length;
     const pageRequest = planning.pageRequest.pageId === page.pageId ? planning.pageRequest : null;
     const nextPageId = pageIds[index + 1];
     const move = (offset: -1 | 1) => {
@@ -414,16 +423,18 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
 
                 {issues.some((issue) => issue.code !== "unresolved_gap") ? <PageIssues issues={issues.filter((issue) => issue.code !== "unresolved_gap")} planning={planning} /> : null}
 
-                {gaps.length ? (
+                {unresolvedGaps.length ? (
                     <section className="border-t border-stone-200 pt-4 dark:border-stone-800">
                         <h4 className="text-sm font-semibold">信息缺口</h4>
                         <div className="mt-3 space-y-3">
-                            {gaps.map((gap) => (
+                            {unresolvedGaps.map((gap) => (
                                 <InformationGapEditor key={gap.id} gap={gap} planning={planning} />
                             ))}
                         </div>
                     </section>
                 ) : null}
+
+                {resolvedGaps.length ? <ResolvedGapHistory gaps={resolvedGaps} planning={planning} className="border-t border-stone-200 pt-4 dark:border-stone-800" /> : null}
 
                 {page.sourceRefs.length ? (
                     <details className="border-t border-stone-100 pt-3 text-sm dark:border-stone-800">
@@ -528,6 +539,26 @@ function PageIssueAction({ issue, planning }: { issue: PptContentAuditIssue; pla
         );
     }
     return null;
+}
+
+function ResolvedGapHistory({ gaps, planning, className = "" }: { gaps: PptInformationGap[]; planning: PptContentPlanningController; className?: string }) {
+    return (
+        <details className={`group ${className}`}>
+            <summary className="cursor-pointer list-none text-sm font-medium text-stone-500 marker:hidden">
+                <span className="inline-flex items-center gap-2">
+                    <Check className="size-3.5 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+                    已确认补充
+                    <span className="text-xs font-normal text-stone-400 group-open:hidden">{gaps.length} 条 · 展开</span>
+                    <span className="hidden text-xs font-normal text-stone-400 group-open:inline">{gaps.length} 条 · 收起</span>
+                </span>
+            </summary>
+            <div className="mt-3 space-y-3">
+                {gaps.map((gap) => (
+                    <InformationGapEditor key={gap.id} gap={gap} planning={planning} />
+                ))}
+            </div>
+        </details>
+    );
 }
 
 function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; planning: PptContentPlanningController }) {

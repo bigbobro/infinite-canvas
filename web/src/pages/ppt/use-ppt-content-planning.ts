@@ -4,6 +4,7 @@ import {
     acceptPptPageSuggestions,
     applyPptContentAction,
     applyPptContentRepair,
+    assertPptPageAuditIssuesResolved,
     createPptContentRepairPreview,
     finalizePptContentDraft,
     isPptAuthoringInstruction,
@@ -279,6 +280,9 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
             const titleOf = (page: typeof target) => page.contentBlocks.find((block) => block.kind === "title")?.text || "未命名页";
             const claim = target.contentBlocks.find((block) => block.kind === "primary_claim")?.text || "";
             const authoringInstructions = target.contentBlocks.map((block) => block.text).filter(isPptAuthoringInstruction);
+            const auditIssues = draft.audit.issues
+                .filter((issue) => issue.code !== "unresolved_gap" && issue.pageIds.includes(pageId))
+                .map((issue) => ({ code: issue.code, message: issue.message, ...(issue.field ? { field: issue.field } : {}), ...(issue.value ? { value: issue.value } : {}) }));
             const sourceById = new Map(target.sourceRefs.map((source) => [source.id, source]));
             const requestedRevision = draft.revision;
 
@@ -304,6 +308,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                             contentBlocks: target.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim" && !isPptAuthoringInstruction(block.text)).map((block) => ({ kind: block.kind, text: block.text })),
                         },
                         authoringInstructions,
+                        auditIssues,
                         confirmedInputs: target.contentBlocks.flatMap((block) => {
                             if (isPptAuthoringInstruction(block.text)) return [];
                             const source = block.sourceRefIds.map((sourceRefId) => sourceById.get(sourceRefId)).find((candidate) => candidate?.source === "user_answer" || candidate?.source === "confirmed_assumption");
@@ -330,6 +335,7 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                     normalized.pageSpecs[0],
                     normalized.audit.gaps.filter((gap) => gap.pageId === pageId),
                 );
+                assertPptPageAuditIssuesResolved(next, pageId, auditIssues);
                 commitDraft(requestedInputKey, next);
                 return next;
             } catch (error) {

@@ -56,14 +56,30 @@ export type PptInformationGap = {
 
 export type PptContentAuditAction = { kind: "focus_gap"; gapId: string } | { kind: "preview_safe_patch"; issueId: string } | { kind: "regenerate_pages"; pageIds: string[] } | { kind: "merge_pages"; pageIds: string[] };
 
+export type PptContentRepairOperation = { kind: "route_deck_style"; pageId: string; value: string; replacement: string } | { kind: "remove_layout_intent"; pageId: string; value: string; replacement: "" };
+
 export type PptContentAuditIssue = {
     id: string;
-    code: "unresolved_gap" | "invalid_content_structure" | "invalid_content_provenance" | "invalid_visual_encoding" | "duplicate_page" | "noise_text" | "deck_style_signal" | "monolithic_content" | "excessive_copy";
+    code:
+        | "unresolved_gap"
+        | "invalid_content_structure"
+        | "invalid_content_provenance"
+        | "invalid_visual_encoding"
+        | "duplicate_page"
+        | "noise_text"
+        | "deck_style_signal"
+        | "monolithic_content"
+        | "excessive_copy"
+        | "authoring_instruction_as_copy"
+        | "invalid_cover"
+        | "page_count_exceeded";
     severity: "blocking" | "warning";
     pageIds: string[];
     message: string;
     actions: PptContentAuditAction[];
-    repair?: { kind: "route_deck_style"; pageId: string; value: string; replacement: string };
+    field?: string;
+    value?: string;
+    repair?: PptContentRepairOperation;
 };
 
 export type PptContentAudit = { issues: PptContentAuditIssue[]; gaps: PptInformationGap[] };
@@ -73,6 +89,7 @@ export type PptContentDraft = {
     brief: PptContentBrief;
     pageSpecs: CanvasProjectPptPageSpec[];
     audit: PptContentAudit;
+    constraints: { maxPages?: number };
 };
 
 export type PptContentValidationResult = { valid: boolean; issues: PptContentAuditIssue[] };
@@ -88,7 +105,7 @@ export type PptPageRewriteSpec = {
 
 export type PptContentRepairPreview = {
     draftRevision: number;
-    operations: Array<{ kind: "route_deck_style"; pageId: string; value: string; replacement: string }>;
+    operations: PptContentRepairOperation[];
 };
 
 export type PptContentAction =
@@ -112,10 +129,14 @@ const NUMBER_PATTERN = /(?:[$¥€£]\s*)?\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:亿元|
 const ASCII_TERM_PATTERN = /\b[A-Z][A-Z0-9-]{1,}\b/g;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*•]\s+|\d+[.)、]\s*)/;
 const LAYOUT_GEOMETRY_PATTERN =
-    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|布局|排版|构图|双栏|分栏|分区|网格|矩阵|时间线|流程图|概念图|架构图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|说明|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
-const LAYOUT_GEOMETRY_COUNT_PATTERN = /(?:[0-9一二三四五六七八九十两]+(?:个)?(?:柱状图|折线图|饼图|概念图|图表|图片|列|行|栏|区|块|图|层|组|卡片|模块))/g;
+    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|布局|排版|构图|双栏|分栏|分区|主视觉|宫格|网格|矩阵|时间线|流程图|概念图|架构图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|编号|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|说明|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
+const LAYOUT_GEOMETRY_COUNT_PATTERN = /(?:(?:[1-9]|1[0-2]|[一二两三四五六七八九十])(?:个)?(?:柱状图|折线图|饼图|概念图|图表|图片|列|行|栏|区|宫格))/g;
 const LAYOUT_CONTENT_COUNT_PATTERN = /([0-9一二三四五六七八九十两]+)(?:个)?(?:指标|要点)|([0-9一二三四五六七八九十两]+)(?:条)?行动建议/g;
 const AUTHORING_INSTRUCTION_PATTERN = /^(?:(?:我)?(?:希望|想让)(?:你|AI|模型)|(?:请|麻烦)(?:你|AI|模型)|帮我).{0,40}(?:建议|补充|完善|起草|生成|写|整理)/i;
+const DECK_CREATION_INTENT_PATTERN = /^(?:我)?(?:想|希望|准备|需要|要)(?:能|可以|要)?(?:做|制作|生成|写|整理)[^。！？\n]{0,60}(?:PPT|演示|一份[^。！？\n]{0,40}材料|(?:介绍|汇报|路演|说明|宣讲|提案)材料)[^。！？\n]{0,80}$/i;
+const DECK_SELF_REFERENCE_PATTERN =
+    /^(?:(?:我做)?(?:这份|本份)(?:材料|PPT|演示)|(?:这个|本)\s*(?:PPT|演示))[^。！？\n]{0,100}(?:(?:不是[^。！？\n]{0,40}罗列)|(?:(?:需要|要|希望)[^。！？\n]{0,60}(?:让|讲清|说明|介绍|展示|回答|包含|覆盖|理解|传达))|(?:用于|目的是?|目的|受众|内容(?:包括|包含)|核心受众))/i;
+const COVER_TARGET_QUESTION_PATTERN = /(?:为什么|好在哪里|解决(?:了)?什么(?:问题)?|为谁(?:去)?服务|面向谁|怎么(?:使用|做)|如何(?:使用|落地)|是什么)/g;
 
 export function normalizePptContentDraft(rawInput: unknown, sourceInput: PptContentSourceInput): PptContentDraft {
     const raw = asRecord(rawInput) as RawDraft;
@@ -149,11 +170,12 @@ export function normalizePptContentDraft(rawInput: unknown, sourceInput: PptCont
         });
     }
     const pageSpecs = rawPages.map((rawPage, index) => normalizePage(rawPage, index, sourceInput, gaps));
-    return rebuildDraft({ revision: 1, brief, pageSpecs, audit: { issues: [], gaps } });
+    const maxPages = extractExplicitMaxPages(sourceInput.requirements);
+    return rebuildDraft({ revision: 1, brief, pageSpecs, audit: { issues: [], gaps }, constraints: maxPages ? { maxPages } : {} });
 }
 
 export function validatePptContentDraft(draft: PptContentDraft): PptContentValidationResult {
-    const issues = deriveAuditIssues(draft.brief, draft.pageSpecs, draft.audit.gaps);
+    const issues = deriveAuditIssues(draft.brief, draft.pageSpecs, draft.audit.gaps, draft.constraints);
     return { valid: !issues.some((issue) => issue.severity === "blocking"), issues };
 }
 
@@ -344,6 +366,12 @@ export function replacePptContentDraftPage(draft: PptContentDraft, expectedRevis
     return rebuildDraft(next);
 }
 
+export function assertPptPageAuditIssuesResolved(draft: PptContentDraft, pageId: string, requestedIssues: Array<Pick<PptContentAuditIssue, "code" | "field" | "message">>) {
+    const pageIssues = draft.audit.issues.filter((issue) => issue.pageIds.includes(pageId) && issue.code !== "unresolved_gap");
+    const remaining = pageIssues.filter((issue) => issue.severity === "blocking" || requestedIssues.some((requested) => requested.code === issue.code && (!requested.field || requested.field === issue.field)));
+    if (remaining.length) throw new Error(`本页重新生成后问题仍未解决：${remaining.map((issue) => issue.message).join("；")}；原页已保留`);
+}
+
 export function finalizePptContentDraft(draft: PptContentDraft, approvedAt = new Date().toISOString()): { brief: PptContentBrief; pageSpecs: CanvasProjectPptPageSpec[]; contentRevision: string } {
     const validation = validatePptContentDraft(draft);
     if (!validation.valid)
@@ -395,7 +423,12 @@ export function derivePptLockedFacts(pageSpec: Pick<CanvasProjectPptPageSpec, "p
 }
 
 export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceContext?: Pick<PptContentSourceInput, "sourceMaterial" | "requirements">) {
-    const issues: Array<{ code: "content_spec_not_approved" | "unresolved_information_gap" | "invalid_content_provenance" | "invalid_content_structure" | "invalid_visual_encoding"; message: string }> = [];
+    const issues: Array<{
+        code: "content_spec_not_approved" | "unresolved_information_gap" | "invalid_content_provenance" | "invalid_content_structure" | "invalid_visual_encoding";
+        message: string;
+        field?: string;
+        value?: string;
+    }> = [];
     const titleBlocks = pageSpec.contentBlocks.filter((block) => block.kind === "title");
     const claimBlocks = pageSpec.contentBlocks.filter((block) => block.kind === "primary_claim");
     const blockIds = pageSpec.contentBlocks.map((block) => block.id);
@@ -411,6 +444,14 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
         new Set(blockIds).size !== blockIds.length
     ) {
         issues.push({ code: "invalid_content_structure", message: "页面必须包含唯一标题、唯一核心信息、页面目的与有效内容结构" });
+    }
+    const isCover = pageSpec.contentForm === "cover";
+    if (isCover && pageSpec.contentBlocks.some((block) => block.kind !== "title" && block.kind !== "primary_claim")) {
+        issues.push({ code: "invalid_content_structure", message: "封面只保留标题和一句定位语，不承载正文或目标清单", field: "contentForm", value: pageSpec.contentForm });
+    }
+    const primaryClaim = claimBlocks[0]?.text.trim() || "";
+    if (isCover && isPptCoverTargetChecklist(primaryClaim)) {
+        issues.push({ code: "invalid_content_structure", message: "封面核心信息应是一句定位语，不能复述整套目标或问题清单", field: "primaryClaim", value: primaryClaim });
     }
     if (pageSpec.contentState.status !== "approved") issues.push({ code: "content_spec_not_approved", message: "页面内容规格尚未批准" });
     if (pageSpec.contentState.status === "blocked" && pageSpec.contentState.gapIds.length) issues.push({ code: "unresolved_information_gap", message: "页面仍有未解决的信息缺口" });
@@ -433,7 +474,10 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
     }
     if (sourceContext && validatePptPageSourceRefs(pageSpec, sourceContext).length) issues.push({ code: "invalid_content_provenance", message: "页面来源已与当前原始材料或补充要求脱节" });
     if (JSON.stringify(pageSpec.lockedFacts) !== JSON.stringify(derivePptLockedFacts(pageSpec))) issues.push({ code: "invalid_content_provenance", message: "页面锁定事实与内容块派生结果不一致" });
-    if (pageSpec.layoutIntent.some((intent) => !isPptLayoutIntentSupported(pageSpec, intent))) issues.push({ code: "invalid_content_structure", message: "页面排版要求包含未经批准的文案或事实" });
+    for (const intent of pageSpec.layoutIntent) {
+        if (isPptLayoutIntentSupported(pageSpec, intent)) continue;
+        issues.push({ code: "invalid_content_structure", message: `无法识别排版要求「${intent}」；其中可能包含未批准的文案或事实`, field: "layoutIntent", value: intent });
+    }
     for (const message of validatePptPageVisualEncoding(pageSpec)) issues.push({ code: "invalid_visual_encoding", message });
     return issues;
 }
@@ -470,13 +514,14 @@ export function isPptLayoutIntentSupported(pageSpec: CanvasProjectPptPageSpec, i
         .map((clause) =>
             clause
                 .replace(/\d+\s*:\s*\d+/g, "")
+                .replace(/\d+\s*[×xX*]\s*\d+/g, "")
                 .replace(/\bPPT\b/gi, "")
                 .replace(LAYOUT_CONTENT_COUNT_PATTERN, "")
                 .replace(LAYOUT_GEOMETRY_COUNT_PATTERN, "")
                 .replace(LAYOUT_GEOMETRY_PATTERN, "")
                 .replace(/[()[\]{}（）【】]/g, ""),
         )
-        .flatMap((clause) => clause.split(/[、/]/))
+        .flatMap((clause) => clause.split(/[、/]|或/))
         .map(normalizedComparable)
         .filter(Boolean)
         .every((token) => approvedText.includes(token));
@@ -536,7 +581,11 @@ export function requirePptPageRewriteSpec(value: unknown): PptPageRewriteSpec {
 }
 
 export function isPptAuthoringInstruction(value: string) {
-    return AUTHORING_INSTRUCTION_PATTERN.test(value.trim());
+    const normalized = value
+        .trim()
+        .replace(/[。！？!?]+$/g, "")
+        .trim();
+    return AUTHORING_INSTRUCTION_PATTERN.test(normalized) || DECK_CREATION_INTENT_PATTERN.test(normalized) || DECK_SELF_REFERENCE_PATTERN.test(normalized);
 }
 
 function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentSourceInput, gaps: PptInformationGap[]): CanvasProjectPptPageSpec {
@@ -622,7 +671,7 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
         contentBlocks: blocks,
         contentState: contentStateFor(pageGaps),
         lockedFacts: [],
-        layoutRole: layoutRoleFor(rawPage.contentForm, index),
+        layoutRole: layoutRoleFor(rawPage.contentForm),
         layoutIntent: unique(stringArray(rawPage.layoutIntent)),
         visualEncoding,
         assetRefs: unique(blocks.flatMap((block) => [...block.text.matchAll(/@\[node:([^\]]+)\]/g)].map((match) => match[1]))),
@@ -810,10 +859,47 @@ function confirmedSourceIds(page: CanvasProjectPptPageSpec) {
     );
 }
 
-function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPageSpec[], gaps: PptInformationGap[]) {
+function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPageSpec[], gaps: PptInformationGap[], constraints: PptContentDraft["constraints"]) {
     const issues: PptContentAuditIssue[] = [];
     if (!brief.audience.trim() || !brief.goal.trim() || !brief.narrative.trim()) {
         issues.push({ id: "issue:brief:incomplete", code: "invalid_content_structure", severity: "blocking", pageIds: [], message: "整套材料缺少受众、目标或叙事主线", actions: [] });
+    }
+    if (constraints.maxPages && pageSpecs.length > constraints.maxPages) {
+        issues.push({
+            id: `issue:deck:page-count:${pageSpecs.length}:${constraints.maxPages}`,
+            code: "page_count_exceeded",
+            severity: "blocking",
+            pageIds: [],
+            message: `当前方案共 ${pageSpecs.length} 页，超过你要求的最多 ${constraints.maxPages} 页；请重新压缩整套叙事`,
+            actions: [{ kind: "regenerate_pages", pageIds: pageSpecs.map((page) => page.pageId) }],
+            field: "pages",
+            value: String(pageSpecs.length),
+        });
+    }
+    if (pageSpecs.length > 1 && (pageSpecs[0].contentForm !== "cover" || pageSpecs[0].layoutRole !== "cover")) {
+        issues.push({
+            id: `issue:${pageSpecs[0].pageId}:cover:first-page`,
+            code: "invalid_cover",
+            severity: "blocking",
+            pageIds: [pageSpecs[0].pageId],
+            message: "第一页应承担封面职责，只保留标题和一句定位语",
+            actions: [{ kind: "regenerate_pages", pageIds: [pageSpecs[0].pageId] }],
+            field: "contentForm",
+            value: pageSpecs[0].contentForm,
+        });
+    }
+    for (const [index, page] of pageSpecs.entries()) {
+        if (index === 0 || (page.contentForm !== "cover" && page.layoutRole !== "cover")) continue;
+        issues.push({
+            id: `issue:${page.pageId}:cover:later-page`,
+            code: "invalid_cover",
+            severity: "blocking",
+            pageIds: [page.pageId],
+            message: `第 ${index + 1} 页不能再次承担整套封面职责，请按本页内容选择页面形态`,
+            actions: [{ kind: "regenerate_pages", pageIds: [page.pageId] }],
+            field: "contentForm",
+            value: page.contentForm,
+        });
     }
     for (const gap of gaps.filter((item) => !item.resolution)) {
         issues.push({
@@ -828,16 +914,33 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
     for (const page of pageSpecs) {
         for (const issue of validatePptPageSpec({ ...page, contentState: page.contentState.status === "approved" ? page.contentState : { status: "approved", approvedAt: "audit" } })) {
             if (issue.code === "content_spec_not_approved" || issue.code === "unresolved_information_gap") continue;
+            const layoutRepair = issue.field === "layoutIntent" && issue.value ? ({ kind: "remove_layout_intent", pageId: page.pageId, value: issue.value, replacement: "" } as const) : undefined;
+            const coverIssue = page.contentForm === "cover" && (issue.field === "contentForm" || issue.field === "primaryClaim");
             issues.push({
                 id: `issue:${page.pageId}:${issue.code}:${issues.length + 1}`,
-                code: issue.code,
+                code: coverIssue ? "invalid_cover" : issue.code,
                 severity: "blocking",
                 pageIds: [page.pageId],
                 message: issue.message,
-                actions: [{ kind: "regenerate_pages", pageIds: [page.pageId] }],
+                actions: layoutRepair ? [{ kind: "preview_safe_patch", issueId: `issue:${page.pageId}:${issue.code}:${issues.length + 1}` }] : [{ kind: "regenerate_pages", pageIds: [page.pageId] }],
+                ...(issue.field ? { field: issue.field } : {}),
+                ...(issue.value ? { value: issue.value } : {}),
+                ...(layoutRepair ? { repair: layoutRepair } : {}),
             });
         }
         for (const block of page.contentBlocks) {
+            if (block.kind !== "placeholder" && isPptAuthoringInstruction(block.text)) {
+                issues.push({
+                    id: `issue:${page.pageId}:authoring:${block.id}`,
+                    code: "authoring_instruction_as_copy",
+                    severity: "blocking",
+                    pageIds: [page.pageId],
+                    message: `「${block.text}」属于整套材料的创作目标，不应直接作为上屏正文`,
+                    actions: [{ kind: "regenerate_pages", pageIds: [page.pageId] }],
+                    field: `contentBlocks.${block.kind}`,
+                    value: block.text,
+                });
+            }
             if (/^[A-Za-z]\s*(?:对比|列表)/.test(block.text)) {
                 issues.push({ id: `issue:${page.pageId}:noise:${block.id}`, code: "noise_text", severity: "warning", pageIds: [page.pageId], message: `可能的异常文本：${block.text}`, actions: [{ kind: "regenerate_pages", pageIds: [page.pageId] }] });
             }
@@ -881,7 +984,7 @@ function rebuildDraft(draft: PptContentDraft): PptContentDraft {
     if (new Set(draft.audit.gaps.map((gap) => gap.id)).size !== draft.audit.gaps.length) throw new Error("信息缺口身份重复，请重新生成内容方案");
     const unresolved = draft.audit.gaps.filter((gap) => !gap.resolution && gap.blocking);
     const pageSpecs = draft.pageSpecs.map((page) => ({ ...page, contentState: contentStateFor(unresolved.filter((gap) => gap.pageId === page.pageId)), lockedFacts: derivePptLockedFacts(page) }));
-    const audit = { gaps: draft.audit.gaps, issues: deriveAuditIssues(draft.brief, pageSpecs, draft.audit.gaps) };
+    const audit = { gaps: draft.audit.gaps, issues: deriveAuditIssues(draft.brief, pageSpecs, draft.audit.gaps, draft.constraints) };
     return { ...draft, pageSpecs, audit };
 }
 
@@ -891,11 +994,34 @@ function contentStateFor(gaps: PptInformationGap[]) {
 }
 
 function sameTopic(left: CanvasProjectPptPageSpec, right: CanvasProjectPptPageSpec) {
-    const leftText = `${left.purpose} ${renderPptPageSpecText(left)}`;
-    const rightText = `${right.purpose} ${renderPptPageSpecText(right)}`;
-    const keywords = ["组件", "选型", "对比", "资源", "投入", "成本", "架构", "合作", "规划", "未来"];
-    const shared = keywords.filter((keyword) => leftText.includes(keyword) && rightText.includes(keyword));
-    return shared.length >= 2 || normalize(leftText) === normalize(rightText);
+    const leftPurpose = normalize(left.purpose);
+    const rightPurpose = normalize(right.purpose);
+    if (leftPurpose && leftPurpose === rightPurpose) return true;
+    const signatures = (page: CanvasProjectPptPageSpec) =>
+        page.contentBlocks
+            .filter((block) => block.kind === "title" || block.kind === "primary_claim")
+            .map((block) => normalize(block.text))
+            .filter(Boolean);
+    const leftSignatures = signatures(left);
+    const rightSignatures = signatures(right);
+    return leftSignatures.some((value) => rightSignatures.includes(value));
+}
+
+function extractExplicitMaxPages(requirements: string) {
+    const candidates: number[] = [];
+    for (const match of requirements.matchAll(/(?:最多|不超过|至多|控制在|限制在)\s*([0-9一二三四五六七八九十两]+)\s*页(?:以内|以下|之内)?|([0-9一二三四五六七八九十两]+)\s*页(?:以内|以下|之内)/g)) {
+        const count = parseLayoutCount(match[1] || match[2]);
+        if (count && count > 0) candidates.push(count);
+    }
+    for (const match of requirements.matchAll(/(?:控制在|限制在)?\s*([0-9一二三四五六七八九十两]+)\s*(?:到|至|[-—~])\s*([0-9一二三四五六七八九十两]+)\s*页/g)) {
+        const count = parseLayoutCount(match[2]);
+        if (count && count > 0) candidates.push(count);
+    }
+    return candidates.length ? Math.min(...candidates) : undefined;
+}
+
+function isPptCoverTargetChecklist(value: string) {
+    return [...value.matchAll(COVER_TARGET_QUESTION_PATTERN)].length >= 2;
 }
 
 function sourceSupportsText(source: string, value: string) {
@@ -936,8 +1062,8 @@ function assertResolution(resolution: PptInformationGapResolution) {
     if (resolution.kind !== "omit" && !resolution.text.trim()) throw new Error("缺口处理内容不能为空");
 }
 
-function layoutRoleFor(raw: unknown, index: number): PptLayoutRole {
-    if (raw === "cover" || index === 0) return "cover";
+function layoutRoleFor(raw: unknown): PptLayoutRole {
+    if (raw === "cover") return "cover";
     if (raw === "comparison") return "comparison";
     if (raw === "data") return "evidence";
     if (raw === "closing") return "close";

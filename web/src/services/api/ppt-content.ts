@@ -18,6 +18,7 @@ export type PptContentPageRegenerationRequest = PptContentPlanRequest & {
     authoringInstructions: string[];
     confirmedInputs: Array<{ source: "user_answer" | "confirmed_assumption"; kind: CanvasProjectPptContentBlock["kind"]; text: string }>;
     unresolvedGaps: Array<{ question: string; reason: string; proposedAnswer?: string }>;
+    auditIssues: Array<{ code: string; message: string; field?: string; value?: string }>;
     otherPageTitles: string[];
 };
 
@@ -32,6 +33,10 @@ const MAX_CONTENT_PLAN_RESPONSE_CHARS = 1_000_000;
 
 const CONTENT_PLAN_SYSTEM_PROMPT = `你是 PPT 内容规划师。你的任务不是只拆页，也不是替用户虚构业务细节，而是把材料整理成可审查、可直接约束后续图片模型的逐页内容方案。
 
+必须先提炼 Deck Brief（整套标题、受众、目标、叙事主线与视觉线索），再生成观众会看到的 pages。材料里的创作意图必须与观众可见正文分开：“我想做一份……”、“这份材料要让……”、“希望回答……”等元话语用于提炼 brief，不得直接复制到 title、primaryClaim 或 blocks。要回答的问题是整套 PPT 的覆盖清单，不默认生成一页“这份材料要讲什么”；只有用户明确要求目录时才生成目录页。
+
+先规划整套叙事，再用最少的非重复页面承载独立观点、证据、流程或行动；不按原文段落机械拆页，重复职责必须合并。
+
 只输出 JSON，不要输出解释或代码块。格式：
 {"brief":{"title":"","audience":"","goal":"","narrative":"","visualSignals":[]},"pages":[{"title":"","purpose":"","primaryClaim":"","contentForm":"comparison","contentFormNote":"","titleSource":{"source":"material","startLine":1,"endLine":1},"primaryClaimSource":{"source":"material","startLine":1,"endLine":1},"blocks":[{"key":"b1","kind":"body","text":"原文事实","source":{"source":"material","startLine":1,"endLine":2}},{"key":"b2","kind":"body","text":"AI 建议初稿","gapKey":"g1"}],"layoutIntent":["左右双栏"],"visualEncoding":[{"contentKeys":["b1"],"intent":"differentiate","channel":"shape"}],"gaps":[{"key":"g1","kind":"missing_detail","question":"是否采用该建议？","reason":"原材料未提供细节","blocking":true,"proposedAnswer":"AI 建议初稿"}]}]}
 
@@ -44,8 +49,9 @@ const CONTENT_PLAN_SYSTEM_PROMPT = `你是 PPT 内容规划师。你的任务不
 6. “请你给建议”“帮我补充”等是创作指令，不是页面正文。应据此生成建议稿，不得逐字放进 title、primaryClaim 或 blocks。
 7. 发现主题重复时不要机械保留两页；优先合并，并通过页面 purpose 说明它为什么存在。无法判断时保留并在 gap 中询问。
 8. visualEncoding 只描述内容关系如何映射为颜色、形状、位置、大小、连线或图标，contentKeys 必须引用本页 blocks；不得借此新增可见文案。整套审美风格只放 brief.visualSignals，不进入页面字段。
-9. 每页都要有可直接审阅的具体标题、核心信息和至少一段正文或结构化建议；不得把“组件对比分析”“资源投入”等空泛目录词当作完成内容。
-10. 输出必须是适合 16:9 投影片的可见文案，不是文章。title 只写本页主题，不与整套名称用“|”拼接；primaryClaim 为一句核心结论；每个 block 只承载一个可独立排版的信息单元。出现多个判断维度时拆成短块、列表或表格，禁止输出连续长段落；整页文案过多时优先压缩或拆页，不得删除用户明确要求保留的事实。`;
+9. 第一页必须使用 contentForm=cover。封面只需具体标题和一句简短定位语，blocks 可以为空，不得为满足通用规则而添加目标清单或正文块。除封面外，每页都要有可直接审阅的具体标题、核心信息和至少一段正文或结构化建议；不得把“组件对比分析”“资源投入”等空泛目录词当作完成内容。
+10. 输出必须是适合 16:9 投影片的可见文案，不是文章。title 只写本页主题，不与整套名称用“|”拼接；primaryClaim 为一句核心结论；每个 block 只承载一个可独立排版的信息单元。出现多个判断维度时拆成短块、列表或表格，禁止输出连续长段落；整页文案过多时优先压缩或拆页，不得删除用户明确要求保留的事实。
+11. 用户在补充要求中明确写出“最多 N 页”或“N 页以内”时，pages 数量不得超过该上限，并通过合并重复职责来压缩，不得截断或丢弃用户事实。没有明确页数时，不得设置统一的固定上限。`;
 
 const PAGE_REWRITE_SYSTEM_PROMPT = `你是 PPT 页面规格编辑器。根据用户要求，把当前页面重写为可直接做信息设计的 slide-ready 结构。
 
@@ -91,14 +97,15 @@ export async function requestPptContentPlan(config: AiConfig, input: PptContentP
 }
 
 export function buildPptContentPageRegenerationMessages(input: PptContentPageRegenerationRequest): AiTextMessage[] {
+    const pageRoleRule = input.targetPageNumber === 1 ? "目标是整套第 1 页，必须使用 cover，只保留标题和一句定位语。" : `目标是整套第 ${input.targetPageNumber} 页；唯一返回页不代表整套第一页，不得使用 cover，请根据本页内容选择其他 contentForm。`;
     return [
         {
             role: "system",
-            content: `${CONTENT_PLAN_SYSTEM_PROMPT}\n\n这次只重新生成用户指定的一页。pages 必须且只能返回 1 页；不要改写其他页，不要输出页面 ID。已经确认的内容必须逐字复用，不要伪造 material/requirements 行号，客户端会恢复其用户确认来源。confirmedInputs 中每一项的 text 与 kind 都必须原样保留；不得把 title、primary_claim、supporting_claim、body、list、table 或 chart_data 迁移成另一种 kind。`,
+            content: `${CONTENT_PLAN_SYSTEM_PROMPT}\n\n这次只重新生成用户指定的一页。pages 必须且只能返回 1 页；${pageRoleRule}不要改写其他页，不要输出页面 ID。必须逐项消除 auditIssues 列出的审核问题，不得原样保留其中指明的失败字段或只改写无关字段。已经确认的内容必须逐字复用，不要伪造 material/requirements 行号，客户端会恢复其用户确认来源。confirmedInputs 中每一项的 text 与 kind 都必须原样保留；不得把 title、primary_claim、supporting_claim、body、list、table 或 chart_data 迁移成另一种 kind。`,
         },
         {
             role: "user",
-            content: `PPT 标题：${input.title.trim() || "未命名"}\n当前内容版本：${input.draftRevision}\n\n材料（行号|原文）：\n${numberLines(input.sourceMaterial)}\n\n补充要求（行号|原文）：\n${numberLines(input.requirements) || "1|无特殊要求"}\n\n只重新生成第 ${input.targetPageNumber} 页：\n${JSON.stringify(input.targetPage)}\n\n用户希望 AI 执行的创作指令（执行但不得写进页面）：\n${JSON.stringify(input.authoringInstructions)}\n\n本页已经由用户确认、不得改写的内容：\n${JSON.stringify(input.confirmedInputs)}\n\n本页尚未解决的信息缺口：\n${JSON.stringify(input.unresolvedGaps)}\n\n其他页标题已锁定，不得输出或改写：\n${input.otherPageTitles.map((title, index) => `${index + 1}. ${title}`).join("\n") || "无"}`,
+            content: `PPT 标题：${input.title.trim() || "未命名"}\n当前内容版本：${input.draftRevision}\n\n材料（行号|原文）：\n${numberLines(input.sourceMaterial)}\n\n补充要求（行号|原文）：\n${numberLines(input.requirements) || "1|无特殊要求"}\n\n只重新生成第 ${input.targetPageNumber} 页：\n${JSON.stringify(input.targetPage)}\n\n用户希望 AI 执行的创作指令（执行但不得写进页面）：\n${JSON.stringify(input.authoringInstructions)}\n\n本页已经由用户确认、不得改写的内容：\n${JSON.stringify(input.confirmedInputs)}\n\n本页尚未解决的信息缺口：\n${JSON.stringify(input.unresolvedGaps)}\n\n本页必须修复的审核问题：\n${JSON.stringify(input.auditIssues)}\n\n其他页标题已锁定，不得输出或改写：\n${input.otherPageTitles.map((title, index) => `${index + 1}. ${title}`).join("\n") || "无"}`,
         },
     ];
 }
