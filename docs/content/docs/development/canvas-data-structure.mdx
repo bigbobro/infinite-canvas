@@ -66,7 +66,7 @@ type CanvasProjectPptPage = {
 };
 ```
 
-PPT 的视觉方向、页面职责与编译历史直接保存在同一个工程中：
+PPT 工程以 `compilePolicy` 区分两类互不兜底的 canonical 内容；页面账本只保存身份、页序、方案和最终确认，不重复保存标题或正文：
 
 ```ts
 type CanvasProjectPptStyleContract = {
@@ -82,6 +82,7 @@ type CanvasProjectPptStyleContract = {
 
 type CanvasProjectPptDeckBrief = {
   version: number;
+  sourceHash: string;
   audience: string;
   goal: string;
   narrative: string;
@@ -91,9 +92,54 @@ type CanvasProjectPptDeckBrief = {
   lockedDeckFacts: CanvasProjectPptLockedFact[];
 };
 
+type CanvasProjectPptSourceRef = {
+  id: string;
+  source: "material" | "requirements" | "user_answer" | "confirmed_assumption";
+  excerpt: string;
+  startLine?: number;
+  endLine?: number;
+  gapId?: string;
+};
+
+type CanvasProjectPptContentBlock = {
+  id: string;
+  kind:
+    | "title"
+    | "primary_claim"
+    | "supporting_claim"
+    | "body"
+    | "list"
+    | "table"
+    | "chart_data"
+    | "placeholder";
+  text: string;
+  sourceRefIds: string[];
+  gapId?: string;
+};
+
+type PptContentState =
+  | { status: "blocked"; gapIds: string[] }
+  | { status: "reviewable" }
+  | { status: "approved"; approvedAt: string };
+
 type CanvasProjectPptPageSpec = {
   pageId: string;
   version: number;
+  purpose: string;
+  contentForm:
+    | "cover"
+    | "comparison"
+    | "architecture"
+    | "process"
+    | "timeline"
+    | "data"
+    | "narrative"
+    | "closing";
+  contentFormNote?: string;
+  sourceRefs: CanvasProjectPptSourceRef[];
+  contentBlocks: CanvasProjectPptContentBlock[];
+  contentState: PptContentState;
+  lockedFacts: CanvasProjectPptLockedFact[];
   layoutRole:
     | "cover"
     | "section"
@@ -102,14 +148,106 @@ type CanvasProjectPptPageSpec = {
     | "comparison"
     | "close";
   layoutIntent: string[];
-  // 另有来源、锁定正文/事实、自由度和人工确认字段
+  visualEncoding: CanvasProjectPptVisualEncoding[];
+  assetRefs: string[];
+  freedom: string;
 };
+
+type CanvasProjectPptVerbatimSpec = {
+  pageId: string;
+  version: number;
+  title: string;
+  exactText: string;
+  origin:
+    | {
+        kind: "source_slice";
+        sourceHash: string;
+        startLine: number;
+        endLine: number;
+      }
+    | { kind: "user_edited" };
+};
+
+type CanvasProjectPptBase = {
+  sourceMaterial: string;
+  requirements: string;
+  pages: CanvasProjectPptPage[];
+  compilationSnapshots: CanvasProjectPptCompilationSnapshot[];
+  anchorConfirmed?: boolean;
+  skipAnchor?: boolean;
+};
+
+type CanvasProjectPpt = CanvasProjectPptBase &
+  (
+    | {
+        compilePolicy: "structured";
+        deckBrief: CanvasProjectPptDeckBrief;
+        pageSpecs: CanvasProjectPptPageSpec[];
+      }
+    | {
+        compilePolicy: "verbatim";
+        verbatimSpecs: CanvasProjectPptVerbatimSpec[];
+        confirmedGlobalSpec?: string;
+      }
+  );
+
+type CanvasProjectPptCompilationSnapshot =
+  CanvasProjectPptCompilationSnapshotBase &
+    (
+      | {
+          compilePolicy: "structured";
+          deckBriefVersion: number;
+          pageSpecsVersion: number;
+          deckBrief: CanvasProjectPptDeckBrief;
+          pageSpecs: CanvasProjectPptPageSpec[];
+        }
+      | {
+          compilePolicy: "verbatim";
+          verbatimSpecs: CanvasProjectPptVerbatimSpec[];
+          confirmedGlobalSpec?: string;
+        }
+    );
 ```
 
 - `deckBrief.styleContract` 是唯一可编辑的 deck 级视觉事实源。`presetId` 只记录选择来源，真正参与 Compiler 的是当时冻结的 `direction`。
 - `styleContract.references` 只保存本地图片 `storageKey`，不会为参考图伪造画布节点。图片清理会把这些 key 计入使用集合。
-- `PageSpec.layoutRole` 是页级职责，和只作用于当前方案的排版要求分开保存。
+- structured 的标题、核心信息和其他正文都在 `contentBlocks`；每个非占位块必须引用能支持该文字的 `sourceRef`。`DeckBrief.sourceHash` 将整套受众、目标和叙事定位绑定到生成内容方案时的 material + requirements；页级来源则在 Builder、生成计划和 provider POST 前重新按行号切片并比对 excerpt。任一层漂移或 `contentState` 未到 `approved` 都会阻断生成。
+- `PageSpec.layoutRole` 是页级职责，和只作用于当前方案的排版要求分开保存；`layoutIntent` 只能表达几何布局，`visualEncoding` 只能表达如何区分、强调、排序、分组或展示关系，两者都不能携带新的可见文案或事实。内容改写、占位或不呈现时，对应的 `lockedMapping` 和失效编码必须同步裁剪。
+- verbatim 的 `exactText` 是唯一正文来源；原文切片必须带匹配的 source hash 和合法行号，用户明确编辑后改记 `user_edited`。`confirmedGlobalSpec` 只有经用户确认才逐字附加，不存在默认 Style Contract。
 - Contract 真正变化会提升 DeckBrief 版本并清除全部页面确认；页面职责或布局变化只提升目标 PageSpec 版本并清除目标页确认。两者都保留方案、候选和 `compilationSnapshots`。
+- 项目不读取旧 `mode`、页面 `title/outline/visualHint` 或节点文本作为 canonical 兼容路径；缺少 `compilePolicy` 的旧结构只能安全显示为待修复，不能进入生成或导出。
+
+structured 新建向导在工程落盘前使用临时内容草稿承载缺口与审核：
+
+```ts
+type PptContentDraft = {
+  revision: number;
+  brief: PptContentBrief;
+  pageSpecs: CanvasProjectPptPageSpec[];
+  audit: {
+    issues: PptContentAuditIssue[];
+    gaps: PptInformationGap[];
+  };
+};
+
+type PptInformationGap = {
+  id: string;
+  pageId?: string;
+  kind:
+    | "missing_detail"
+    | "missing_evidence"
+    | "unsupported_claim"
+    | "ambiguous_input";
+  question: string;
+  reason: string;
+  blocking: boolean;
+  resolution?: PptInformationGapResolution;
+};
+```
+
+材料或要求无法支持的内容会成为信息缺口，不会自动伪造成事实。用户回答和已确认假设会新增明确 sourceRef；省略或占位不能用于整套定位、标题和核心信息。编辑、删页、合并、排序、安全修复与单页重生成都绑定 `revision`，过期 preview/result 原子失败；只有不存在 blocking audit issue 时才能 finalize 为 `approved` PageSpec。
+
+页面展示统一通过 `selectPptPageDescriptor(ppt, pageId)` 派生。selector 校验页面账本、连续页序、page/spec 数量与 `pageId` 双射，再读取 structured 的唯一 title/primary claim 或 verbatim 的 title/exactText；损坏时返回 `status: "invalid"`、标题“内容规格待修复”和具体原因。GenerationPlan 会在创建请求前排除 invalid 页面，导出会在读取图片 Blob 前失败。
 
 ## 节点结构
 
