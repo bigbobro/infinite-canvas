@@ -1989,3 +1989,177 @@ test("SHA-26：Deck Brief 空字段仍产生 missing_detail", () => {
     assert.equal(briefGaps.length, 3);
     assert.ok(briefGaps.every((gap) => gap.kind === "missing_detail" && gap.blocking));
 });
+
+// --- SHA-27：多块同 gap 采纳不得覆写实质内容 ---
+
+test("SHA-27：多实质块绑定同 gap 采纳后文本不变且挂确认 sourceRef", () => {
+    const answer = "主推官方一键脚本（最适合小白）；页脚备注";
+    const texts = ["正文一：选型说明", "正文二：部署步骤", "正文三：运维要点", "列表：成本与资源"];
+    const draft = normalizePptContentDraft(
+        {
+            brief: rawDraft().brief,
+            pages: [
+                {
+                    title: "中转站介绍",
+                    titleSource: { source: "material", startLine: 1, endLine: 1 },
+                    purpose: "说明项目价值",
+                    primaryClaim: "梳理思路、招募伙伴并展示未来空间",
+                    primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                    contentForm: "narrative",
+                    blocks: texts.map((text, index) => ({
+                        key: `body-${index}`,
+                        kind: index === 3 ? "list" : "body",
+                        text,
+                        gapKey: "shared-gap",
+                    })),
+                    visualEncoding: [],
+                    gaps: [
+                        {
+                            key: "shared-gap",
+                            kind: "missing_detail",
+                            question: "是否采用脚本建议？",
+                            reason: "材料未明确脚本口径",
+                            blocking: true,
+                            proposedAnswer: answer,
+                        },
+                    ],
+                },
+            ],
+        },
+        sourceInput(),
+    );
+    const gap = draft.audit.gaps.find((item) => item.proposedAnswer === answer);
+    assert.ok(gap);
+    const boundBefore = draft.pageSpecs[0].contentBlocks.filter((block) => block.gapId === gap.id);
+    assert.ok(boundBefore.length >= 3);
+
+    const accepted = acceptPptPageSuggestions(draft, draft.pageSpecs[0].pageId, "2026-07-22T10:00:00.000Z");
+    const page = accepted.pageSpecs[0];
+    const sourceRef = page.sourceRefs.find((item) => item.source === "confirmed_assumption" && item.excerpt === answer);
+    assert.ok(sourceRef);
+
+    for (const text of texts) {
+        const block = page.contentBlocks.find((item) => item.text === text);
+        assert.ok(block, `应保留原文：${text}`);
+        assert.ok(block.sourceRefIds.includes(sourceRef.id));
+        assert.equal(block.gapId, gap.id);
+    }
+    assert.equal(
+        page.contentBlocks.filter((block) => block.text === answer).length,
+        0,
+    );
+    const bodyTexts = page.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim").map((block) => block.text);
+    assert.equal(new Set(bodyTexts).size, bodyTexts.length);
+    assert.equal(page.contentState.status, "reviewable");
+});
+
+test("SHA-27：多 placeholder 绑定同 gap 答案只落一个块", () => {
+    const answer = "先投入 2 台服务器";
+    const draft = normalizePptContentDraft(
+        {
+            brief: rawDraft().brief,
+            pages: [
+                {
+                    title: "中转站介绍",
+                    titleSource: { source: "material", startLine: 1, endLine: 1 },
+                    purpose: "说明项目价值",
+                    primaryClaim: "梳理思路、招募伙伴并展示未来空间",
+                    primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+                    contentForm: "narrative",
+                    blocks: [
+                        { key: "slot-a", kind: "placeholder", text: "待补资源一", gapKey: "resources" },
+                        { key: "slot-b", kind: "placeholder", text: "待补资源二", gapKey: "resources" },
+                        { key: "slot-c", kind: "placeholder", text: "待补资源三", gapKey: "resources" },
+                    ],
+                    visualEncoding: [],
+                    gaps: [
+                        {
+                            key: "resources",
+                            kind: "missing_detail",
+                            question: "服务器投入是多少？",
+                            reason: "材料未提供",
+                            blocking: true,
+                            proposedAnswer: answer,
+                        },
+                    ],
+                },
+            ],
+        },
+        sourceInput(),
+    );
+    const gap = draft.audit.gaps.find((item) => item.proposedAnswer === answer);
+    assert.ok(gap);
+    assert.equal(draft.pageSpecs[0].contentBlocks.filter((block) => block.gapId === gap.id).length, 3);
+
+    const resolved = resolvePptInformationGap(draft, gap.id, {
+        kind: "confirmed_assumption",
+        text: answer,
+        resolvedAt: "2026-07-22T10:00:00.000Z",
+    });
+    const page = resolved.pageSpecs[0];
+    const answerBlocks = page.contentBlocks.filter((block) => block.text === answer);
+    assert.equal(answerBlocks.length, 1);
+    assert.equal(answerBlocks[0].kind, "body");
+    assert.equal(page.contentBlocks.filter((block) => block.gapId === gap.id).length, 1);
+    assert.ok(page.sourceRefs.some((source) => source.source === "confirmed_assumption" && answerBlocks[0].sourceRefIds.includes(source.id)));
+});
+
+test("SHA-27：多实质块采纳后重跑解析确认状态不丢", () => {
+    const answer = "主推官方一键脚本（最适合小白）";
+    const texts = ["正文一：选型说明", "正文二：部署步骤", "正文三：运维要点"];
+    const pageRaw = {
+        title: "中转站介绍",
+        titleSource: { source: "material", startLine: 1, endLine: 1 },
+        purpose: "说明项目价值",
+        primaryClaim: "梳理思路、招募伙伴并展示未来空间",
+        primaryClaimSource: { source: "material", startLine: 2, endLine: 2 },
+        contentForm: "narrative",
+        blocks: texts.map((text, index) => ({
+            key: `body-${index}`,
+            kind: "body",
+            text,
+            gapKey: "shared-gap",
+        })),
+        visualEncoding: [],
+        gaps: [
+            {
+                key: "shared-gap",
+                kind: "missing_detail",
+                question: "是否采用脚本建议？",
+                reason: "材料未明确脚本口径",
+                blocking: true,
+                proposedAnswer: answer,
+            },
+        ],
+    };
+    const initial = normalizePptContentDraft({ brief: rawDraft().brief, pages: [pageRaw] }, sourceInput());
+    const gap = initial.audit.gaps.find((item) => item.proposedAnswer === answer);
+    const accepted = resolvePptInformationGap(initial, gap.id, {
+        kind: "confirmed_assumption",
+        text: answer,
+        resolvedAt: "2026-07-22T10:00:00.000Z",
+    });
+    const previousPage = accepted.pageSpecs[0];
+
+    const regenerated = normalizePptContentDraft({ brief: rawDraft().brief, pages: [structuredClone(pageRaw)] }, { ...sourceInput(), previousPageSpecs: [previousPage] });
+    const replaced = replacePptContentDraftPage(accepted, accepted.revision, previousPage.pageId, regenerated.pageSpecs[0], regenerated.audit.gaps);
+    const page = replaced.pageSpecs[0];
+    const resolvedGap = replaced.audit.gaps.find((item) => item.id === gap.id);
+    assert.ok(resolvedGap?.resolution);
+    assert.equal(resolvedGap.resolution.kind, "confirmed_assumption");
+    assert.equal(resolvedGap.resolution.text, answer);
+    assert.equal(
+        replaced.audit.gaps.some((item) => !item.resolution && item.proposedAnswer === answer),
+        false,
+    );
+    for (const text of texts) {
+        const block = page.contentBlocks.find((item) => item.text === text);
+        assert.ok(block, `重跑后仍应保留原文：${text}`);
+        assert.ok(page.sourceRefs.some((source) => isConfirmedSourceOnBlock(page, block, source)));
+    }
+    assert.equal(page.contentState.status, "reviewable");
+});
+
+function isConfirmedSourceOnBlock(page, block, source) {
+    return (source.source === "confirmed_assumption" || source.source === "user_answer") && block.sourceRefIds.includes(source.id);
+}

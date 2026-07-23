@@ -218,20 +218,34 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
             }
         } else {
             prunePptVisualEncoding(page, boundBlockIds, false);
+            const answer = resolution.text.trim();
             const sourceRef: CanvasProjectPptSourceRef = {
                 id: `${gapId}:source:${resolution.kind}`,
                 source: resolution.kind,
                 relation: "verbatim",
-                excerpt: resolution.text.trim(),
+                excerpt: answer,
                 gapId,
             };
             page.sourceRefs.push(sourceRef);
-            for (const block of boundBlocks) {
-                if (block.kind === "placeholder") block.kind = "body";
-                block.text = resolution.text.trim();
+            // SHA-27: 实质内容块只挂确认来源、保留原文；答案只写入一个待填充块。
+            const fillable = boundBlocks.filter((block) => block.kind === "placeholder" || !block.text.trim());
+            const substantive = boundBlocks.filter((block) => block.kind !== "placeholder" && Boolean(block.text.trim()));
+            for (const block of substantive) {
                 block.sourceRefIds = [sourceRef.id];
             }
-            if (!boundBlocks.length) page.contentBlocks.push({ id: `${gapId}:block:resolution`, kind: "body", text: resolution.text.trim(), sourceRefIds: [sourceRef.id], gapId });
+            if (fillable.length) {
+                const [first, ...rest] = fillable;
+                if (first.kind === "placeholder") first.kind = "body";
+                first.text = answer;
+                first.sourceRefIds = [sourceRef.id];
+                if (rest.length) {
+                    const removeIds = new Set(rest.map((block) => block.id));
+                    prunePptVisualEncoding(page, removeIds, true);
+                    page.contentBlocks = page.contentBlocks.filter((block) => !removeIds.has(block.id));
+                }
+            } else if (!boundBlocks.length) {
+                page.contentBlocks.push({ id: `${gapId}:block:resolution`, kind: "body", text: answer, sourceRefIds: [sourceRef.id], gapId });
+            }
         }
         page.version += 1;
         pruneUnusedPptSourceRefs(page);
@@ -916,8 +930,9 @@ function resolvePreviousConfirmedBlock(previousPageSpec: CanvasProjectPptPageSpe
             candidate.kind === kind &&
             normalize(candidate.text) === normalize(value) &&
             candidate.sourceRefIds.some((sourceRefId) => {
+                // SHA-27: 实质块确认后 excerpt 可能是 gap 答案而非块原文，按已确认 sourceRef 复用即可。
                 const sourceRef = sourceById.get(sourceRefId);
-                return isConfirmedSourceRef(sourceRef) && normalize(sourceRef.excerpt) === normalize(value);
+                return isConfirmedSourceRef(sourceRef);
             }),
     );
     if (!block) return undefined;
@@ -968,12 +983,12 @@ function reconcileRegeneratedConfirmedGaps(current: CanvasProjectPptPageSpec, cu
         });
         if (candidates.length !== 1) continue;
         const previousGap = candidates[0];
+        // SHA-27: 实质块确认后文本可与 proposedAnswer 不同，挂有该 gap 的确认 sourceRef 即视为已确认。
         const isConfirmedBlock = (block: CanvasProjectPptContentBlock) =>
             block.kind !== "placeholder" &&
-            normalize(block.text) === proposedAnswer &&
             block.sourceRefIds.some((sourceRefId) => {
                 const sourceRef = sourceById.get(sourceRefId);
-                return protectedSourceIds.has(sourceRefId) && sourceRef?.gapId === previousGap.id && normalize(sourceRef.excerpt) === proposedAnswer;
+                return protectedSourceIds.has(sourceRefId) && isConfirmedSourceRef(sourceRef) && sourceRef.gapId === previousGap.id;
             });
         const boundBlocks = replacement.contentBlocks.filter((block) => block.gapId === gap.id);
         const confirmedBlocks = replacement.contentBlocks.filter(isConfirmedBlock);
