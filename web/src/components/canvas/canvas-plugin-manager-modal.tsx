@@ -191,7 +191,9 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
         </div>
     );
 
-    const localTab = <div className="thin-scrollbar max-h-[52vh] space-y-2 overflow-auto">{localPlugins.map((record) => row(record.id, <Puzzle className="size-4" />, record.name, record.version, record.description || record.url, installedControls(record)))}</div>;
+    const localTab = (
+        <div className="thin-scrollbar max-h-[52vh] space-y-2 overflow-auto">{localPlugins.map((record) => row(record.id, <Puzzle className="size-4" />, record.name, record.version, record.description || record.url, installedControls(record)))}</div>
+    );
 
     const thirdPartyTab = (
         <div className="space-y-3">
@@ -201,15 +203,15 @@ export function CanvasPluginManagerModal({ open, onClose }: { open: boolean; onC
                     安装
                 </Button>
             </div>
-            <div className="thin-scrollbar max-h-[42vh] space-y-2 overflow-auto">{thirdPartyPlugins.length === 0 ? emptyHint("还没有安装第三方插件") : thirdPartyPlugins.map((record) => row(record.id, <Puzzle className="size-4" />, record.name, record.version, record.description || record.url, installedControls(record)))}</div>
+            <div className="thin-scrollbar max-h-[42vh] space-y-2 overflow-auto">
+                {thirdPartyPlugins.length === 0
+                    ? emptyHint("还没有安装第三方插件")
+                    : thirdPartyPlugins.map((record) => row(record.id, <Puzzle className="size-4" />, record.name, record.version, record.description || record.url, installedControls(record)))}
+            </div>
         </div>
     );
 
-    const tabs = [
-        { key: "official", label: "官方插件", children: officialTab },
-        ...(localPlugins.length > 0 ? [{ key: "local", label: "本地插件", children: localTab }] : []),
-        { key: "third", label: "第三方插件", children: thirdPartyTab },
-    ];
+    const tabs = [{ key: "official", label: "官方插件", children: officialTab }, ...(localPlugins.length > 0 ? [{ key: "local", label: "本地插件", children: localTab }] : []), { key: "third", label: "第三方插件", children: thirdPartyTab }];
 
     return (
         <Modal title="节点插件" open={open} onCancel={onClose} footer={null} centered width={640}>

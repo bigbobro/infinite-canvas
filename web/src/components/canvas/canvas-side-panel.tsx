@@ -10,12 +10,7 @@ import { cn } from "@/lib/utils";
 import { uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
-import {
-    CANVAS_SIDE_PANEL_MAX_WIDTH,
-    CANVAS_SIDE_PANEL_MIN_WIDTH,
-    CANVAS_SIDE_PANEL_MOTION_MS,
-    useCanvasSidePanelStore,
-} from "@/stores/use-canvas-side-panel-store";
+import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
@@ -101,7 +96,9 @@ export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onInsertA
                     <TabButton label="画布" active={tab === "canvas"} theme={theme} onClick={() => setTab("canvas")} />
                     <TabButton label="资产" active={tab === "assets"} theme={theme} onClick={() => setTab("assets")} />
                 </div>
-                <div className="mt-2 min-h-0 flex-1 overflow-hidden">{tab === "canvas" ? <CanvasNodesTab nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} theme={theme} /> : <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />}</div>
+                <div className="mt-2 min-h-0 flex-1 overflow-hidden">
+                    {tab === "canvas" ? <CanvasNodesTab nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} theme={theme} /> : <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />}
+                </div>
                 <button type="button" className="absolute inset-y-0 right-0 z-40 w-4 translate-x-1/2 cursor-col-resize" onPointerDown={startResize} aria-label="调整左侧面板宽度" />
             </motion.aside>
         </motion.div>
@@ -363,7 +360,11 @@ function CanvasAssetsTab({ onInsert, theme }: { onInsert: (payload: InsertAssetP
                             const isCollapsed = collapsed[group.kind];
                             return (
                                 <div key={group.kind}>
-                                    <button type="button" onClick={() => setCollapsed((prev) => ({ ...prev, [group.kind]: !prev[group.kind] }))} className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs font-semibold opacity-75 transition hover:opacity-100">
+                                    <button
+                                        type="button"
+                                        onClick={() => setCollapsed((prev) => ({ ...prev, [group.kind]: !prev[group.kind] }))}
+                                        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs font-semibold opacity-75 transition hover:opacity-100"
+                                    >
                                         <ChevronRight className={cn("size-3.5 transition-transform", !isCollapsed && "rotate-90")} />
                                         <group.icon className="size-3.5" />
                                         <span>{group.label}</span>

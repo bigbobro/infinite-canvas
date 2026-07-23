@@ -21,7 +21,6 @@ export function AgentPanel() {
     const setAgentState = useAgentStore((state) => state.setAgentState);
     const closePanel = useAgentStore((state) => state.closePanel);
 
-
     const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
         event.preventDefault();
         const startX = event.clientX;
@@ -67,7 +66,9 @@ export function AgentPanel() {
                         </span>
                         <div className="min-w-0">
                             <div className="text-base font-semibold leading-5">Agent</div>
-                            <div className="truncate text-xs" style={{ color: theme.node.muted }}>全站助手</div>
+                            <div className="truncate text-xs" style={{ color: theme.node.muted }}>
+                                全站助手
+                            </div>
                         </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">

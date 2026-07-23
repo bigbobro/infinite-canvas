@@ -90,7 +90,10 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
             onCancel={onClose}
             title={
                 <span>
-                    选择渠道模型 <span className="ml-2 text-xs font-normal text-stone-500">已选择 {selected.size} / {new Set([...existing, ...fetched]).size}</span>
+                    选择渠道模型{" "}
+                    <span className="ml-2 text-xs font-normal text-stone-500">
+                        已选择 {selected.size} / {new Set([...existing, ...fetched]).size}
+                    </span>
                 </span>
             }
             styles={{ body: { maxHeight: "62vh", overflowY: "auto" } }}
@@ -124,7 +127,9 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
             />
 
             <div className="mb-3 flex items-center justify-between gap-2">
-                <span className="text-xs text-stone-500">当前列表已选择 {visibleSelectedCount} / {visibleList.length}</span>
+                <span className="text-xs text-stone-500">
+                    当前列表已选择 {visibleSelectedCount} / {visibleList.length}
+                </span>
                 <div className="flex gap-2">
                     <Button size="small" disabled={!visibleList.length} onClick={() => selectVisible(true)}>
                         全选当前列表

@@ -107,10 +107,18 @@ export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { d
                         <NumberField label="行数" value={rows} onChange={(value) => update("rows", value)} />
                         <NumberField label="列数" value={columns} onChange={(value) => update("columns", value)} />
                         <div className="grid grid-cols-2 gap-2">
-                            <Button icon={<Rows3 className="size-4" />} onClick={() => addLine("horizontal")}>横向线</Button>
-                            <Button icon={<PanelTop className="size-4 rotate-90" />} onClick={() => addLine("vertical")}>纵向线</Button>
-                            <Button icon={<Trash2 className="size-4" />} disabled={!active} onClick={deleteLine}>删除线</Button>
-                            <Button icon={<ListRestart className="size-4" />} onClick={resetLines}>重置线</Button>
+                            <Button icon={<Rows3 className="size-4" />} onClick={() => addLine("horizontal")}>
+                                横向线
+                            </Button>
+                            <Button icon={<PanelTop className="size-4 rotate-90" />} onClick={() => addLine("vertical")}>
+                                纵向线
+                            </Button>
+                            <Button icon={<Trash2 className="size-4" />} disabled={!active} onClick={deleteLine}>
+                                删除线
+                            </Button>
+                            <Button icon={<ListRestart className="size-4" />} onClick={resetLines}>
+                                重置线
+                            </Button>
                         </div>
                         <div className="rounded-xl border px-4 py-3 text-sm">
                             <div className="flex items-center justify-between">

@@ -22,7 +22,10 @@ type Props = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onChange" | "val
     highlightLabels?: boolean;
 };
 
-export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Props>(function CanvasResourceMentionTextarea({ value, references, onChange, onSubmit, onKeyDown, className, containerClassName, style, highlightLabels = true, ...props }, forwardedRef) {
+export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Props>(function CanvasResourceMentionTextarea(
+    { value, references, onChange, onSubmit, onKeyDown, className, containerClassName, style, highlightLabels = true, ...props },
+    forwardedRef,
+) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -93,7 +96,10 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         // showOverlay 时高亮 div 覆盖在 textarea 上,若不把 textarea 提到上层,原生插入光标(caret)会被盖住看不见
         ...(showOverlay ? { position: "relative", zIndex: 1, background: "transparent", backgroundColor: "transparent" } : {}),
     } as CSSProperties;
-    const menu = mention && candidates.length && textareaRef.current ? <MentionMenu textarea={textareaRef.current} caretIndex={mention.start} references={candidates} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null;
+    const menu =
+        mention && candidates.length && textareaRef.current ? (
+            <MentionMenu textarea={textareaRef.current} caretIndex={mention.start} references={candidates} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} />
+        ) : null;
 
     return (
         <div className={`relative h-full w-full ${containerClassName || ""}`}>
@@ -213,7 +219,21 @@ function MentionHighlightText({ value, labels, placeholder }: { value: string; l
     );
 }
 
-function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onSelect }: { textarea: HTMLTextAreaElement; caretIndex: number; references: CanvasResourceReference[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (reference: CanvasResourceReference) => void }) {
+function MentionMenu({
+    textarea,
+    caretIndex,
+    references,
+    activeIndex,
+    theme,
+    onSelect,
+}: {
+    textarea: HTMLTextAreaElement;
+    caretIndex: number;
+    references: CanvasResourceReference[];
+    activeIndex: number;
+    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    onSelect: (reference: CanvasResourceReference) => void;
+}) {
     const selectedRef = useRef(false);
     const rect = textarea.getBoundingClientRect();
     const boundary = textarea.closest(".ant-modal-content")?.getBoundingClientRect() || { left: 8, top: 8, right: window.innerWidth - 8, bottom: window.innerHeight - 8 };
@@ -296,7 +316,31 @@ function clamp(value: number, min: number, max: number) {
 }
 
 // 通过镜像 div 复刻 textarea 的排版,测出第 index 个字符处光标相对 textarea 的像素坐标(布局尺度,未含缩放)。
-const MIRROR_STYLE_PROPS = ["boxSizing", "width", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "fontStyle", "fontVariant", "fontWeight", "fontStretch", "fontSize", "lineHeight", "fontFamily", "textAlign", "textIndent", "letterSpacing", "wordSpacing", "tabSize", "textTransform"] as const;
+const MIRROR_STYLE_PROPS = [
+    "boxSizing",
+    "width",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "fontStyle",
+    "fontVariant",
+    "fontWeight",
+    "fontStretch",
+    "fontSize",
+    "lineHeight",
+    "fontFamily",
+    "textAlign",
+    "textIndent",
+    "letterSpacing",
+    "wordSpacing",
+    "tabSize",
+    "textTransform",
+] as const;
 
 function getCaretPoint(textarea: HTMLTextAreaElement, index: number) {
     const computed = window.getComputedStyle(textarea);

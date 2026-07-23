@@ -115,23 +115,9 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
     const http = createPluginHttp(config, { signal: args.signal });
     const request = createPluginRequest(config, { signal: args.signal });
     const poll = createPoll(args.signal);
-    const runner = new Function(
-        "prompt",
-        "images",
-        "messages",
-        "params",
-        "model",
-        "baseUrl",
-        "apiKey",
-        "systemPrompt",
-        "http",
-        "request",
-        "poll",
-        "sleep",
-        "signal",
-        "onDelta",
-        `"use strict"; return (async () => {\n${args.script}\n})();`,
-    ) as (...fnArgs: unknown[]) => Promise<T>;
+    const runner = new Function("prompt", "images", "messages", "params", "model", "baseUrl", "apiKey", "systemPrompt", "http", "request", "poll", "sleep", "signal", "onDelta", `"use strict"; return (async () => {\n${args.script}\n})();`) as (
+        ...fnArgs: unknown[]
+    ) => Promise<T>;
     try {
         return await runner(
             args.prompt || "",
