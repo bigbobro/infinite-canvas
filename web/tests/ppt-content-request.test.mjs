@@ -12,6 +12,7 @@ let requestImageQuestion;
 let requestPptContentPageRegeneration;
 let requestPptContentPlan;
 let requirePptPageRewriteResult;
+let renderPptLayoutVocabularyHint;
 let defaultConfig;
 let vite;
 
@@ -19,6 +20,7 @@ before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ buildPptContentPageRegenerationMessages, buildPptContentPlanMessages, buildPptPageRewriteMessages, parsePptContentPlanResponse, previewPptContentPlanStream, requestPptContentPageRegeneration, requestPptContentPlan, requirePptPageRewriteResult } =
         await vite.ssrLoadModule("/src/services/api/ppt-content.ts"));
+    ({ renderPptLayoutVocabularyHint } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
     ({ requestImageQuestion } = await vite.ssrLoadModule("/src/services/api/image.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
 });
@@ -291,6 +293,31 @@ test("内容方案 prompt 先分离 Deck Brief 与上屏正文，再规划最少
     assert.match(systemPrompt, /最多 N 页[^\n]*N 页以内/);
     assert.match(systemPrompt, /没有明确页数[^\n]*固定上限/);
     assert.match(messages[1].content, /补充要求（行号\|原文）：\n1\|最多 9 页\n2\|希望回答/);
+});
+
+test("SHA-30a：内容方案与单页再生成 prompt 的 layoutIntent 写作要求引用同一份渲染出的布局词表", () => {
+    const hint = renderPptLayoutVocabularyHint();
+    assert.ok(hint.length > 0);
+    for (const word of ["主次", "聚焦", "堆叠", "步骤", "错落", "呼吸"]) assert.ok(hint.includes(word), `词表说明缺少新增词条：${word}`);
+
+    const planMessages = buildPptContentPlanMessages({ title: "中转站", sourceMaterial: "材料", requirements: "" });
+    assert.match(planMessages[0].content, /layoutIntent[^\n]*词汇族/);
+    assert.ok(planMessages[0].content.includes(hint), "内容方案 prompt 未引用渲染出的词表说明");
+
+    const regenerationMessages = buildPptContentPageRegenerationMessages({
+        title: "中转站",
+        sourceMaterial: "材料",
+        requirements: "",
+        draftRevision: 1,
+        targetPageNumber: 2,
+        targetPage: { title: "组件对比", purpose: "说清选型", primaryClaim: "候选项待确认", contentBlocks: [] },
+        authoringInstructions: [],
+        confirmedInputs: [],
+        unresolvedGaps: [],
+        auditIssues: [],
+        otherPageTitles: [],
+    });
+    assert.ok(regenerationMessages[0].content.includes(hint), "单页再生成 prompt 未引用渲染出的词表说明");
 });
 
 test("页面 AI 改写返回 slide-ready 内容块与定向信息表达", () => {

@@ -129,9 +129,138 @@ const SOURCE_RELATIONS = new Set<CanvasProjectPptSourceRef["relation"]>(["verbat
 const NUMBER_PATTERN = /(?:[$¥€£]\s*)?\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:亿元|万元|百分点|个月|小时|分钟|%|％|倍|万|亿|元|人|家|台|页|年|天|秒|个|项|条|点)?/g;
 const ASCII_TERM_PATTERN = /\b[A-Z][A-Z0-9-]{1,}\b/g;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*•]\s+|\d+[.)、]\s*)/;
-const LAYOUT_GEOMETRY_PATTERN =
-    /(?:左图右文|左文右图|一图一结论|左侧|右侧|顶部|底部|上方|下方|中间|中央|居中|整页|本页|页面|左右|上下|横向|纵向|水平|垂直|左对齐|右对齐|对齐|布局|排版|构图|双栏|分栏|分区|主视觉|宫格|网格|矩阵|时间线|流程图|概念图|架构图|柱状图|折线图|饼图|图表|图片|图标|表格|表头|编号|列表|卡片|模块|区块|区域|分层|分类|大标题|标题|正文|结论|要点|指标|对比|行动建议|行动|路径|箭头|连线|留白|展示|呈现|说明|放置|排列|排布|固定为|突出|强调|对应|并列|分组|区分|表达|依次)/g;
+
+type PptLayoutVocabularyGroup = "方向" | "结构" | "图形" | "强调";
+
+// 布局词表单一事实源：正则（校验残余）与生成提示词（约束模型措辞）都由这份词条派生，新增词条只需在此追加。
+const PPT_LAYOUT_VOCABULARY_ENTRIES: ReadonlyArray<{ readonly word: string; readonly group: PptLayoutVocabularyGroup }> = [
+    // 方向：位置、朝向与几何排布
+    { word: "左图右文", group: "方向" },
+    { word: "左文右图", group: "方向" },
+    { word: "左侧", group: "方向" },
+    { word: "右侧", group: "方向" },
+    { word: "顶部", group: "方向" },
+    { word: "底部", group: "方向" },
+    { word: "上方", group: "方向" },
+    { word: "下方", group: "方向" },
+    { word: "中间", group: "方向" },
+    { word: "中央", group: "方向" },
+    { word: "居中", group: "方向" },
+    { word: "整页", group: "方向" },
+    { word: "本页", group: "方向" },
+    { word: "页面", group: "方向" },
+    { word: "左右", group: "方向" },
+    { word: "上下", group: "方向" },
+    { word: "横向", group: "方向" },
+    { word: "纵向", group: "方向" },
+    { word: "水平", group: "方向" },
+    { word: "垂直", group: "方向" },
+    { word: "左对齐", group: "方向" },
+    { word: "右对齐", group: "方向" },
+    { word: "对齐", group: "方向" },
+    { word: "并列", group: "方向" },
+    { word: "环绕", group: "方向" },
+    { word: "放射", group: "方向" },
+    { word: "阶梯", group: "方向" },
+    { word: "错落", group: "方向" },
+    // 结构：版面组织与骨架
+    { word: "一图一结论", group: "结构" },
+    { word: "布局", group: "结构" },
+    { word: "排版", group: "结构" },
+    { word: "构图", group: "结构" },
+    { word: "双栏", group: "结构" },
+    { word: "分栏", group: "结构" },
+    { word: "分区", group: "结构" },
+    { word: "主视觉", group: "结构" },
+    { word: "宫格", group: "结构" },
+    { word: "网格", group: "结构" },
+    { word: "矩阵", group: "结构" },
+    { word: "分层", group: "结构" },
+    { word: "分类", group: "结构" },
+    { word: "模块", group: "结构" },
+    { word: "区块", group: "结构" },
+    { word: "区域", group: "结构" },
+    { word: "对称", group: "结构" },
+    { word: "平衡", group: "结构" },
+    { word: "比例", group: "结构" },
+    { word: "层次", group: "结构" },
+    { word: "密度", group: "结构" },
+    { word: "分组", group: "结构" },
+    { word: "区分", group: "结构" },
+    { word: "依次", group: "结构" },
+    // 图形：具体图表与视觉元件
+    { word: "时间线", group: "图形" },
+    { word: "流程图", group: "图形" },
+    { word: "概念图", group: "图形" },
+    { word: "架构图", group: "图形" },
+    { word: "柱状图", group: "图形" },
+    { word: "折线图", group: "图形" },
+    { word: "饼图", group: "图形" },
+    { word: "图表", group: "图形" },
+    { word: "图片", group: "图形" },
+    { word: "图标", group: "图形" },
+    { word: "表格", group: "图形" },
+    { word: "表头", group: "图形" },
+    { word: "编号", group: "图形" },
+    { word: "列表", group: "图形" },
+    { word: "卡片", group: "图形" },
+    { word: "箭头", group: "图形" },
+    { word: "连线", group: "图形" },
+    { word: "留白", group: "图形" },
+    // 强调：内容角色与视觉强调手法
+    { word: "大标题", group: "强调" },
+    { word: "标题", group: "强调" },
+    { word: "正文", group: "强调" },
+    { word: "结论", group: "强调" },
+    { word: "要点", group: "强调" },
+    { word: "指标", group: "强调" },
+    { word: "对比", group: "强调" },
+    { word: "行动建议", group: "强调" },
+    { word: "行动", group: "强调" },
+    { word: "路径", group: "强调" },
+    { word: "展示", group: "强调" },
+    { word: "呈现", group: "强调" },
+    { word: "说明", group: "强调" },
+    { word: "放置", group: "强调" },
+    { word: "排列", group: "强调" },
+    { word: "排布", group: "强调" },
+    { word: "固定为", group: "强调" },
+    { word: "突出", group: "强调" },
+    { word: "强调", group: "强调" },
+    { word: "对应", group: "强调" },
+    { word: "表达", group: "强调" },
+    { word: "主次", group: "强调" },
+    { word: "聚焦", group: "强调" },
+    { word: "堆叠", group: "强调" },
+    { word: "步骤", group: "强调" },
+    { word: "韵律", group: "强调" },
+    { word: "呼吸", group: "强调" },
+];
+
+export const PPT_LAYOUT_VOCABULARY: readonly string[] = PPT_LAYOUT_VOCABULARY_ENTRIES.map((entry) => entry.word);
+const LAYOUT_GEOMETRY_PATTERN = new RegExp(
+    `(?:${[...PPT_LAYOUT_VOCABULARY]
+        .sort((a, b) => b.length - a.length)
+        .map(escapeRegExp)
+        .join("|")})`,
+    "g",
+);
 const LAYOUT_GEOMETRY_COUNT_PATTERN = /(?:(?:[1-9]|1[0-2]|[一二两三四五六七八九十])(?:个)?(?:柱状图|折线图|饼图|概念图|图表|图片|列|行|栏|区|宫格))/g;
+
+/** 供生成提示词引用的词表说明：按方向/结构/图形/强调分组渲染，与 LAYOUT_GEOMETRY_PATTERN 同源。 */
+export function renderPptLayoutVocabularyHint(): string {
+    const groups: PptLayoutVocabularyGroup[] = ["方向", "结构", "图形", "强调"];
+    return (
+        groups
+            .map(
+                (group) =>
+                    `${group}类：${PPT_LAYOUT_VOCABULARY_ENTRIES.filter((entry) => entry.group === group)
+                        .map((entry) => entry.word)
+                        .join("、")}`,
+            )
+            .join("；") + "。"
+    );
+}
 const LAYOUT_CONTENT_COUNT_PATTERN = /([0-9一二三四五六七八九十两]+)(?:个)?(?:指标|要点)|([0-9一二三四五六七八九十两]+)(?:条)?行动建议/g;
 const AUTHORING_INSTRUCTION_PATTERN = /^(?:(?:我)?(?:希望|想让)(?:你|AI|模型)|(?:请|麻烦)(?:你|AI|模型)|帮我).{0,40}(?:建议|补充|完善|起草|生成|写|整理)/i;
 const DECK_CREATION_INTENT_PATTERN = /^(?:我)?(?:想|希望|准备|需要|要)(?:能|可以|要)?(?:做|制作|生成|写|整理)[^。！？\n]{0,60}(?:PPT|演示|一份[^。！？\n]{0,40}材料|(?:介绍|汇报|路演|说明|宣讲|提案)材料)[^。！？\n]{0,80}$/i;
@@ -521,8 +650,9 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
     if (sourceContext && validatePptPageSourceRefs(pageSpec, sourceContext).length) issues.push({ code: "invalid_content_provenance", message: "页面来源已与当前原始材料或补充要求脱节" });
     if (JSON.stringify(pageSpec.lockedFacts) !== JSON.stringify(derivePptLockedFacts(pageSpec))) issues.push({ code: "invalid_content_provenance", message: "页面锁定事实与内容块派生结果不一致" });
     for (const intent of pageSpec.layoutIntent) {
-        if (isPptLayoutIntentSupported(pageSpec, intent)) continue;
-        issues.push({ code: "invalid_content_structure", message: `无法识别排版要求「${intent}」；其中可能包含未批准的文案或事实`, field: "layoutIntent", value: intent });
+        const evaluation = evaluatePptLayoutIntent(pageSpec, intent);
+        if (evaluation.supported) continue;
+        issues.push({ code: "invalid_content_structure", message: describeUnsupportedLayoutIntent(intent, evaluation), field: "layoutIntent", value: intent });
     }
     for (const message of validatePptPageVisualEncoding(pageSpec)) issues.push({ code: "invalid_visual_encoding", message });
     return issues;
@@ -542,15 +672,24 @@ export function validatePptPageSourceRefs(pageSpec: CanvasProjectPptPageSpec, so
 }
 
 export function isPptLayoutIntentSupported(pageSpec: CanvasProjectPptPageSpec, intent: string) {
+    return evaluatePptLayoutIntent(pageSpec, intent).supported;
+}
+
+/**
+ * 逐 token 求出 layoutIntent 未被词表覆盖、也未在本页已批准内容中出现的残余。
+ * 判定结果（supported）与既有残余检查逻辑完全一致，仅额外暴露残余 token 供报错分级使用。
+ */
+function evaluatePptLayoutIntent(pageSpec: CanvasProjectPptPageSpec, intent: string): { supported: boolean; unmatchedTokens: string[]; hasUnsupportedCount: boolean } {
     const stylePreview = previewPptStyleClauseRepair(intent);
-    if (!stylePreview.safe && findPptDeckStyleOverrides(intent).length) return true;
+    if (!stylePreview.safe && findPptDeckStyleOverrides(intent).length) return { supported: true, unmatchedTokens: [], hasUnsupportedCount: false };
     const layout = stylePreview.remainder;
-    if (!layout) return true;
+    if (!layout) return { supported: true, unmatchedTokens: [], hasUnsupportedCount: false };
     const approvedSource = [renderPptPageSpecText(pageSpec), ...pageSpec.sourceRefs.map((sourceRef) => sourceRef.excerpt)].join("\n");
     const approvedText = normalizedComparable(approvedSource);
     const approvedItemCount = pageSpec.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "placeholder").flatMap((block) => meaningfulLines(block.text)).length;
-    if (!isLayoutContentCountSupported(layout, approvedText, approvedItemCount, pageSpec.lockedFacts)) return false;
-    return layoutClauses(layout).every((clause) => clause.residueTokens.every((token) => approvedText.includes(token)));
+    if (!isLayoutContentCountSupported(layout, approvedText, approvedItemCount, pageSpec.lockedFacts)) return { supported: false, unmatchedTokens: [], hasUnsupportedCount: true };
+    const unmatchedTokens = layoutClauses(layout).flatMap((clause) => clause.residueTokens.filter((token) => !approvedText.includes(token)));
+    return { supported: unmatchedTokens.length === 0, unmatchedTokens, hasUnsupportedCount: false };
 }
 
 /** layoutIntent 校验与构造共用的数量声称检查：残余里声称的数量必须能在已批准正文或 lockedFacts 里找到依据。 */
@@ -584,16 +723,19 @@ function layoutClauses(layout: string) {
     }));
 }
 
-/**
- * SHA-30a 尚未合入：残余分类沿用其 design.md 的规则（含数字、引号包裹、连续拉丁大写、百分号/货币符 → fact_risk，其余 → modifier）。
- * 合并时以 SHA-30a 的 classifyLayoutResidue 实现为准。
- */
+/** 未识别残余的报错分级：任一 token 命中硬事实特征即整条按 fact_risk 报，措辞维持原判决句；否则按纯修饰词软化措辞。 */
 function classifyLayoutResidue(residue: string): "fact_risk" | "modifier" {
     if (/\d/.test(residue)) return "fact_risk";
-    if (/[「」『』""'']/.test(residue)) return "fact_risk";
-    if (/[A-Z]{2,}/.test(residue)) return "fact_risk";
-    if (/[%％¥$€£]/.test(residue)) return "fact_risk";
+    if (/[「」『』"“”'‘’]/.test(residue)) return "fact_risk";
+    if (/[A-Z][A-Z0-9-]{1,}/.test(residue)) return "fact_risk";
+    if (/[¥$€£%％]/.test(residue)) return "fact_risk";
     return "modifier";
+}
+
+function describeUnsupportedLayoutIntent(intent: string, evaluation: { unmatchedTokens: string[]; hasUnsupportedCount: boolean }): string {
+    const isFactRisk = evaluation.hasUnsupportedCount || !evaluation.unmatchedTokens.length || evaluation.unmatchedTokens.some((token) => classifyLayoutResidue(token) === "fact_risk");
+    if (isFactRisk) return `无法识别排版要求「${intent}」；其中可能包含未批准的文案或事实`;
+    return `排版词「${evaluation.unmatchedTokens.join("、")}」不在识别词表中，也未出现在本页已批准内容里`;
 }
 
 /**
@@ -1384,6 +1526,10 @@ function text(value: unknown) {
 
 function copyLength(value: string) {
     return [...value.trim().replace(/\r?\n/g, "")].length;
+}
+
+function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stableKey(value: string) {

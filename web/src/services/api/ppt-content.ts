@@ -1,6 +1,6 @@
 import { jsonrepair } from "jsonrepair";
 
-import { requirePptPageRewriteSpec, type PptPageRewriteSpec } from "@/lib/ppt/content-plan";
+import { renderPptLayoutVocabularyHint, requirePptPageRewriteSpec, type PptPageRewriteSpec } from "@/lib/ppt/content-plan";
 import { requestImageQuestion, type AiTextMessage } from "@/services/api/image";
 import type { CanvasProjectPptContentBlock } from "@/stores/canvas/use-canvas-store";
 import type { AiConfig } from "@/stores/use-config-store";
@@ -41,7 +41,7 @@ const CONTENT_PLAN_SYSTEM_PROMPT = `你是 PPT 内容规划师。你的任务不
 {"brief":{"title":"","audience":"","goal":"","narrative":"","visualSignals":[]},"pages":[{"title":"","purpose":"","primaryClaim":"","contentForm":"comparison","contentFormNote":"","titleSource":{"source":"material","relation":"verbatim","startLine":1,"endLine":1},"primaryClaimSource":{"source":"material","relation":"derived","startLine":2,"endLine":3},"blocks":[{"key":"b1","kind":"body","text":"原文事实","source":{"source":"material","relation":"verbatim","startLine":1,"endLine":2}},{"key":"b2","kind":"body","text":"AI 建议初稿","gapKey":"g1"}],"layoutIntent":["左右双栏"],"visualEncoding":[{"contentKeys":["b1"],"intent":"differentiate","channel":"shape"}],"gaps":[{"key":"g1","kind":"missing_detail","question":"是否采用该建议？","reason":"原材料未提供细节","blocking":true,"proposedAnswer":"AI 建议初稿"}]}]}
 
 硬规则：
-1. contentForm 只能是 cover、comparison、architecture、process、timeline、data、narrative、closing；它表达语义结构。layoutIntent 只写左右、上下、网格等几何关系，不写配色、字体、背景、材质或气质。
+1. contentForm 只能是 cover、comparison、architecture、process、timeline、data、narrative、closing；它表达语义结构。layoutIntent 是纯排版表述，请从以下词汇族中选词或组合来描述版式（词表外的修饰词入库时会被自动整理）：${renderPptLayoutVocabularyHint()}不写配色、字体、背景、材质或气质。
 2. title 和 primaryClaim 单独输出；blocks 的 kind 只能是 supporting_claim、body、list、table、chart_data、placeholder，不能重复 title 或 primary_claim。
 3. 每段来自用户输入的可见文案必须标注 material 或 requirements 的准确起止行号，并声明 relation：verbatim（页面文案可在引用行中逐字定位）或 derived（基于引用行压缩/归纳/改写）。禁止在未声明 derived 时改写后仍声称来自原文。
 4. derived 引用必须覆盖支撑该段的最小连续行；不得引入引用行中不存在的数字、大写术语、型号、金额或既成结论。brief.audience/goal/narrative 是整套作者侧归纳，允许改写，不必逐字。
