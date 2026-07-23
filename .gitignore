@@ -10,6 +10,13 @@ data/
 .idea
 web/dist
 
+# 本地 AI 平台配置、技能与钩子，不进入公开仓
+.claude/
+.agent/
+.agents/
+.codex/
+.grok/
+
 **/dist
 web/public/plugins
 plugins/canvas/*/dist
