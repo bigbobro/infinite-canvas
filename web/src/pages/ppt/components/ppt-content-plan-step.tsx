@@ -3,6 +3,7 @@ import { Alert, Button, Input, Popconfirm, Skeleton } from "antd";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, FileText, Merge, Pencil, RefreshCw, Save, Sparkles, Square, Trash2, WandSparkles, X } from "lucide-react";
 
 import { pptPageRepairActionLabel, type PptContentAuditAction, type PptContentAuditIssue, type PptInformationGap } from "@/lib/ppt/content-plan";
+import { aggregatePptSourceRefs, derivePptPageDuty, type PptPageDutyItem } from "@/lib/ppt/duty-dashboard";
 import type { CanvasProjectPptContentBlock, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef, PptPrincipleDeviation } from "@/stores/canvas/use-canvas-store";
 import type { FinalizedPptContent, PptContentPlanningController } from "@/pages/ppt/use-ppt-content-planning";
 
@@ -324,6 +325,8 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
     const primaryClaim = page.contentBlocks.find((block) => block.kind === "primary_claim");
     const contentBlocks = page.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim");
     const sourceById = useMemo(() => new Map(page.sourceRefs.map((source) => [source.id, source])), [page.sourceRefs]);
+    const dutyItems = useMemo(() => derivePptPageDuty(page, gaps, issues), [page, gaps, issues]);
+    const aggregatedSources = useMemo(() => aggregatePptSourceRefs(page), [page]);
     const unresolvedGaps = gaps.filter((gap) => !gap.resolution);
     const resolvedGaps = gaps.filter((gap) => gap.resolution);
     const unresolvedCount = unresolvedGaps.length;
@@ -346,6 +349,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                 <div className="min-w-0">
                     <EditableText value={title?.text || `第 ${index + 1} 页`} className="text-base font-semibold leading-6" ariaLabel="编辑页标题" onSave={(value) => title && planning.editBlock(page.pageId, title.id, value)} />
                     <EditableText value={page.purpose || "本页目的待补充"} className="mt-1 text-sm text-stone-500" ariaLabel="编辑本页目的" onSave={(value) => planning.editPurpose(page.pageId, value)} />
+                    <PageDutyRow items={dutyItems} />
                     <div className="mt-3 flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-stone-500">
                         <span className="mr-2">
                             {CONTENT_FORM_LABELS[page.contentForm]} · {unresolvedCount ? `${unresolvedCount} 项待决定` : "可确认"}
@@ -465,13 +469,16 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
 
                 {resolvedGaps.length ? <ResolvedGapHistory gaps={resolvedGaps} planning={planning} className="border-t border-stone-200 pt-4 dark:border-stone-800" /> : null}
 
-                {page.sourceRefs.length ? (
+                {aggregatedSources.length ? (
                     <details className="border-t border-stone-100 pt-3 text-sm dark:border-stone-800">
-                        <summary className="cursor-pointer text-xs text-stone-500">查看 {page.sourceRefs.length} 条来源依据</summary>
+                        <summary className="cursor-pointer text-xs text-stone-500">查看 {aggregatedSources.length} 条来源依据</summary>
                         <div className="mt-3 space-y-3">
-                            {page.sourceRefs.map((source) => (
-                                <div key={source.id} className="border-l-2 border-stone-200 pl-3 dark:border-stone-700">
-                                    <p className="text-xs text-stone-400">{sourceLabel(source)}</p>
+                            {aggregatedSources.map((source, sourceIndex) => (
+                                <div key={`${source.source}:${source.relation}:${source.startLine ?? "-"}:${source.endLine ?? "-"}:${sourceIndex}`} className="border-l-2 border-stone-200 pl-3 dark:border-stone-700">
+                                    <p className="text-xs text-stone-400">
+                                        {sourceLabel(source)}
+                                        {source.supportedBlockCount > 1 ? ` · 支撑 ${source.supportedBlockCount} 个内容块` : ""}
+                                    </p>
                                     <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-600 dark:text-stone-300">{source.excerpt}</p>
                                 </div>
                             ))}
@@ -525,17 +532,41 @@ function BlockSources({ block, sourceById, unresolvedGapIds }: { block: CanvasPr
     return <p className="mt-1 text-[11px] text-stone-400">{sources.map(sourceLabel).join(" · ")}</p>;
 }
 
-function sourceLabel(source: CanvasProjectPptSourceRef) {
+function sourceLabel(source: Pick<CanvasProjectPptSourceRef, "source" | "relation" | "startLine" | "endLine">) {
     const range = source.startLine ? ` L${source.startLine}${source.endLine && source.endLine !== source.startLine ? `–${source.endLine}` : ""}` : "";
     if (source.source === "material" && source.relation === "derived") return `基于材料${range} 归纳`;
     if (source.source === "requirements" && source.relation === "derived") return `基于补充要求${range} 归纳`;
     return `${SOURCE_LABELS[source.source]}${range}`;
 }
 
+/** SHA-30d：职责仪表行——理念从报错文案搬进页面骨架，正向展示；ok 用现有成功色，pending/deviated 都是中性圆点，不用警示色。 */
+function PageDutyRow({ items }: { items: PptPageDutyItem[] }) {
+    return (
+        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
+            {items.map((item, itemIndex) => (
+                <span key={`${item.label}:${itemIndex}`} className="inline-flex items-center gap-1">
+                    {item.state === "ok" ? (
+                        <>
+                            <Check className="size-3 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+                            {item.label}
+                        </>
+                    ) : (
+                        <>
+                            <span className="inline-block size-1.5 rounded-full bg-stone-300 dark:bg-stone-600" aria-hidden="true" />
+                            {item.detail}
+                        </>
+                    )}
+                </span>
+            ))}
+        </p>
+    );
+}
+
+/** SHA-30d：30a/30b/30c 处理后仍可能残留的公理层/编辑引入问题——标题降为与「来源依据」同级的次要样式，仪表已承担正向展示。 */
 function PageIssues({ issues, planning }: { issues: PptContentAuditIssue[]; planning: PptContentPlanningController }) {
     return (
-        <section className="border-l-2 border-amber-400 pl-3">
-            <p className="text-xs font-medium text-amber-700 dark:text-amber-300">内容检查</p>
+        <section className="border-l-2 border-stone-200 pl-3 dark:border-stone-700">
+            <p className="text-xs text-stone-500">内容检查</p>
             <div className="mt-2 space-y-2">
                 {issues.map((issue) => (
                     <div key={issue.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
