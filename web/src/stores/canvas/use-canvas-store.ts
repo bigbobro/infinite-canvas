@@ -141,6 +141,8 @@ export type CanvasProjectPptPageSpec = {
     visualEncoding: CanvasProjectPptVisualEncoding[];
     assetRefs: string[];
     freedom: string;
+    /** SHA-30b：本次解析自动整理的人话记录（不从 previousPageSpec 继承，重跑即重算）。 */
+    autoTidy?: string[];
 };
 
 export type CanvasProjectPptVerbatimSpec = {

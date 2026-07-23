@@ -243,9 +243,10 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
                     prunePptVisualEncoding(page, removeIds, true);
                     page.contentBlocks = page.contentBlocks.filter((block) => !removeIds.has(block.id));
                 }
-            } else if (!boundBlocks.length) {
+            } else if (!boundBlocks.length && page.contentForm !== "cover") {
                 page.contentBlocks.push({ id: `${gapId}:block:resolution`, kind: "body", text: answer, sourceRefIds: [sourceRef.id], gapId });
             }
+            // SHA-30b：封面页且缺口无绑定块时，只挂来源与 gap resolution，不追加正文块（封面不承载正文）。
         }
         page.version += 1;
         pruneUnusedPptSourceRefs(page);
@@ -548,28 +549,84 @@ export function isPptLayoutIntentSupported(pageSpec: CanvasProjectPptPageSpec, i
     const approvedSource = [renderPptPageSpecText(pageSpec), ...pageSpec.sourceRefs.map((sourceRef) => sourceRef.excerpt)].join("\n");
     const approvedText = normalizedComparable(approvedSource);
     const approvedItemCount = pageSpec.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "placeholder").flatMap((block) => meaningfulLines(block.text)).length;
-    const contentCountsSupported = [...layout.matchAll(LAYOUT_CONTENT_COUNT_PATTERN)].every((match) => {
+    if (!isLayoutContentCountSupported(layout, approvedText, approvedItemCount, pageSpec.lockedFacts)) return false;
+    return layoutClauses(layout).every((clause) => clause.residueTokens.every((token) => approvedText.includes(token)));
+}
+
+/** layoutIntent 校验与构造共用的数量声称检查：残余里声称的数量必须能在已批准正文或 lockedFacts 里找到依据。 */
+function isLayoutContentCountSupported(layout: string, approvedText: string, approvedItemCount: number, lockedFacts: CanvasProjectPptLockedFact[]) {
+    return [...layout.matchAll(LAYOUT_CONTENT_COUNT_PATTERN)].every((match) => {
         if (approvedText.includes(normalizedComparable(match[0]))) return true;
         const count = parseLayoutCount(match[1] || match[2]);
-        return count !== undefined && (approvedItemCount === count || pageSpec.lockedFacts.some((fact) => fact.kind === "point_count" && Number(fact.value) === count));
+        return count !== undefined && (approvedItemCount === count || lockedFacts.some((fact) => fact.kind === "point_count" && Number(fact.value) === count));
     });
-    if (!contentCountsSupported) return false;
-    return layout
-        .split(/[，,。；;·・]/)
-        .map((clause) =>
-            clause
-                .replace(/\d+\s*:\s*\d+/g, "")
-                .replace(/\d+\s*[×xX*]\s*\d+/g, "")
-                .replace(/\bPPT\b/gi, "")
-                .replace(LAYOUT_CONTENT_COUNT_PATTERN, "")
-                .replace(LAYOUT_GEOMETRY_COUNT_PATTERN, "")
-                .replace(LAYOUT_GEOMETRY_PATTERN, "")
-                .replace(/[()[\]{}（）【】]/g, ""),
-        )
-        .flatMap((clause) => clause.split(/[、/]|或/))
-        .map(normalizedComparable)
-        .filter(Boolean)
-        .every((token) => approvedText.includes(token));
+}
+
+/**
+ * layoutIntent 校验与构造共用的 token 分解管线：按主分隔符切分子句，逐句剥离已识别的排版词表/计数模式，
+ * 再按次分隔符拆出残余 token。isPptLayoutIntentSupported 只关心「是否全部被批准文本覆盖」；
+ * normalizePage 的 tidyLayoutIntent 额外需要每个子句的原文（raw）以便剥除残余后保留可识别部分。
+ */
+function layoutClauses(layout: string) {
+    return layout.split(/[，,。；;·・]/).map((raw) => ({
+        raw,
+        residueTokens: raw
+            .replace(/\d+\s*:\s*\d+/g, "")
+            .replace(/\d+\s*[×xX*]\s*\d+/g, "")
+            .replace(/\bPPT\b/gi, "")
+            .replace(LAYOUT_CONTENT_COUNT_PATTERN, "")
+            .replace(LAYOUT_GEOMETRY_COUNT_PATTERN, "")
+            .replace(LAYOUT_GEOMETRY_PATTERN, "")
+            .replace(/[()[\]{}（）【】]/g, "")
+            .split(/[、/]|或/)
+            .map(normalizedComparable)
+            .filter(Boolean),
+    }));
+}
+
+/**
+ * SHA-30a 尚未合入：残余分类沿用其 design.md 的规则（含数字、引号包裹、连续拉丁大写、百分号/货币符 → fact_risk，其余 → modifier）。
+ * 合并时以 SHA-30a 的 classifyLayoutResidue 实现为准。
+ */
+function classifyLayoutResidue(residue: string): "fact_risk" | "modifier" {
+    if (/\d/.test(residue)) return "fact_risk";
+    if (/[「」『』""'']/.test(residue)) return "fact_risk";
+    if (/[A-Z]{2,}/.test(residue)) return "fact_risk";
+    if (/[%％¥$€£]/.test(residue)) return "fact_risk";
+    return "modifier";
+}
+
+/**
+ * SHA-30b：normalizePage 组装 layoutIntent 时的构造器化整理——与校验同源识别，
+ * 整条可识别则原样保留；纯修饰词残余剥除后保留可识别部分；硬事实残余整条丢弃。
+ * 样式描述（findPptDeckStyleOverrides 命中）留给既有 deck_style_signal / route_deck_style 与 finalize 阶段处理，此处原样放行。
+ */
+function tidyLayoutIntent(intent: string, approvedText: string, approvedItemCount: number, lockedFacts: CanvasProjectPptLockedFact[]): { kept?: string; note?: string } {
+    if (findPptDeckStyleOverrides(intent).length) return { kept: intent };
+    const stylePreview = previewPptStyleClauseRepair(intent);
+    if (!stylePreview.safe) return { kept: intent };
+    const layout = stylePreview.remainder;
+    if (!layout) return { kept: intent };
+    if (!isLayoutContentCountSupported(layout, approvedText, approvedItemCount, lockedFacts)) {
+        return { note: `排版表述「${intent}」包含未经批准的数量声称，已整体移除` };
+    }
+    const survivors: string[] = [];
+    let dropped = false;
+    for (const clause of layoutClauses(layout)) {
+        const unsupported = clause.residueTokens.filter((token) => !approvedText.includes(token));
+        if (!unsupported.length) {
+            if (clause.raw.trim()) survivors.push(clause.raw.trim());
+            continue;
+        }
+        if (unsupported.some((token) => classifyLayoutResidue(token) === "fact_risk")) {
+            return { note: `排版表述「${intent}」可能包含未批准的文案或事实，已整体移除` };
+        }
+        dropped = true;
+    }
+    if (!dropped) return { kept: intent };
+    if (!survivors.length) return { note: `排版表述「${intent}」已整体移除（均为未识别的排版修饰词）` };
+    const kept = survivors.join(" · ");
+    return { kept, note: `排版表述「${intent}」已整理为「${kept}」` };
 }
 
 export function renderPptPageSpecText(pageSpec: CanvasProjectPptPageSpec) {
@@ -725,24 +782,75 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
         const kind = isBlockKind(rawBlock.kind) ? rawBlock.kind : "body";
         blocks.push(addBlock(key, `${blockIndex + 1}-${stableKey(key)}`, kind, text(rawBlock.text), rawBlock.source, text(rawBlock.gapKey) || undefined));
     }
-    const visualEncoding = normalizeVisualEncodings(rawPage.visualEncoding, pageId, blockByKey, sourceRefs);
+    let visualEncoding = normalizeVisualEncodings(rawPage.visualEncoding, pageId, blockByKey, sourceRefs);
+    const contentForm: PptContentForm = isContentForm(rawPage.contentForm) ? rawPage.contentForm : "narrative";
+    const autoTidy: string[] = [];
+
+    // SHA-30b：封面页上与标题/核心信息同文的正文块是模型自打脸的冗余产物，构造期机械清掉并留痕；
+    // 不同文的真实内容块保留现状（问题卡化是 SHA-30c 的活）。previousMatch 复用的已确认块同文也删——它是冗余，
+    // 删除后走 pruneUnusedPptSourceRefs 清理孤儿来源即可，不影响 gap 已解决的语义。
+    let effectiveBlocks = blocks;
+    if (contentForm === "cover") {
+        const normalizedTitle = normalize(titleBlock.text);
+        const normalizedClaim = normalize(blocks[1].text);
+        const removedBlocks: CanvasProjectPptContentBlock[] = [];
+        effectiveBlocks = blocks.filter((block, blockIndex) => {
+            if (blockIndex < 2) return true; // 保留 title/claim
+            const normalizedText = normalize(block.text);
+            const matchesClaim = Boolean(normalizedText) && normalizedText === normalizedClaim;
+            const matchesTitle = Boolean(normalizedText) && normalizedText === normalizedTitle;
+            if (!matchesTitle && !matchesClaim) return true;
+            removedBlocks.push(block);
+            autoTidy.push(`已移除与${matchesClaim ? "核心信息" : "标题"}重复的正文块`);
+            return false;
+        });
+        if (removedBlocks.length) {
+            const removedIds = new Set(removedBlocks.map((block) => block.id));
+            visualEncoding = filterVisualEncodingReferences(visualEncoding, removedIds, true);
+            for (const removedBlock of removedBlocks) {
+                if (!removedBlock.gapId || effectiveBlocks.some((block) => block.gapId === removedBlock.gapId)) continue;
+                const gapIndex = gaps.findIndex((gap) => gap.id === removedBlock.gapId);
+                if (gapIndex !== -1) gaps.splice(gapIndex, 1);
+            }
+        }
+    }
+
+    // SHA-30b：layoutIntent 入库降噪——与校验同源识别逻辑，机械可修复的违规当场整理并留痕；
+    // 只挂在解析构造路径（normalizePage 只被 normalizePptContentDraft / replacePptContentDraftPage 调用），
+    // 用户编辑路径（applyPptContentAction 等）不经过这里，维持严格审查。
+    const pageDraftText = effectiveBlocks
+        .filter((block) => block.kind !== "placeholder")
+        .map((block) => block.text)
+        .join("\n");
+    const approvedText = normalizedComparable([pageDraftText, ...sourceRefs.map((sourceRef) => sourceRef.excerpt)].join("\n"));
+    const approvedItemCount = effectiveBlocks.filter((block) => block.kind !== "title" && block.kind !== "placeholder").flatMap((block) => meaningfulLines(block.text)).length;
+    const lockedFactsForLayout = derivePptLockedFacts({ pageId, contentBlocks: effectiveBlocks });
+    const layoutIntent: string[] = [];
+    for (const intent of unique(stringArray(rawPage.layoutIntent))) {
+        const tidy = tidyLayoutIntent(intent, approvedText, approvedItemCount, lockedFactsForLayout);
+        if (tidy.kept) layoutIntent.push(tidy.kept);
+        if (tidy.note) autoTidy.push(tidy.note);
+    }
+
     const pageGaps = gaps.filter((gap) => gap.pageId === pageId);
     const page: CanvasProjectPptPageSpec = {
         pageId,
         version: previousPageSpec?.version || 1,
         purpose: text(rawPage.purpose),
-        contentForm: isContentForm(rawPage.contentForm) ? rawPage.contentForm : "narrative",
+        contentForm,
         ...(text(rawPage.contentFormNote) ? { contentFormNote: text(rawPage.contentFormNote) } : {}),
         sourceRefs,
-        contentBlocks: blocks,
+        contentBlocks: effectiveBlocks,
         contentState: contentStateFor(pageGaps),
         lockedFacts: [],
         layoutRole: layoutRoleFor(rawPage.contentForm),
-        layoutIntent: unique(stringArray(rawPage.layoutIntent)),
+        layoutIntent: unique(layoutIntent),
         visualEncoding,
-        assetRefs: unique(blocks.flatMap((block) => [...block.text.matchAll(/@\[node:([^\]]+)\]/g)].map((match) => match[1]))),
+        assetRefs: unique(effectiveBlocks.flatMap((block) => [...block.text.matchAll(/@\[node:([^\]]+)\]/g)].map((match) => match[1]))),
         freedom: "不得新增或改写可见文案、数字、业务组件名称、参数、型号、成本或结论；允许新增不含文字的图标、形状、连线、分区和装饰图形，只用于组织已批准内容",
+        ...(autoTidy.length ? { autoTidy } : {}),
     };
+    pruneUnusedPptSourceRefs(page);
     page.lockedFacts = derivePptLockedFacts(page);
     return page;
 }
@@ -1298,8 +1406,16 @@ function uniqueById<T extends { id: string }>(values: T[]) {
 }
 
 function prunePptVisualEncoding(page: CanvasProjectPptPageSpec, blockIds: Set<string>, removeReferences: boolean) {
-    if (!blockIds.size) return;
-    page.visualEncoding = page.visualEncoding.flatMap((encoding) => {
+    page.visualEncoding = filterVisualEncodingReferences(page.visualEncoding, blockIds, removeReferences);
+}
+
+/**
+ * prunePptVisualEncoding 的纯函数内核：接受一份 visualEncoding 数组而非整个 page，
+ * 供 normalizePage 在 page 对象尚未组装完成时（封面冗余块清理）复用同一套过滤语义。
+ */
+function filterVisualEncodingReferences(encodings: CanvasProjectPptVisualEncoding[], blockIds: Set<string>, removeReferences: boolean) {
+    if (!blockIds.size) return encodings;
+    return encodings.flatMap((encoding) => {
         const contentBlockIds = removeReferences ? encoding.contentBlockIds.filter((id) => !blockIds.has(id)) : encoding.contentBlockIds;
         if (!contentBlockIds.length) return [];
         const lockedMapping = (encoding.lockedMapping || []).filter((mapping) => !blockIds.has(mapping.contentBlockId));

@@ -429,6 +429,17 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                     </div>
                 </section>
 
+                {page.autoTidy?.length ? (
+                    <details className="text-xs text-stone-400 dark:text-stone-500">
+                        <summary className="cursor-pointer opacity-60">已自动整理 {page.autoTidy.length} 处</summary>
+                        <ul className="mt-2 space-y-1 pl-3">
+                            {page.autoTidy.map((note, index) => (
+                                <li key={index}>{note}</li>
+                            ))}
+                        </ul>
+                    </details>
+                ) : null}
+
                 {issues.some((issue) => issue.code !== "unresolved_gap") ? <PageIssues issues={issues.filter((issue) => issue.code !== "unresolved_gap")} planning={planning} /> : null}
 
                 {unresolvedGaps.length ? (
