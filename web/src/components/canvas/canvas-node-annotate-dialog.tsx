@@ -34,7 +34,8 @@ function loadImage(dataUrl: string) {
 }
 
 // 气泡渲染参数照搬 research/annotate_exp.py 的 make_marked()（已实测验证有效，不要乱改）。
-function drawMarkedImage(image: HTMLImageElement, pins: AnnotatePin[]) {
+// pins 须已带放置序号 ordinal；只改绘制数字取值，不改半径/颜色/描边/字体比例。
+function drawMarkedImage(image: HTMLImageElement, pins: Array<AnnotatePin & { ordinal: number }>) {
     const canvas = document.createElement("canvas");
     canvas.width = image.naturalWidth || image.width;
     canvas.height = image.naturalHeight || image.height;
@@ -42,7 +43,7 @@ function drawMarkedImage(image: HTMLImageElement, pins: AnnotatePin[]) {
     if (!context) return null;
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     const radius = Math.max(18, canvas.width / 46);
-    pins.forEach((pin, index) => {
+    pins.forEach((pin) => {
         const x = pin.x * canvas.width;
         const y = pin.y * canvas.height;
         context.beginPath();
@@ -56,7 +57,7 @@ function drawMarkedImage(image: HTMLImageElement, pins: AnnotatePin[]) {
         context.font = `bold ${Math.round(radius * 1.15)}px sans-serif`;
         context.textAlign = "center";
         context.textBaseline = "middle";
-        context.fillText(String(index + 1), x, y);
+        context.fillText(String(pin.ordinal), x, y);
     });
     return canvas.toDataURL("image/png");
 }
@@ -106,10 +107,6 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
     const [pins, setPins] = useState<AnnotatePin[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const candidateEdit = useMemo(() => (node ? compileCandidateEdit(node.id, globalInstruction, pins) : null), [globalInstruction, node, pins]);
-    const pinSubmissionNumbers = useMemo(() => {
-        let next = 0;
-        return new Map(pins.map((pin) => [pin.id, pin.text.trim() ? ++next : undefined]));
-    }, [pins]);
 
     // 节点被删除或没有图片内容 → 自动关闭，避免对话框卡在无效状态。
     useEffect(() => {
@@ -239,7 +236,8 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
         }
         setSubmitting(true);
         try {
-            const validPins = pins.filter((pin) => pin.text.trim());
+            // 仅绘制非空点位，数字用放置序号（允许空洞，与 UI / 提示词一致）。
+            const validPins = pins.flatMap((pin, index) => (pin.text.trim() ? [{ ...pin, ordinal: index + 1 }] : []));
             const source: ReferenceImage = { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata?.mimeType || "image/png", dataUrl, storageKey: node.metadata?.storageKey };
             let reference = source;
             if (validPins.length) {
@@ -293,19 +291,20 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
                         <div className="relative inline-block max-w-full cursor-crosshair select-none overflow-hidden rounded-lg bg-transparent" onClick={addPin}>
                             <img src={dataUrl} alt="待标注原图" className="block max-w-full bg-transparent object-contain" style={{ maxHeight: "min(78vh, 860px)" }} draggable={false} />
                             {pins.map((pin, index) => {
-                                const submissionNumber = pinSubmissionNumbers.get(pin.id);
-                                const label = submissionNumber ? `提交点位 ${submissionNumber}` : `未填写点位 ${index + 1}，提交时将忽略`;
+                                const ordinal = index + 1;
+                                const filled = Boolean(pin.text.trim());
+                                const label = filled ? `提交点位 ${ordinal}` : `未填写点位 ${ordinal}，提交时将忽略`;
                                 return (
                                     <div
                                         key={pin.id}
-                                        className="absolute grid size-6 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border-2 border-white text-xs font-bold text-white shadow"
+                                        className={`absolute grid size-6 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border-2 border-white text-xs font-bold text-white shadow${filled ? "" : " opacity-60"}`}
                                         style={{ left: `${pin.x * 100}%`, top: `${pin.y * 100}%`, background: "rgb(220, 30, 30)" }}
                                         onClick={(event) => event.stopPropagation()}
                                         role="img"
                                         aria-label={label}
                                         title={label}
                                     >
-                                        {submissionNumber ?? "–"}
+                                        {ordinal}
                                     </div>
                                 );
                             })}
@@ -338,18 +337,19 @@ export function CanvasNodeAnnotateDialog({ pptGenerationModule }: { pptGeneratio
                             <div className="thin-scrollbar min-h-[72px] flex-1 space-y-2 overflow-y-auto pr-1 lg:min-h-0">
                                 {pins.length === 0 ? <div className="text-sm opacity-50">不添加点位也可以直接生成修改稿</div> : null}
                                 {pins.map((pin, index) => {
-                                    const submissionNumber = pinSubmissionNumbers.get(pin.id);
+                                    const ordinal = index + 1;
+                                    const filled = Boolean(pin.text.trim());
                                     return (
                                         <div key={pin.id} className="flex items-center gap-2">
                                             <span
-                                                className="grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold text-white"
+                                                className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold text-white${filled ? "" : " opacity-60"}`}
                                                 style={{ background: "rgb(220, 30, 30)" }}
-                                                title={submissionNumber ? `提交点位 ${submissionNumber}` : "未填写将在提交时忽略"}
+                                                title={filled ? `提交点位 ${ordinal}` : "未填写将在提交时忽略"}
                                             >
-                                                {submissionNumber ?? "–"}
+                                                {ordinal}
                                             </span>
-                                            <Input aria-label={`放置点位 ${index + 1} 的修改内容`} placeholder="未填写将忽略" value={pin.text} disabled={submitting} onChange={(event) => updatePinText(pin.id, event.target.value)} />
-                                            <Button type="text" aria-label={`删除放置点位 ${index + 1}`} title={`删除放置点位 ${index + 1}`} disabled={submitting} icon={<Trash2 className="size-4" />} onClick={() => removePin(pin.id)} />
+                                            <Input aria-label={`放置点位 ${ordinal} 的修改内容`} placeholder="未填写将忽略" value={pin.text} disabled={submitting} onChange={(event) => updatePinText(pin.id, event.target.value)} />
+                                            <Button type="text" aria-label={`删除放置点位 ${ordinal}`} title={`删除放置点位 ${ordinal}`} disabled={submitting} icon={<Trash2 className="size-4" />} onClick={() => removePin(pin.id)} />
                                         </div>
                                     );
                                 })}

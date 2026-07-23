@@ -19,19 +19,17 @@ function circledNumber(index: number) {
 /** 整页要求和有效点位都为空时返回 null；结果可直接作为提交前的冻结快照。 */
 export function compileCandidateEdit(baseNodeId: string, globalInstruction: string, pins: AnnotatePin[]): PptCandidateEditSnapshot | null {
     const normalizedGlobalInstruction = globalInstruction.trim();
-    const annotations = pins.flatMap((pin) => {
+    // index = 放置序号（pins 下标 + 1）；空文本点位过滤后不挤占编号，允许空洞（如 ①③）。
+    const annotations = pins.flatMap((pin, pinIndex) => {
         const instruction = pin.text.trim();
-        return instruction ? [{ index: 0, x: pin.x, y: pin.y, instruction }] : [];
-    });
-    annotations.forEach((annotation, index) => {
-        annotation.index = index + 1;
+        return instruction ? [{ index: pinIndex + 1, x: pin.x, y: pin.y, instruction }] : [];
     });
     if (!normalizedGlobalInstruction && !annotations.length) return null;
 
     const prompt: string[] = [];
     if (annotations.length) {
         prompt.push("这张图上有红色圆形编号标记。请优先按以下点位要求修改：");
-        prompt.push(...annotations.map((annotation, index) => `${circledNumber(index)} 标记所指的对象 → ${annotation.instruction}；`));
+        prompt.push(...annotations.map((annotation) => `${circledNumber(annotation.index - 1)} 标记所指的对象 → ${annotation.instruction}；`));
     }
     if (normalizedGlobalInstruction) {
         prompt.push(annotations.length ? "然后按以下整页要求修改：" : "请按以下整页要求修改这张图：", normalizedGlobalInstruction);

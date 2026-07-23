@@ -17,22 +17,29 @@ export function isPptCandidateEditSnapshot(snapshot: PptCandidateEditSnapshot | 
         return false;
     if (!snapshot.globalInstruction.trim() && !snapshot.annotations.length) return false;
     if (snapshot.globalInstruction.trim() && !snapshot.finalPrompt.includes(snapshot.globalInstruction.trim())) return false;
-    return snapshot.annotations.every(
-        (annotation, index) =>
-            annotation !== null &&
-            typeof annotation === "object" &&
-            Number.isInteger(annotation.index) &&
-            annotation.index === index + 1 &&
-            Number.isFinite(annotation.x) &&
-            annotation.x >= 0 &&
-            annotation.x <= 1 &&
-            Number.isFinite(annotation.y) &&
-            annotation.y >= 0 &&
-            annotation.y <= 1 &&
-            typeof annotation.instruction === "string" &&
-            Boolean(annotation.instruction.trim()) &&
-            snapshot.finalPrompt.includes(annotation.instruction.trim()),
-    );
+    // index 是放置序号（允许因空点位过滤出现空洞），须为正整数且互不重复。
+    const seenIndexes = new Set<number>();
+    return snapshot.annotations.every((annotation) => {
+        if (
+            annotation === null ||
+            typeof annotation !== "object" ||
+            !Number.isInteger(annotation.index) ||
+            annotation.index < 1 ||
+            seenIndexes.has(annotation.index) ||
+            !Number.isFinite(annotation.x) ||
+            annotation.x < 0 ||
+            annotation.x > 1 ||
+            !Number.isFinite(annotation.y) ||
+            annotation.y < 0 ||
+            annotation.y > 1 ||
+            typeof annotation.instruction !== "string" ||
+            !annotation.instruction.trim() ||
+            !snapshot.finalPrompt.includes(annotation.instruction.trim())
+        )
+            return false;
+        seenIndexes.add(annotation.index);
+        return true;
+    });
 }
 
 /** 无点位时冻结原图；有点位时只接受由该原图派生的唯一带标记快照。 */
