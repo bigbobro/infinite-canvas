@@ -2,7 +2,17 @@ import { nanoid } from "nanoid";
 
 import { hashPptContentSource } from "@/lib/ppt/source-lineage";
 import { findPptDeckStyleOverrides, previewPptStyleClauseRepair, validatePptPageVisualEncoding } from "@/lib/ppt/style-contract";
-import type { CanvasProjectPptContentBlock, CanvasProjectPptLockedFact, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef, CanvasProjectPptVisualEncoding, PptContentBrief, PptContentForm, PptLayoutRole } from "@/stores/canvas/use-canvas-store";
+import type {
+    CanvasProjectPptContentBlock,
+    CanvasProjectPptLockedFact,
+    CanvasProjectPptPageSpec,
+    CanvasProjectPptSourceRef,
+    CanvasProjectPptVisualEncoding,
+    PptContentBrief,
+    PptContentForm,
+    PptLayoutRole,
+    PptPrincipleDeviation,
+} from "@/stores/canvas/use-canvas-store";
 
 export type PptContentSourceInput = {
     title: string;
@@ -54,7 +64,14 @@ export type PptInformationGap = {
     briefField?: "audience" | "goal" | "narrative";
 };
 
-export type PptContentAuditAction = { kind: "focus_gap"; gapId: string } | { kind: "preview_safe_patch"; issueId: string } | { kind: "regenerate_pages"; pageIds: string[] } | { kind: "merge_pages"; pageIds: string[] };
+export type PptContentAuditAction =
+    | { kind: "focus_gap"; gapId: string }
+    | { kind: "preview_safe_patch"; issueId: string }
+    | { kind: "regenerate_pages"; pageIds: string[] }
+    | { kind: "merge_pages"; pageIds: string[] }
+    | { kind: "move_block"; pageId: string; blockId: string; targetPageId: string }
+    | { kind: "remove_block"; pageId: string; blockId: string }
+    | { kind: "acknowledge_deviation"; pageId: string; principle: PptPrincipleDeviation["principle"] };
 
 export type PptContentRepairOperation = { kind: "route_deck_style"; pageId: string; value: string; replacement: string } | { kind: "remove_layout_intent"; pageId: string; value: string; replacement: "" };
 
@@ -72,6 +89,7 @@ export type PptContentAuditIssue = {
         | "excessive_copy"
         | "authoring_instruction_as_copy"
         | "invalid_cover"
+        | "principle_question"
         | "page_count_exceeded";
     severity: "blocking" | "warning";
     pageIds: string[];
@@ -113,7 +131,9 @@ export type PptContentAction =
     | { kind: "edit_purpose"; pageId: string; purpose: string }
     | { kind: "remove_page"; pageId: string }
     | { kind: "merge_pages"; pageIds: [string, string] }
-    | { kind: "reorder_pages"; pageIds: string[] };
+    | { kind: "reorder_pages"; pageIds: string[] }
+    | { kind: "move_block"; pageId: string; blockId: string; targetPageId: string }
+    | { kind: "remove_block"; pageId: string; blockId: string };
 
 export type PptContentActionPreview = { draftRevision: number; action: PptContentAction };
 
@@ -385,6 +405,34 @@ export function resolvePptInformationGap(draft: PptContentDraft, gapId: string, 
     return rebuildDraft(next);
 }
 
+/** SHA-30c：用户在理念问题卡上选择「保留——我要这样」，把偏离写入 pageSpec；validatePptPageSpec 与审计从此对该理念闭嘴。 */
+export function acknowledgePptPrincipleDeviation(draft: PptContentDraft, pageId: string, principle: PptPrincipleDeviation["principle"], acknowledgedAt: string): PptContentDraft {
+    const page = draft.pageSpecs.find((item) => item.pageId === pageId);
+    if (!page) throw new Error("承接偏离的目标页不存在");
+    if (hasPptPrincipleDeviation(page, principle)) throw new Error("该理念偏离已记录");
+    const next = structuredClone(draft);
+    const nextPage = next.pageSpecs.find((item) => item.pageId === pageId)!;
+    nextPage.principleDeviations = [...(nextPage.principleDeviations || []), { principle, acknowledgedAt }];
+    nextPage.version += 1;
+    next.revision += 1;
+    return rebuildDraft(next);
+}
+
+/** SHA-30c：撤销已承接的理念偏离，恢复对应审计检查为 blocking。 */
+export function revokePptPrincipleDeviation(draft: PptContentDraft, pageId: string, principle: PptPrincipleDeviation["principle"]): PptContentDraft {
+    const page = draft.pageSpecs.find((item) => item.pageId === pageId);
+    if (!page) throw new Error("撤销偏离的目标页不存在");
+    if (!hasPptPrincipleDeviation(page, principle)) throw new Error("该理念偏离尚未记录");
+    const next = structuredClone(draft);
+    const nextPage = next.pageSpecs.find((item) => item.pageId === pageId)!;
+    const remaining = (nextPage.principleDeviations || []).filter((item) => item.principle !== principle);
+    if (remaining.length) nextPage.principleDeviations = remaining;
+    else delete nextPage.principleDeviations;
+    nextPage.version += 1;
+    next.revision += 1;
+    return rebuildDraft(next);
+}
+
 export function acceptPptPageSuggestions(draft: PptContentDraft, pageId: string, acceptedAt: string) {
     if (!draft.pageSpecs.some((page) => page.pageId === pageId)) throw new Error("建议所属页不存在");
     const suggestions = draft.audit.gaps.filter((gap) => gap.pageId === pageId && !gap.resolution && gap.proposedAnswer?.trim());
@@ -455,6 +503,40 @@ export function applyPptContentAction(draft: PptContentDraft, preview: PptConten
     } else if (action.kind === "reorder_pages") {
         const byId = new Map(next.pageSpecs.map((page) => [page.pageId, page]));
         next.pageSpecs = action.pageIds.map((pageId) => byId.get(pageId)!);
+    } else if (action.kind === "move_block") {
+        // SHA-30c：封面「移到下一页」选项——块连同其来源迁移，title/primary_claim 降级 supporting_claim（复用 merge_pages 语义）；
+        // 块自己的 gap（若有）pageId 同步改到目标页，不牵动源页其它 gap（不同于 merge_pages 的整页迁移）。
+        const source = next.pageSpecs.find((page) => page.pageId === action.pageId)!;
+        const target = next.pageSpecs.find((page) => page.pageId === action.targetPageId)!;
+        const blockIndex = source.contentBlocks.findIndex((block) => block.id === action.blockId);
+        const [movedBlockRaw] = source.contentBlocks.splice(blockIndex, 1);
+        const movedBlock = movedBlockRaw.kind === "title" || movedBlockRaw.kind === "primary_claim" ? { ...movedBlockRaw, kind: "supporting_claim" as const } : movedBlockRaw;
+        const movedSourceRefIds = new Set(movedBlock.sourceRefIds);
+        const movedSourceRefs = source.sourceRefs.filter((sourceRef) => movedSourceRefIds.has(sourceRef.id));
+        target.sourceRefs = uniqueById([...target.sourceRefs, ...movedSourceRefs]);
+        target.contentBlocks = [...target.contentBlocks, movedBlock];
+        target.version += 1;
+        target.contentState = { status: "reviewable" };
+        target.lockedFacts = derivePptLockedFacts(target);
+        source.visualEncoding = filterVisualEncodingReferences(source.visualEncoding, new Set([movedBlockRaw.id]), true);
+        pruneUnusedPptSourceRefs(source);
+        source.version += 1;
+        source.contentState = { status: "reviewable" };
+        source.lockedFacts = derivePptLockedFacts(source);
+        if (movedBlockRaw.gapId) next.audit.gaps = next.audit.gaps.map((gap) => (gap.id === movedBlockRaw.gapId ? { ...gap, pageId: action.targetPageId } : gap));
+    } else if (action.kind === "remove_block") {
+        // SHA-30c：封面「删除该块」选项——同一移除语义在解析期已用于清理冗余块（normalizePage 的封面清理分支）。
+        const page = next.pageSpecs.find((item) => item.pageId === action.pageId)!;
+        const blockIndex = page.contentBlocks.findIndex((block) => block.id === action.blockId);
+        const [removedBlock] = page.contentBlocks.splice(blockIndex, 1);
+        page.visualEncoding = filterVisualEncodingReferences(page.visualEncoding, new Set([removedBlock.id]), true);
+        pruneUnusedPptSourceRefs(page);
+        page.version += 1;
+        page.contentState = { status: "reviewable" };
+        page.lockedFacts = derivePptLockedFacts(page);
+        if (removedBlock.gapId && !page.contentBlocks.some((block) => block.gapId === removedBlock.gapId)) {
+            next.audit.gaps = next.audit.gaps.filter((gap) => gap.id !== removedBlock.gapId);
+        }
     } else {
         const page = next.pageSpecs.find((item) => item.pageId === action.pageId)!;
         if (action.kind === "edit_purpose") {
@@ -620,11 +702,12 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
         issues.push({ code: "invalid_content_structure", message: "页面必须包含唯一标题、唯一核心信息、页面目的与有效内容结构" });
     }
     const isCover = pageSpec.contentForm === "cover";
-    if (isCover && pageSpec.contentBlocks.some((block) => block.kind !== "title" && block.kind !== "primary_claim")) {
+    // SHA-30c：理念层违规（非公理层）——用户已承接的偏离不再报，未承接时维持 blocking。
+    if (isCover && !hasPptPrincipleDeviation(pageSpec, "cover-extra-content") && pageSpec.contentBlocks.some((block) => block.kind !== "title" && block.kind !== "primary_claim")) {
         issues.push({ code: "invalid_content_structure", message: "封面只保留标题和一句定位语，不承载正文或目标清单", field: "contentForm", value: pageSpec.contentForm });
     }
     const primaryClaim = claimBlocks[0]?.text.trim() || "";
-    if (isCover && isPptCoverTargetChecklist(primaryClaim)) {
+    if (isCover && !hasPptPrincipleDeviation(pageSpec, "cover-claim-checklist") && isPptCoverTargetChecklist(primaryClaim)) {
         issues.push({ code: "invalid_content_structure", message: "封面核心信息应是一句定位语，不能复述整套目标或问题清单", field: "primaryClaim", value: primaryClaim });
     }
     if (pageSpec.contentState.status !== "approved") issues.push({ code: "content_spec_not_approved", message: "页面内容规格尚未批准" });
@@ -991,6 +1074,8 @@ function normalizePage(rawPage: RawPage, index: number, sourceInput: PptContentS
         assetRefs: unique(effectiveBlocks.flatMap((block) => [...block.text.matchAll(/@\[node:([^\]]+)\]/g)].map((match) => match[1]))),
         freedom: "不得新增或改写可见文案、数字、业务组件名称、参数、型号、成本或结论；允许新增不含文字的图标、形状、连线、分区和装饰图形，只用于组织已批准内容",
         ...(autoTidy.length ? { autoTidy } : {}),
+        // SHA-30c：normalizePage 不继承未知字段，理念偏离记录须显式从 previousPageSpec 带过来，否则单页重生成会丢失承接状态。
+        ...(previousPageSpec?.principleDeviations?.length ? { principleDeviations: structuredClone(previousPageSpec.principleDeviations) } : {}),
     };
     pruneUnusedPptSourceRefs(page);
     page.lockedFacts = derivePptLockedFacts(page);
@@ -1007,6 +1092,21 @@ function assertPptContentAction(draft: PptContentDraft, action: PptContentAction
     if (action.kind === "reorder_pages") {
         const current = draft.pageSpecs.map((page) => page.pageId);
         if (action.pageIds.length !== current.length || new Set(action.pageIds).size !== current.length || current.some((pageId) => !action.pageIds.includes(pageId))) throw new Error("重排页序必须完整且不重复");
+        return;
+    }
+    if (action.kind === "move_block") {
+        const source = draft.pageSpecs.find((item) => item.pageId === action.pageId);
+        const target = draft.pageSpecs.find((item) => item.pageId === action.targetPageId);
+        if (!source || !target || source.pageId === target.pageId) throw new Error("移动内容块需要两个不同的页面身份");
+        if (!source.contentBlocks.some((block) => block.id === action.blockId)) throw new Error("内容块不存在");
+        return;
+    }
+    if (action.kind === "remove_block") {
+        const page = draft.pageSpecs.find((item) => item.pageId === action.pageId);
+        if (!page) throw new Error("内容操作的目标页不存在");
+        const block = page.contentBlocks.find((item) => item.id === action.blockId);
+        if (!block) throw new Error("内容块不存在");
+        if (block.kind === "title" || block.kind === "primary_claim") throw new Error("标题和核心信息不能删除");
         return;
     }
     const page = draft.pageSpecs.find((item) => item.pageId === action.pageId);
@@ -1334,14 +1434,30 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
             actions: [{ kind: "focus_gap", gapId: gap.id }],
         });
     }
-    for (const page of pageSpecs) {
+    for (const [pageIndex, page] of pageSpecs.entries()) {
         for (const issue of validatePptPageSpec({ ...page, contentState: page.contentState.status === "approved" ? page.contentState : { status: "approved", approvedAt: "audit" } })) {
             if (issue.code === "content_spec_not_approved" || issue.code === "unresolved_information_gap") continue;
+            // SHA-30c：理念层违规（封面承载额外内容 / 核心信息是目标清单）不再判决为 invalid_cover，
+            // 而是带选项的 principle_question 问题卡；用户承接偏离前维持 blocking，语义与旧 invalid_cover 一致。
+            const principle: PptPrincipleDeviation["principle"] | undefined =
+                page.contentForm === "cover" && issue.field === "contentForm" ? "cover-extra-content" : page.contentForm === "cover" && issue.field === "primaryClaim" ? "cover-claim-checklist" : undefined;
+            if (principle) {
+                issues.push({
+                    id: `issue:${page.pageId}:principle_question:${principle}`,
+                    code: "principle_question",
+                    severity: "blocking",
+                    pageIds: [page.pageId],
+                    message: issue.message,
+                    actions: principleQuestionActions(pageSpecs, pageIndex, principle),
+                    field: issue.field,
+                    value: issue.value,
+                });
+                continue;
+            }
             const layoutRepair = issue.field === "layoutIntent" && issue.value ? ({ kind: "remove_layout_intent", pageId: page.pageId, value: issue.value, replacement: "" } as const) : undefined;
-            const coverIssue = page.contentForm === "cover" && (issue.field === "contentForm" || issue.field === "primaryClaim");
             issues.push({
                 id: `issue:${page.pageId}:${issue.code}:${issues.length + 1}`,
-                code: coverIssue ? "invalid_cover" : issue.code,
+                code: issue.code,
                 severity: "blocking",
                 pageIds: [page.pageId],
                 message: issue.message,
@@ -1403,6 +1519,28 @@ function deriveAuditIssues(brief: PptContentBrief, pageSpecs: CanvasProjectPptPa
     return issues;
 }
 
+/**
+ * SHA-30c：理念问题卡的可选操作。cover-extra-content 逐块给出「移到下一页」（无下一页时不提供该选项）与
+ * 「删除该块」；cover-claim-checklist 复用既有 regenerate_pages 提供「改写为一句定位语」。两者都附带
+ * acknowledge_deviation 供「保留——我要这样」。
+ */
+function principleQuestionActions(pageSpecs: CanvasProjectPptPageSpec[], pageIndex: number, principle: PptPrincipleDeviation["principle"]): PptContentAuditAction[] {
+    const page = pageSpecs[pageIndex];
+    if (principle === "cover-extra-content") {
+        const targetPageId = pageSpecs[pageIndex + 1]?.pageId;
+        const extraBlockIds = page.contentBlocks.filter((block) => block.kind !== "title" && block.kind !== "primary_claim").map((block) => block.id);
+        return [
+            ...(targetPageId ? extraBlockIds.map((blockId): PptContentAuditAction => ({ kind: "move_block", pageId: page.pageId, blockId, targetPageId })) : []),
+            ...extraBlockIds.map((blockId): PptContentAuditAction => ({ kind: "remove_block", pageId: page.pageId, blockId })),
+            { kind: "acknowledge_deviation", pageId: page.pageId, principle },
+        ];
+    }
+    return [
+        { kind: "regenerate_pages", pageIds: [page.pageId] },
+        { kind: "acknowledge_deviation", pageId: page.pageId, principle },
+    ];
+}
+
 function rebuildDraft(draft: PptContentDraft): PptContentDraft {
     if (new Set(draft.audit.gaps.map((gap) => gap.id)).size !== draft.audit.gaps.length) throw new Error("信息缺口身份重复，请重新生成内容方案");
     const unresolved = draft.audit.gaps.filter((gap) => !gap.resolution && gap.blocking);
@@ -1445,6 +1583,11 @@ function extractExplicitMaxPages(requirements: string) {
 
 function isPptCoverTargetChecklist(value: string) {
     return [...value.matchAll(COVER_TARGET_QUESTION_PATTERN)].length >= 2;
+}
+
+/** SHA-30c：理念层违规是否已被用户明确承接（记录为偏离）。 */
+function hasPptPrincipleDeviation(pageSpec: Pick<CanvasProjectPptPageSpec, "principleDeviations">, principle: PptPrincipleDeviation["principle"]) {
+    return Boolean(pageSpec.principleDeviations?.some((item) => item.principle === principle));
 }
 
 function sourceSupportsText(source: string, value: string) {

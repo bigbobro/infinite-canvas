@@ -126,6 +126,12 @@ export type CanvasProjectPptVisualEncoding = {
 
 export type PptContentState = { status: "blocked"; gapIds: string[] } | { status: "reviewable" } | { status: "approved"; approvedAt: string };
 
+/** SHA-30c：理念层违规被用户明确选择保留时的承接记录；随 pageSpec 持久化、参与编译确定性。 */
+export type PptPrincipleDeviation = {
+    principle: "cover-extra-content" | "cover-claim-checklist";
+    acknowledgedAt: string;
+};
+
 export type CanvasProjectPptPageSpec = {
     pageId: string;
     version: number;
@@ -143,6 +149,8 @@ export type CanvasProjectPptPageSpec = {
     freedom: string;
     /** SHA-30b：本次解析自动整理的人话记录（不从 previousPageSpec 继承，重跑即重算）。 */
     autoTidy?: string[];
+    /** SHA-30c：已确认承接的理念偏离；normalizePage 显式从 previousPageSpec 继承。 */
+    principleDeviations?: PptPrincipleDeviation[];
 };
 
 export type CanvasProjectPptVerbatimSpec = {

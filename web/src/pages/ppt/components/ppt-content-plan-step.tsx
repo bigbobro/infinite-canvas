@@ -3,7 +3,7 @@ import { Alert, Button, Input, Popconfirm, Skeleton } from "antd";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, FileText, Merge, Pencil, RefreshCw, Save, Sparkles, Square, Trash2, WandSparkles, X } from "lucide-react";
 
 import { pptPageRepairActionLabel, type PptContentAuditAction, type PptContentAuditIssue, type PptInformationGap } from "@/lib/ppt/content-plan";
-import type { CanvasProjectPptContentBlock, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef } from "@/stores/canvas/use-canvas-store";
+import type { CanvasProjectPptContentBlock, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef, PptPrincipleDeviation } from "@/stores/canvas/use-canvas-store";
 import type { FinalizedPptContent, PptContentPlanningController } from "@/pages/ppt/use-ppt-content-planning";
 
 type Props = {
@@ -56,6 +56,12 @@ const ENCODING_CHANNEL_LABELS: Record<CanvasProjectPptPageSpec["visualEncoding"]
     size: "大小",
     line: "连线",
     icon: "图标",
+};
+
+/** SHA-30c：理念问题卡的正面陈述——讲清楚设计理念本身，而不是指控用户「违反」。 */
+const PRINCIPLE_LABELS: Record<PptPrincipleDeviation["principle"], string> = {
+    "cover-extra-content": "封面的理念是只留一句定位语，不承载正文内容",
+    "cover-claim-checklist": "封面核心信息的理念是一句定位语，不是目标或问题清单",
 };
 
 export function PptContentPlanStep({ planning, onBack, onConfirmed }: Props) {
@@ -440,7 +446,11 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                     </details>
                 ) : null}
 
-                {issues.some((issue) => issue.code !== "unresolved_gap") ? <PageIssues issues={issues.filter((issue) => issue.code !== "unresolved_gap")} planning={planning} /> : null}
+                {issues.some((issue) => issue.code !== "unresolved_gap" && issue.code !== "principle_question") ? (
+                    <PageIssues issues={issues.filter((issue) => issue.code !== "unresolved_gap" && issue.code !== "principle_question")} planning={planning} />
+                ) : null}
+
+                {issues.some((issue) => issue.code === "principle_question") || page.principleDeviations?.length ? <PrincipleQuestions page={page} issues={issues.filter((issue) => issue.code === "principle_question")} planning={planning} /> : null}
 
                 {unresolvedGaps.length ? (
                     <section className="border-t border-stone-200 pt-4 dark:border-stone-800">
@@ -566,6 +576,103 @@ function PageIssueAction({ issue, planning }: { issue: PptContentAuditIssue; pla
         );
     }
     return null;
+}
+
+/** SHA-30c：理念层问题卡——未决问题给选项，已承接偏离原位显示可撤销的轻量行；样式对齐既有「信息缺口」卡。 */
+function PrincipleQuestions({ page, issues, planning }: { page: CanvasProjectPptPageSpec; issues: PptContentAuditIssue[]; planning: PptContentPlanningController }) {
+    const deviations = page.principleDeviations || [];
+    return (
+        <section className="border-t border-stone-200 pt-4 dark:border-stone-800">
+            <h4 className="text-sm font-semibold">理念问题</h4>
+            <div className="mt-3 space-y-3">
+                {issues.map((issue) => (
+                    <PrincipleQuestionCard key={issue.id} page={page} issue={issue} planning={planning} />
+                ))}
+                {deviations.map((deviation) => (
+                    <AcknowledgedDeviationRow key={deviation.principle} page={page} deviation={deviation} planning={planning} />
+                ))}
+            </div>
+        </section>
+    );
+}
+
+function PrincipleQuestionCard({ page, issue, planning }: { page: CanvasProjectPptPageSpec; issue: PptContentAuditIssue; planning: PptContentPlanningController }) {
+    const acknowledgeAction = issue.actions.find((action) => action.kind === "acknowledge_deviation");
+    const principle = acknowledgeAction?.kind === "acknowledge_deviation" ? acknowledgeAction.principle : undefined;
+    const moveActions = issue.actions.filter((action) => action.kind === "move_block");
+    const removeActions = issue.actions.filter((action) => action.kind === "remove_block");
+    const regenerateAction = issue.actions.find((action) => action.kind === "regenerate_pages");
+    const busy = planning.pageRequest.loading && planning.pageRequest.pageId === page.pageId;
+    const blocksById = new Map(page.contentBlocks.map((block) => [block.id, block]));
+
+    return (
+        <div className="border-l-2 border-amber-500 pl-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                    <p className="text-sm font-medium">{principle ? PRINCIPLE_LABELS[principle] : issue.message}</p>
+                    <p className="mt-1 text-xs leading-5 text-stone-500">{issue.message}</p>
+                </div>
+                <span className="text-[11px] text-amber-600 dark:text-amber-300">需要决定</span>
+            </div>
+
+            {removeActions.length ? (
+                <div className="mt-3 divide-y divide-stone-100 dark:divide-stone-800">
+                    {removeActions.map((removeAction) => {
+                        if (removeAction.kind !== "remove_block") return null;
+                        const block = blocksById.get(removeAction.blockId);
+                        const moveAction = moveActions.find((action) => action.kind === "move_block" && action.blockId === removeAction.blockId);
+                        return (
+                            <div key={removeAction.blockId} className="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-0">
+                                <p className="min-w-0 flex-1 truncate text-sm text-stone-600 dark:text-stone-300">{block?.text || "该内容块"}</p>
+                                <div className="flex shrink-0 gap-1">
+                                    {moveAction?.kind === "move_block" ? (
+                                        <Button size="small" type="text" icon={<ArrowRight className="size-3.5" />} onClick={() => planning.moveBlock(moveAction.pageId, moveAction.blockId, moveAction.targetPageId)}>
+                                            移到下一页
+                                        </Button>
+                                    ) : null}
+                                    <Popconfirm title="删除该内容块？" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => planning.removeBlock(removeAction.pageId, removeAction.blockId)}>
+                                        <Button size="small" type="text" danger icon={<Trash2 className="size-3.5" />}>
+                                            删除该块
+                                        </Button>
+                                    </Popconfirm>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : null}
+
+            <div className="mt-3 flex flex-wrap gap-x-1 gap-y-1">
+                {regenerateAction?.kind === "regenerate_pages" ? (
+                    <Button size="small" type="text" icon={<WandSparkles className="size-3.5" />} loading={busy} disabled={busy} onClick={() => void planning.regeneratePage(page.pageId, { targetIssueId: issue.id })}>
+                        改写为一句定位语
+                    </Button>
+                ) : null}
+                {principle ? (
+                    <Button size="small" type="text" onClick={() => planning.acknowledgeDeviation(page.pageId, principle)}>
+                        保留——我要这样（记入设计）
+                    </Button>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+function AcknowledgedDeviationRow({ page, deviation, planning }: { page: CanvasProjectPptPageSpec; deviation: PptPrincipleDeviation; planning: PptContentPlanningController }) {
+    return (
+        <div className="border-l-2 border-emerald-500 pl-3">
+            <p className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                <Check className="size-3.5" aria-hidden="true" />
+                {PRINCIPLE_LABELS[deviation.principle]}
+            </p>
+            <p className="mt-1 flex items-center gap-2 text-xs text-stone-500">
+                已按你的设计保留
+                <Button size="small" type="text" onClick={() => planning.revokeDeviation(page.pageId, deviation.principle)}>
+                    撤销
+                </Button>
+            </p>
+        </div>
+    );
 }
 
 function ResolvedGapHistory({ gaps, planning, className = "" }: { gaps: PptInformationGap[]; planning: PptContentPlanningController; className?: string }) {

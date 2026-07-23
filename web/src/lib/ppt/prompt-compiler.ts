@@ -11,6 +11,7 @@ import type {
     CanvasProjectPptLockedFact,
     CanvasProjectPptPageSpec,
     CanvasProjectPptVerbatimSpec,
+    PptPrincipleDeviation,
 } from "@/stores/canvas/use-canvas-store";
 
 export const PPT_COMPILER_VERSION = "4.0.0";
@@ -19,6 +20,12 @@ export type PptCompilationTarget = CanvasProjectPptCompilationTarget;
 
 const PPT_REFERENCE_ROLE_INSTRUCTION = "参考图仅用于对齐配色、字体、图形语言与外壳位置；页眉文字、章节标签、页码一律以「本页页面事实」为准，不得照搬参考图中的任何文字、页码、目录或侧栏结构。";
 const PPT_LAYOUT_FLEXIBILITY_INSTRUCTION = "正文构图按本页内容形态组织，不得复制参考图或其他页面的正文构图；同套页面允许构图差异。";
+
+/** SHA-30c：理念偏离的承接指令——用户选择偏离时，编译器为该页渲染适配指令，下游仍保持全约束（偏离=修订，不是豁免）。 */
+const PPT_PRINCIPLE_DEVIATION_INSTRUCTIONS: Record<PptPrincipleDeviation["principle"], string> = {
+    "cover-extra-content": "封面在保持定位语视觉主导的前提下承载少量补充内容；补充内容做极轻量处理，不得挤压留白与开场层级",
+    "cover-claim-checklist": "封面核心信息为多点式表述时，以紧凑列点呈现，保持封面级留白，不做正文页密度",
+};
 
 type CompilePptPromptSnapshotBase = {
     snapshotId: string;
@@ -189,7 +196,8 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
     const layoutInstructions = unique([...(pageSpec?.layoutIntent || []), ...target.layoutIntent].filter((instruction) => !findPptDeckStyleOverrides(instruction).length && Boolean(pageSpec && isSupportedLayoutInstruction(pageSpec, instruction))));
     const style = compilePptStyleContract(deckBrief.styleContract);
     const styleInstructions = style.ok ? style.value.globalInstructions : [];
-    const roleInstructions = pageSpec && isPptLayoutRole(pageSpec.layoutRole) && style.ok ? style.value.roleInstructions[pageSpec.layoutRole] : [];
+    const deviationInstructions = (pageSpec?.principleDeviations || []).map((deviation) => PPT_PRINCIPLE_DEVIATION_INSTRUCTIONS[deviation.principle]);
+    const roleInstructions = [...(pageSpec && isPptLayoutRole(pageSpec.layoutRole) && style.ok ? style.value.roleInstructions[pageSpec.layoutRole] : []), ...deviationInstructions];
     const structureInstructions = pageSpec ? pptContentStructureInstructions(pageSpec) : [];
     const encodingInstructions = pageSpec ? pageSpec.visualEncoding.map((encoding) => visualEncodingInstruction(encoding, pageSpec)) : [];
     const pageFactInstructions = buildPageShellFactInstructions(deckBrief.styleContract.modelStyle.shell, deckShell, target.pageId);

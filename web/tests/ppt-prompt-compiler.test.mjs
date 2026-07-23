@@ -16,6 +16,7 @@ let renderPptPageSpecText;
 let createGenerationPlan;
 let createPptVisualDirectionPresetContract;
 let assertGenerationPlanCompilation;
+let assertGenerationPlanCurrentTargets;
 let applyGenerationPlanPptOps;
 let setPptPageConfirmedNode;
 let defaultConfig;
@@ -27,7 +28,7 @@ before(async () => {
     ({ compilePptPromptSnapshot, derivePptDeckShellFacts, derivePptStyleRules, hasBlockingCompilationIssues } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ derivePptLockedFacts, renderPptPageSpecText } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
     ({ buildPptDeckProject, hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
-    ({ createGenerationPlan, assertGenerationPlanCompilation, applyGenerationPlanPptOps } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
+    ({ createGenerationPlan, assertGenerationPlanCompilation, assertGenerationPlanCurrentTargets, applyGenerationPlanPptOps } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ setPptPageConfirmedNode } = await vite.ssrLoadModule("/src/lib/ppt/page-confirmation.ts"));
     ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
@@ -771,6 +772,61 @@ test("SHA-29：override 丢掉页码时被 missing_required_instruction 阻断",
         targets: [{ ...input.targets[0], override: stripped, overrideConfirmed: true }],
     });
     assert.ok(snapshot.issues.some((issue) => issue.code === "missing_required_instruction" && issue.message.includes("本页页码")));
+});
+
+test("SHA-30c：封面理念偏离随编译快照参与「生成其余页」计划的确定性回归", () => {
+    const material = "PPT 工作台\n把内容规划连接到页面生成\n补充说明段落";
+    const coverPageSpec = createPageSpec({
+        pageId: "page-cover-deviation",
+        title: "PPT 工作台",
+        text: material,
+        sourceMaterial: material,
+        sourceKind: "material",
+        layoutRole: "cover",
+        contentForm: "cover",
+    });
+    // 直接构造已承接的理念偏离：cover-extra-content 检查跳过后，buildPptDeckProject 的入库校验才会放行这块正文。
+    assert.ok(coverPageSpec.contentBlocks.some((block) => block.kind === "body"));
+    coverPageSpec.principleDeviations = [{ principle: "cover-extra-content", acknowledgedAt: "2026-07-23T08:00:00.000Z" }];
+
+    const deckBrief = {
+        version: 1,
+        sourceHash: hashPptContentSource(material, ""),
+        contentRevision: `${hashPptContentSource(material, "")}:r1`,
+        audience: "首次接触的用户",
+        goal: "理解产品定位",
+        narrative: "从材料到定位",
+        styleContract: createPptVisualDirectionPresetContract("clean-report"),
+        globalRules: [],
+        forbiddenRules: [],
+        lockedDeckFacts: [],
+    };
+    const partial = buildPptDeckProject({
+        compilePolicy: "structured",
+        title: "偏离承接生成回归",
+        sourceMaterial: material,
+        requirements: "",
+        deckBrief,
+        pageSpecs: [coverPageSpec],
+    });
+    const project = {
+        id: "compiler-deviation-project",
+        createdAt: "2026-07-23T08:00:00.000Z",
+        updatedAt: "2026-07-23T08:00:00.000Z",
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: false,
+        ...partial,
+        // 单页 deck 没有可锚定的代表页，显式跳过锚定以走「生成其余页」分支。
+        ppt: { ...partial.ppt, skipAnchor: true },
+    };
+
+    const plan = createGenerationPlan({ kind: "generateRest" }, { project, effectiveConfig: defaultConfig });
+    assert.equal(plan.runs.length, 1);
+    assert.match(plan.runs[0].requests[0].prompt, /封面在保持定位语视觉主导的前提下承载少量补充内容/);
+    assertGenerationPlanCompilation(plan);
+    assertGenerationPlanCurrentTargets(project, plan);
 });
 
 test("快照 ID 冲突或 request.prompt 与快照不一致时在提交前失败", () => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
     acceptPptPageSuggestions,
+    acknowledgePptPrincipleDeviation,
     applyPptContentAction,
     applyPptContentRepair,
     assertPptPageAuditIssuesResolved,
@@ -12,6 +13,7 @@ import {
     previewPptContentAction,
     replacePptContentDraftPage,
     resolvePptInformationGap,
+    revokePptPrincipleDeviation,
     selectPptPageRepairAuditIssues,
     validatePptContentDraft,
     type PptContentAction,
@@ -20,6 +22,7 @@ import {
     type PptInformationGapResolution,
 } from "@/lib/ppt/content-plan";
 import { previewPptContentPlanStream, requestPptContentPageRegeneration, requestPptContentPlan, type PptContentPlanRequest, type PptContentStreamProgress } from "@/services/api/ppt-content";
+import type { PptPrincipleDeviation } from "@/stores/canvas/use-canvas-store";
 import type { AiConfig } from "@/stores/use-config-store";
 
 type DraftEntry = { inputKey: string; draft: PptContentDraft | null };
@@ -248,6 +251,42 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         }
     }, [commitDraft, currentDraft, repairPreview, setError]);
 
+    const acknowledgeDeviation = useCallback(
+        (pageId: string, principle: PptPrincipleDeviation["principle"]) => {
+            const draft = currentDraft();
+            if (!draft) return null;
+            try {
+                const next = acknowledgePptPrincipleDeviation(draft, pageId, principle, new Date().toISOString());
+                commitDraft(inputKeyRef.current, next);
+                setRepairPreview(null);
+                setError("");
+                return next;
+            } catch (error) {
+                setError(error instanceof Error ? error.message : "记录理念偏离失败");
+                return null;
+            }
+        },
+        [commitDraft, currentDraft, setError],
+    );
+
+    const revokeDeviation = useCallback(
+        (pageId: string, principle: PptPrincipleDeviation["principle"]) => {
+            const draft = currentDraft();
+            if (!draft) return null;
+            try {
+                const next = revokePptPrincipleDeviation(draft, pageId, principle);
+                commitDraft(inputKeyRef.current, next);
+                setRepairPreview(null);
+                setError("");
+                return next;
+            } catch (error) {
+                setError(error instanceof Error ? error.message : "撤销理念偏离失败");
+                return null;
+            }
+        },
+        [commitDraft, currentDraft, setError],
+    );
+
     const applyAction = useCallback(
         (action: PptContentAction) => {
             const draft = currentDraft();
@@ -412,6 +451,10 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
         removePage: (pageId: string) => applyAction({ kind: "remove_page", pageId }),
         mergePages: (pageIds: [string, string]) => applyAction({ kind: "merge_pages", pageIds }),
         reorderPages: (pageIds: string[]) => applyAction({ kind: "reorder_pages", pageIds }),
+        moveBlock: (pageId: string, blockId: string, targetPageId: string) => applyAction({ kind: "move_block", pageId, blockId, targetPageId }),
+        removeBlock: (pageId: string, blockId: string) => applyAction({ kind: "remove_block", pageId, blockId }),
+        acknowledgeDeviation,
+        revokeDeviation,
         previewRepair,
         applyRepair,
         dismissRepair: () => setRepairPreview(null),
