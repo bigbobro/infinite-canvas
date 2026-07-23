@@ -202,6 +202,17 @@ export type CanvasProjectPptCompilationTarget = {
     overrideConfirmed?: boolean;
 };
 
+/** 整套外壳事实：页码/总页数/章节标签/整套标题。作为编译显式输入存进快照，禁止从过滤后的 pageSpecs 位置隐式推导。 */
+export type CanvasProjectPptDeckShellFacts = {
+    pageCount: number;
+    deckTitle: string;
+    pages: Array<{
+        pageId: string;
+        pageNumber: number;
+        sectionLabel?: string;
+    }>;
+};
+
 type CanvasProjectPptCompilationSnapshotBase = {
     snapshotId: string;
     compilerVersion: string;
@@ -221,6 +232,7 @@ export type CanvasProjectPptCompilationSnapshot = CanvasProjectPptCompilationSna
               styleFingerprint: string;
               deckBrief: CanvasProjectPptDeckBrief;
               pageSpecs: CanvasProjectPptPageSpec[];
+              deckShell: CanvasProjectPptDeckShellFacts;
           }
         | {
               compilePolicy: "verbatim";

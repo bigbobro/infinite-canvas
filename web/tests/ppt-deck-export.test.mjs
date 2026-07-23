@@ -8,6 +8,7 @@ let inspectPptDeckExport;
 let resolvePptCandidateCompilationSnapshot;
 let setPptPageConfirmedNode;
 let compilePptPromptSnapshot;
+let derivePptDeckShellFacts;
 let createPptVisualDirectionPresetContract;
 let hashPptContentSource;
 
@@ -15,7 +16,7 @@ before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ inspectPptDeckExport } = await vite.ssrLoadModule("/src/lib/ppt/deck-export.ts"));
     ({ resolvePptCandidateCompilationSnapshot, setPptPageConfirmedNode } = await vite.ssrLoadModule("/src/lib/ppt/page-confirmation.ts"));
-    ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
+    ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
 });
@@ -504,6 +505,7 @@ function projectWithPages(indices) {
         compiledAt: "2026-07-21T00:00:00.000Z",
         deckBrief,
         pageSpecs,
+        deckShell: derivePptDeckShellFacts(pageSpecs, "导出测试"),
         targets,
     });
     const promptByScope = new Map(compilation.prompts.map((prompt) => [`${prompt.pageId}:${prompt.takeId}`, prompt.finalPrompt]));

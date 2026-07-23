@@ -7,6 +7,7 @@ import type {
     CanvasProjectPptCompilationTarget,
     CanvasProjectPptCompiledPrompt,
     CanvasProjectPptDeckBrief,
+    CanvasProjectPptDeckShellFacts,
     CanvasProjectPptLockedFact,
     CanvasProjectPptPageSpec,
     CanvasProjectPptVerbatimSpec,
@@ -16,6 +17,9 @@ export const PPT_COMPILER_VERSION = "4.0.0";
 
 export type PptCompilationTarget = CanvasProjectPptCompilationTarget;
 
+const PPT_REFERENCE_ROLE_INSTRUCTION = "参考图仅用于对齐配色、字体、图形语言与外壳位置；页眉文字、章节标签、页码一律以「本页页面事实」为准，不得照搬参考图中的任何文字、页码、目录或侧栏结构。";
+const PPT_LAYOUT_FLEXIBILITY_INSTRUCTION = "正文构图按本页内容形态组织，不得复制参考图或其他页面的正文构图；同套页面允许构图差异。";
+
 type CompilePptPromptSnapshotBase = {
     snapshotId: string;
     compiledAt: string;
@@ -23,13 +27,38 @@ type CompilePptPromptSnapshotBase = {
 };
 
 export type CompilePptPromptSnapshotInput = CompilePptPromptSnapshotBase &
-    ({ compilePolicy: "structured"; deckBrief: CanvasProjectPptDeckBrief; pageSpecs: CanvasProjectPptPageSpec[] } | { compilePolicy: "verbatim"; verbatimSpecs: CanvasProjectPptVerbatimSpec[]; confirmedGlobalSpec?: string });
+    (
+        | { compilePolicy: "structured"; deckBrief: CanvasProjectPptDeckBrief; pageSpecs: CanvasProjectPptPageSpec[]; deckShell: CanvasProjectPptDeckShellFacts }
+        | { compilePolicy: "verbatim"; verbatimSpecs: CanvasProjectPptVerbatimSpec[]; confirmedGlobalSpec?: string }
+    );
 
 const FORBIDDEN_PATTERN = /(?:不要|禁止|不得|请勿|严禁|避免|不允许|不使用|不能)/;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*•]\s+|\d+[.)、]\s*)/;
 
 export function derivePptStyleRules(requirements: string, direction: string) {
     return derivePptVisualDirectionRules(requirements, direction);
+}
+
+/** 从完整 pageSpecs 顺序派生整套外壳事实；不得用过滤后的 targets 列表推导页码。 */
+export function derivePptDeckShellFacts(pageSpecs: CanvasProjectPptPageSpec[], deckTitle: string): CanvasProjectPptDeckShellFacts {
+    const hasSections = pageSpecs.some((pageSpec) => pageSpec.layoutRole === "section");
+    let sectionIndex = 0;
+    let currentSectionLabel: string | undefined;
+    const pages = pageSpecs.map((pageSpec, index) => {
+        if (pageSpec.layoutRole === "section") {
+            sectionIndex += 1;
+            const title = pageSpec.contentBlocks.find((block) => block.kind === "title")?.text.trim() || "";
+            currentSectionLabel = `第 ${sectionIndex} 章 · ${title}`;
+        }
+        const page: CanvasProjectPptDeckShellFacts["pages"][number] = {
+            pageId: pageSpec.pageId,
+            pageNumber: index + 1,
+        };
+        const isCoverOrClose = pageSpec.layoutRole === "cover" || pageSpec.layoutRole === "close" || pageSpec.contentForm === "cover" || pageSpec.contentForm === "closing";
+        if (hasSections && !isCoverOrClose && currentSectionLabel) page.sectionLabel = currentSectionLabel;
+        return page;
+    });
+    return { pageCount: pageSpecs.length, deckTitle, pages };
 }
 
 export function compilePptPromptSnapshot(input: CompilePptPromptSnapshotInput): CanvasProjectPptCompilationSnapshot {
@@ -82,7 +111,7 @@ function compileStructuredSnapshot(input: Extract<CompilePptPromptSnapshotInput,
         if (pageSpec) for (const issue of validatePptPageSpec(pageSpec)) addIssue(issue.code, "blocking", issue.message);
         if (pageSpec) for (const instruction of target.layoutIntent.filter((intent) => !isSupportedLayoutInstruction(pageSpec, intent))) addIssue("unreviewed_fact", "blocking", `排版要求包含未经批准的文案或事实：${preview(instruction)}`);
 
-        const compiled = buildStructuredPrompt(input.deckBrief, pageSpec, target);
+        const compiled = buildStructuredPrompt(input.deckBrief, pageSpec, target, input.deckShell);
         const finalPrompt = target.override === undefined ? compiled.finalPrompt : target.override.trim();
         if (pageSpec) {
             if (normalizedPrompt(target.semanticText) !== normalizedPrompt(renderPptPageSpecText(pageSpec))) addIssue("invalid_content_provenance", "blocking", "画布节点投影与 PageSpec 内容不一致");
@@ -104,12 +133,13 @@ function compileStructuredSnapshot(input: Extract<CompilePptPromptSnapshotInput,
         snapshotId: input.snapshotId,
         compilerVersion: PPT_COMPILER_VERSION,
         createdAt: input.compiledAt,
-        inputHash: hashPptCompilerInput({ compilePolicy: input.compilePolicy, deckBrief: input.deckBrief, pageSpecs: snapshotPageSpecs, targets: input.targets }),
+        inputHash: hashPptCompilerInput({ compilePolicy: input.compilePolicy, deckBrief: input.deckBrief, pageSpecs: snapshotPageSpecs, targets: input.targets, deckShell: input.deckShell }),
         deckBriefVersion: input.deckBrief.version,
         pageSpecsVersion: snapshotPageSpecs.reduce((version, pageSpec) => Math.max(version, pageSpec.version), 0),
         styleFingerprint: styleReview.compiled?.fingerprint || "invalid-style-contract",
         deckBrief: structuredClone(input.deckBrief),
         pageSpecs: structuredClone(snapshotPageSpecs),
+        deckShell: structuredClone(input.deckShell),
         targets: structuredClone(input.targets),
         prompts,
         issues,
@@ -152,7 +182,7 @@ function compileVerbatimSnapshot(input: Extract<CompilePptPromptSnapshotInput, {
     };
 }
 
-function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: CanvasProjectPptPageSpec | undefined, target: PptCompilationTarget) {
+function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: CanvasProjectPptPageSpec | undefined, target: PptCompilationTarget, deckShell: CanvasProjectPptDeckShellFacts) {
     const pageContent = pageSpec ? renderPptPageSpecText(pageSpec) : "";
     const promptPageContent = pageSpec ? renderPptPromptBlocks(pageSpec) : "";
     const globalRules = deckBrief.globalRules.filter((instruction) => !findPptDeckStyleOverrides(instruction).length);
@@ -162,6 +192,8 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
     const roleInstructions = pageSpec && isPptLayoutRole(pageSpec.layoutRole) && style.ok ? style.value.roleInstructions[pageSpec.layoutRole] : [];
     const structureInstructions = pageSpec ? pptContentStructureInstructions(pageSpec) : [];
     const encodingInstructions = pageSpec ? pageSpec.visualEncoding.map((encoding) => visualEncodingInstruction(encoding, pageSpec)) : [];
+    const pageFactInstructions = buildPageShellFactInstructions(deckBrief.styleContract.modelStyle.shell, deckShell, target.pageId);
+    const shellConstraintInstructions = pageFactInstructions.length ? [PPT_REFERENCE_ROLE_INSTRUCTION, PPT_LAYOUT_FLEXIBILITY_INSTRUCTION] : [];
     const visibleDeckBlocks = [deckBrief.audience, deckBrief.goal, deckBrief.narrative, ...globalRules];
     const globalFactLines = unique(deckBrief.lockedDeckFacts.filter((fact) => !visibleDeckBlocks.some((block) => containsFragment(block, fact.value))).map((fact) => fact.sourceExcerpt || fact.value));
     const sections: Array<[string, string[]]> = [
@@ -176,7 +208,8 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
         ["页面职责与角色母版", roleInstructions],
         ["信息表达", encodingInstructions],
         ["本页布局", layoutInstructions],
-        ["整套视觉系统", styleInstructions],
+        ["本页页面事实", pageFactInstructions],
+        ["整套视觉系统", [...styleInstructions, ...shellConstraintInstructions]],
         ["允许自由发挥", [pageSpec?.freedom || ""]],
     ];
     const finalPrompt = sections
@@ -186,8 +219,37 @@ function buildStructuredPrompt(deckBrief: CanvasProjectPptDeckBrief, pageSpec: C
     return {
         finalPrompt,
         pageContent,
-        requiredInstructions: unique([...visibleDeckBlocks, ...deckBrief.forbiddenRules, ...roleInstructions, ...structureInstructions, ...encodingInstructions, ...layoutInstructions, ...styleInstructions, pageSpec?.freedom || ""]),
+        requiredInstructions: unique([
+            ...visibleDeckBlocks,
+            ...deckBrief.forbiddenRules,
+            ...roleInstructions,
+            ...structureInstructions,
+            ...encodingInstructions,
+            ...layoutInstructions,
+            ...pageFactInstructions,
+            ...styleInstructions,
+            ...shellConstraintInstructions,
+            pageSpec?.freedom || "",
+        ]),
     };
+}
+
+function buildPageShellFactInstructions(shell: CanvasProjectPptDeckBrief["styleContract"]["modelStyle"]["shell"], deckShell: CanvasProjectPptDeckShellFacts, pageId: string) {
+    if (shell.header === "none" && shell.footer === "none") return [];
+    const page = deckShell.pages.find((item) => item.pageId === pageId);
+    if (!page) return [];
+    const lines: string[] = [];
+    if (shell.footer === "page-number" || shell.footer === "deck-title-and-page-number") {
+        lines.push(`本页页码 ${page.pageNumber}，总页数 ${deckShell.pageCount}；页脚页码必须显示为 ${page.pageNumber}/${deckShell.pageCount}`);
+    }
+    if (shell.header === "deck-title" || shell.footer === "deck-title-and-page-number") {
+        lines.push(`整套标题：${deckShell.deckTitle}`);
+    }
+    if (shell.header === "section-label") {
+        if (page.sectionLabel) lines.push(`本页章节标签：${page.sectionLabel}`);
+        else if (!deckShell.pages.some((item) => item.sectionLabel)) lines.push("本套无章节分组，页眉不得出现章节编号");
+    }
+    return lines;
 }
 
 function renderPptPromptBlocks(pageSpec: CanvasProjectPptPageSpec) {

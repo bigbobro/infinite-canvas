@@ -9,7 +9,7 @@ import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import { assertPptPageCandidateCanBeConfirmed, resolvePptCandidateCompilationSnapshot } from "@/lib/ppt/page-confirmation";
 import { selectPptPageDescriptor } from "@/lib/ppt/page-descriptor";
 import { buildPptPageWorkspace, type PptPageWorkspace, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
-import { compilePptPromptSnapshot, type PptCompilationTarget } from "@/lib/ppt/prompt-compiler";
+import { compilePptPromptSnapshot, derivePptDeckShellFacts, type PptCompilationTarget } from "@/lib/ppt/prompt-compiler";
 import { compilePptStyleContract, isPptStyleContractValid } from "@/lib/ppt/style-contract";
 import { applyPptPageSpecUpdate, type CanvasProject, type CanvasProjectPpt, type CanvasProjectPptCompilationSnapshot, type CanvasProjectPptPageSpec, type CanvasProjectPptTake } from "@/stores/canvas/use-canvas-store";
 import { modelOptionName, resolveModelChannel, type AiConfig } from "@/stores/use-config-store";
@@ -311,6 +311,7 @@ export function createGenerationPlan(intent: GenerationIntent, { project, effect
                   compiledAt: createdAt,
                   deckBrief: compilationPpt.deckBrief,
                   pageSpecs: compilationPpt.pageSpecs,
+                  deckShell: derivePptDeckShellFacts(compilationPpt.pageSpecs, project.title),
                   targets: targetContexts.map((item) => item.compilationTarget),
               })
             : compilePptPromptSnapshot({
@@ -527,6 +528,7 @@ export function assertGenerationPlanCompilation(plan: GenerationPlan, expectedKi
                   compiledAt: plan.compilation.createdAt,
                   deckBrief: plan.compilation.deckBrief,
                   pageSpecs: plan.compilation.pageSpecs,
+                  deckShell: plan.compilation.deckShell,
                   targets: plan.compilation.targets,
               })
             : compilePptPromptSnapshot({

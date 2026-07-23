@@ -13,6 +13,7 @@ let createGenerationPlan;
 let createPptCandidateEditPlan;
 let createPptVisualDirectionPresetContract;
 let compilePptPromptSnapshot;
+let derivePptDeckShellFacts;
 let derivePptLockedFacts;
 let PPT_PAGE_PROMPT;
 let defaultConfig;
@@ -27,7 +28,7 @@ before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ createPptGenerationModule } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
     ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
-    ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
+    ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ derivePptLockedFacts } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
     ({ PPT_PAGE_PROMPT, hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ hasPptRepeatBillingRisk, agentOpsTouchPptGenerationLedger, historyEntryTouchesPptGenerationLedger, nodeIdsTouchPptControlledNodes, sanitizeCopiedCanvasMetadata } = await vite.ssrLoadModule("/src/lib/ppt/generation-ledger.ts"));
@@ -1122,7 +1123,7 @@ function generationPlan(count, suffix) {
     const deckBrief = structuredDeckBrief();
     const pageSpec = structuredPageSpec("page-1", "第一页", "测试提示词");
     const target = { pageId: "page-1", takeId: "take-1", semanticText: structuredPageText(pageSpec), layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, extraTexts: [], override: undefined, overrideConfirmed: false };
-    const compilation = compilePptPromptSnapshot({ compilePolicy: "structured", snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], targets: [target] });
+    const compilation = compilePptPromptSnapshot({ compilePolicy: "structured", snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], deckShell: derivePptDeckShellFacts([pageSpec], "测试整套标题"), targets: [target] });
     const prompt = compilation.prompts[0].finalPrompt;
     const rootNodeId = `root-${suffix}`;
     const requestNodeIds = count === 1 ? [rootNodeId] : Array.from({ length: count }, (_, index) => `slot-${suffix}-${index}`);

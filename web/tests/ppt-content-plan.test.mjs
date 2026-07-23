@@ -14,6 +14,7 @@ let auditPptPageCopyReadiness;
 let buildPptDeckProject;
 let buildPptPageWorkspace;
 let compilePptPromptSnapshot;
+let derivePptDeckShellFacts;
 let createPptContentRepairPreview;
 let createPptVisualDirectionPresetContract;
 let derivePptLockedFacts;
@@ -57,7 +58,7 @@ before(async () => {
         validatePptContentDraft,
         validatePptPageSpec,
     } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
-    ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
+    ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ buildPptDeckProject, hashPptSourceText } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ applyPptCanonicalPageRewrite, applyPptCanonicalPageTextEdit, approvePptCanonicalPageContent, buildPptPageWorkspace, getPptCanonicalPageText } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
     ({ selectPptPageDescriptor } = await vite.ssrLoadModule("/src/lib/ppt/page-descriptor.ts"));
@@ -238,6 +239,7 @@ test("lockedFacts 只由已批准 ContentBlock 派生，篡改或越权 visualEn
         compiledAt: "2026-07-22T08:02:00.000Z",
         deckBrief,
         pageSpecs: [tampered],
+        deckShell: derivePptDeckShellFacts([tampered], "测试整套标题"),
         targets: [target],
     });
     assert.ok(factSnapshot.issues.some((issue) => issue.code === "invalid_content_provenance" && issue.severity === "blocking"));
@@ -250,6 +252,7 @@ test("lockedFacts 只由已批准 ContentBlock 派生，篡改或越权 visualEn
         compiledAt: "2026-07-22T08:02:00.000Z",
         deckBrief,
         pageSpecs: [encoded],
+        deckShell: derivePptDeckShellFacts([encoded], "测试整套标题"),
         targets: [target],
     });
     assert.ok(encodingSnapshot.issues.some((issue) => issue.code === "invalid_visual_encoding" && issue.severity === "blocking"));
@@ -262,6 +265,7 @@ test("lockedFacts 只由已批准 ContentBlock 派生，篡改或越权 visualEn
         compiledAt: "2026-07-22T08:02:00.000Z",
         deckBrief,
         pageSpecs: [duplicatedEncoding],
+        deckShell: derivePptDeckShellFacts([duplicatedEncoding], "测试整套标题"),
         targets: [target],
     });
     assert.ok(duplicatedSnapshot.issues.some((issue) => issue.code === "invalid_visual_encoding" && issue.severity === "blocking"));
@@ -287,6 +291,7 @@ test("layoutIntent 不能夹带未批准事实或标签，风格词也不能帮�
             compiledAt: "2026-07-22T08:02:00.000Z",
             deckBrief: deckBriefFrom(draft.brief),
             pageSpecs: [pageSpec],
+            deckShell: derivePptDeckShellFacts([pageSpec], "测试整套标题"),
             targets: [targetFor(pageSpec)],
         });
         assert.ok(snapshot.issues.some((issue) => issue.severity === "blocking" && issue.code === "invalid_content_structure"));
@@ -819,6 +824,7 @@ test("正文改写会清理旧 lockedMapping，缺口不呈现时同步裁剪 vi
         compiledAt: "2026-07-22T08:06:00.000Z",
         deckBrief: deckBriefFrom(finalized.brief),
         pageSpecs: finalized.pageSpecs,
+        deckShell: derivePptDeckShellFacts(finalized.pageSpecs, "测试整套标题"),
         targets: [targetFor(finalized.pageSpecs[0])],
     });
     assert.equal(
@@ -1283,6 +1289,7 @@ test("结构化 AI 改写会原子更新内容形态和定向 visualEncoding", (
         compiledAt: "2026-07-22T09:01:00.000Z",
         deckBrief: approved.deckBrief,
         pageSpecs: approved.pageSpecs,
+        deckShell: derivePptDeckShellFacts(approved.pageSpecs, "测试整套标题"),
         targets: [targetFor(approved.pageSpecs[0])],
     });
     const prompt = snapshot.prompts[0].finalPrompt;

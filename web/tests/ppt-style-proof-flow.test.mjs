@@ -145,6 +145,37 @@ test("重新校样 B 与直接全部都排除历史校样 A", () => {
     }
 });
 
+test("SHA-29：生成其余页提示词含各自页码与参考图约束，rebuild 确定性通过", () => {
+    const project = createProject(["cover", "section", "content", "evidence", "close"]);
+    project.title = "风格校样测试";
+    const proofPlan = createGenerationPlan({ kind: "startBatch", anchorFirst: true }, { project, effectiveConfig: defaultConfig });
+    const withProofCandidate = materializeSingleCandidate(project, proofPlan);
+    const confirmedProject = { ...withProofCandidate, ppt: setPptPageConfirmedNode(withProofCandidate, proofPlan.runs[0].pageId, proofPlan.runs[0].rootNodeId) };
+    const restPlan = createGenerationPlan({ kind: "generateRest" }, { project: confirmedProject, effectiveConfig: defaultConfig });
+
+    assert.doesNotThrow(() => assertGenerationPlanCompilation(restPlan));
+    assert.doesNotThrow(() => assertGenerationPlanCurrentTargets(confirmedProject, restPlan));
+    assert.equal(restPlan.compilation.deckShell.pageCount, 5);
+    assert.equal(restPlan.compilation.deckShell.deckTitle, "风格校样测试");
+    assert.equal(restPlan.compilation.pageSpecs.length, restPlan.runs.length);
+    assert.ok(restPlan.compilation.deckShell.pages.length === 5);
+
+    for (const run of restPlan.runs) {
+        const pageFact = restPlan.compilation.deckShell.pages.find((page) => page.pageId === run.pageId);
+        assert.ok(pageFact);
+        const prompt = run.requests[0].prompt;
+        assert.match(prompt, new RegExp(`本页页码 ${pageFact.pageNumber}，总页数 5；页脚页码必须显示为 ${pageFact.pageNumber}/5`));
+        assert.match(prompt, /参考图仅用于对齐配色、字体、图形语言与外壳位置/);
+        assert.match(prompt, /不得复制参考图或其他页面的正文构图/);
+        assert.equal(prompt, restPlan.compilation.prompts.find((item) => item.pageId === run.pageId && item.takeId === run.takeId).finalPrompt);
+    }
+
+    // rebuild 使用过滤后的 pageSpecs，但页码仍来自快照 deckShell，不得因列表位置重算而漂移
+    const rebuiltOnlyTargets = restPlan.compilation.pageSpecs.map((spec) => spec.pageId);
+    assert.ok(rebuiltOnlyTargets.length < 5);
+    assert.doesNotThrow(() => assertGenerationPlanCompilation(restPlan));
+});
+
 test("rest plan 冻结后校样漂移在任何结构落盘和 provider 调用前拒绝", async () => {
     const project = createProject(["cover", "content", "evidence"]);
     const proofPlan = createGenerationPlan({ kind: "startBatch", anchorFirst: true }, { project, effectiveConfig: defaultConfig });

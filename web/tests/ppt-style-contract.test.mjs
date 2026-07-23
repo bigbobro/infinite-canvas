@@ -10,6 +10,7 @@ let buildPptDeckProject;
 let buildPptPageWorkspace;
 let collectImageStorageKeys;
 let compilePptPromptSnapshot;
+let derivePptDeckShellFacts;
 let compilePptStyleContract;
 let createGenerationPlan;
 let createPptVisualDirectionPresetContract;
@@ -29,7 +30,7 @@ before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ compilePptStyleContract, createPptVisualDirectionPresetContract, deriveDefaultPptLayoutRole, getPptVisualDirectionLabel, normalizePptStyleContract, PPT_LAYOUT_ROLES, PPT_VISUAL_DIRECTION_PRESETS } =
         await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
-    ({ compilePptPromptSnapshot } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
+    ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ derivePptLockedFacts, renderPptPageSpecText } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
     ({ buildPptDeckProject, hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
     ({ buildPptPageWorkspace } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
@@ -378,6 +379,7 @@ function snapshotInput(deckBrief, pageSpecs) {
         compiledAt: "2026-07-22T00:00:00.000Z",
         deckBrief,
         pageSpecs,
+        deckShell: derivePptDeckShellFacts(pageSpecs, "测试整套标题"),
         targets: [{ pageId: "page-1", takeId: "take-1", semanticText: renderPptPageSpecText(pageSpecs[0]), layoutIntent: [], extraTexts: [] }],
     };
 }
@@ -391,6 +393,7 @@ function storeProject() {
         compiledAt: "2026-07-22T00:00:00.000Z",
         deckBrief: brief,
         pageSpecs,
+        deckShell: derivePptDeckShellFacts(pageSpecs, "测试整套标题"),
         targets: pageSpecs.map((spec, index) => ({ pageId: spec.pageId, takeId: `take-${index + 1}`, semanticText: renderPptPageSpecText(spec), layoutIntent: [], extraTexts: [] })),
     });
     return {

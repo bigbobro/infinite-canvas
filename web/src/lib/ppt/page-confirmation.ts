@@ -246,13 +246,14 @@ function assertCompilationSnapshotIntegrity(snapshot: CanvasProjectPptCompilatio
     let rebuilt: CanvasProjectPptCompilationSnapshot;
     try {
         if (snapshot.compilePolicy === "structured") {
-            if (!Number.isInteger(snapshot.deckBriefVersion) || !Number.isInteger(snapshot.pageSpecsVersion) || !snapshot.deckBrief || !Array.isArray(snapshot.pageSpecs)) throw new Error("invalid structured snapshot");
+            if (!Number.isInteger(snapshot.deckBriefVersion) || !Number.isInteger(snapshot.pageSpecsVersion) || !snapshot.deckBrief || !Array.isArray(snapshot.pageSpecs) || !snapshot.deckShell) throw new Error("invalid structured snapshot");
             rebuilt = compilePptPromptSnapshot({
                 compilePolicy: "structured",
                 snapshotId: snapshot.snapshotId,
                 compiledAt: snapshot.createdAt,
                 deckBrief: snapshot.deckBrief,
                 pageSpecs: snapshot.pageSpecs,
+                deckShell: snapshot.deckShell,
                 targets: snapshot.targets,
             });
         } else {
