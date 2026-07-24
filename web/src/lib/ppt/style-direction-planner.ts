@@ -25,7 +25,7 @@ export type PptStyleTextRequester = typeof requestImageQuestion;
 const STYLE_DIRECTION_SYSTEM_PROMPT = `你是 PPT 视觉系统设计师。请基于已经批准的内容结构，为同一套 16:9 PPT 提出 3 个彼此有明显取舍、但都适配当前材料的完整视觉方向。
 
 只输出一个严格 JSON 对象，不要解释、不要 Markdown、不要代码块。格式：
-{"candidates":[{"label":"方向名称","rationale":"为什么适合这份材料","recommended":true,"contract":{"schemaVersion":1,"source":{"kind":"generated","candidateId":"模型临时值"},"modelStyle":{"mood":["关键词"],"density":"balanced","palette":{"background":"#F8FAFC","surface":"#FFFFFF","text":"#10233F","mutedText":"#64748B","primary":"#1D4ED8","accent":"#0F9F8F"},"typography":{"headingClass":"sans","bodyClass":"sans","hierarchy":"strong"},"shell":{"safeArea":"regular","titleRegion":"top-left","header":"section-label","footer":"deck-title-and-page-number"},"graphicLanguage":{"card":"完整规则","chart":"完整规则","icon":"完整规则","illustration":"完整规则","imageTreatment":"完整规则"},"roleMasters":{"cover":"完整规则","section":"完整规则","content":"完整规则","evidence":"完整规则","comparison":"完整规则","close":"完整规则"},"forbiddenRules":["明确禁止项"]},"references":[]}}]}
+{"candidates":[{"label":"方向名称","rationale":"为什么适合这份材料","recommended":true,"contract":{"schemaVersion":1,"source":{"kind":"generated","candidateId":"模型临时值"},"modelStyle":{"mood":["关键词"],"density":"balanced","palette":{"background":"#F8FAFC","surface":"#FAFAF8","text":"#10233F","mutedText":"#64748B","primary":"#1D4ED8","accent":"#0F9F8F"},"typography":{"headingClass":"sans","bodyClass":"sans","hierarchy":"strong"},"shell":{"safeArea":"regular","titleRegion":"top-left","header":"section-label","footer":"deck-title-and-page-number"},"graphicLanguage":{"card":"完整规则","chart":"完整规则","icon":"完整规则","illustration":"完整规则","imageTreatment":"完整规则"},"roleMasters":{"cover":"完整规则","section":"完整规则","content":"完整规则","evidence":"完整规则","comparison":"完整规则","close":"完整规则"},"forbiddenRules":["明确禁止项"]},"references":[]}}]}
 
 硬规则：
 1. candidates 必须且只能有 3 项，必须且只能有 1 项 recommended=true；label 和 rationale 不能为空。
@@ -33,7 +33,9 @@ const STYLE_DIRECTION_SYSTEM_PROMPT = `你是 PPT 视觉系统设计师。请基
 3. 六类 roleMasters 必须共享同一套 palette、typography、shell 与 graphicLanguage，只描述受控的角色差异；页面正文构图不能改写全局标题区、页眉页脚、页码、安全边距、字体或背景。
 4. 每条 rationale 都要结合当前受众、目标、叙事和页面类型解释取舍，不能只写“科技感”“商务风”等空泛标签。
 5. 客户视觉信号必须被吸收到 contract 内，不要作为 contract 之外的另一份规则。功能性 visualEncoding 只说明信息关系，不等同于审美配色。
-6. 不新增业务事实、数字、厂商、参数、成本或结论。模型输出的 candidateId 和 references 不会被客户端信任。`;
+6. 不新增业务事实、数字、厂商、参数、成本或结论。模型输出的 candidateId 和 references 不会被客户端信任。
+7. 主色与强调色避免“紫色到蓝色”渐变一类高识别度的 AI 默认配色组合，配色需能说明与受众、行业或内容气质的关联。
+8. 背景与表面色不使用纯黑 #000000 或纯白 #FFFFFF，改用近黑（如 #1A1A1A 档）或暖白/冷白（如 #FAFAF8 档）替代。`;
 
 export function buildPptStyleDirectionMessages(input: PptStyleDirectionPlannerInput): AiTextMessage[] {
     const visualSignals = unique([...(input.brief.visualSignals || []), ...(input.visualSignals || [])]);
