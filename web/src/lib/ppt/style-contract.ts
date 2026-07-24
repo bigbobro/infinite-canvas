@@ -34,7 +34,7 @@ const PRESET_MODELS: Record<PptVisualDirectionPresetId, PptStyleModel> = {
         graphicLanguage: {
             card: "轻描边、低阴影、稳定网格",
             chart: "克制坐标与直接标注，突出关键比较",
-            icon: "统一线性图标，避免装饰性堆叠",
+            icon: "统一线性图标，仅用于类别区分或全篇复用的记忆锚点，不逐条装饰要点和副标题",
             illustration: "简化的技术示意图与结构图",
             imageTreatment: "自然比例裁切，弱化滤镜并保持信息可读",
         },
@@ -46,7 +46,7 @@ const PRESET_MODELS: Record<PptVisualDirectionPresetId, PptStyleModel> = {
             comparison: "所有选项共享列宽、对齐基线和比较维度，推荐项只用强调色标记。",
             close: "用结论或行动号召收束，减少信息量，保留明确的下一步。",
         },
-        forbiddenRules: ["禁止大段正文直接堆叠", "避免无意义装饰和过度渐变"],
+        forbiddenRules: ["禁止大段正文直接堆叠", "避免无意义装饰和过度渐变", "禁止为每个要点或副标题逐条配图标，层级用字重、编号与留白表达", "禁止灯泡、火箭、握手、齿轮、靶心等通用比喻图标"],
     },
     "visual-story": {
         mood: ["叙事", "聚焦", "有节奏"],
@@ -57,7 +57,7 @@ const PRESET_MODELS: Record<PptVisualDirectionPresetId, PptStyleModel> = {
         graphicLanguage: {
             card: "少量无阴影分区，让画面主角保持完整",
             chart: "大数字、少坐标、用单一对比讲清一个判断",
-            icon: "简洁实心符号，只用于引导阅读",
+            icon: "简洁实心符号，整页至多一个视觉隐喻符号",
             illustration: "具有明确主角和空间层次的编辑插画",
             imageTreatment: "大画幅裁切、自然质感、保留主体周围留白",
         },
@@ -69,7 +69,7 @@ const PRESET_MODELS: Record<PptVisualDirectionPresetId, PptStyleModel> = {
             comparison: "用两个清晰阵营或连续光谱表达差异，保持比较维度一致。",
             close: "回到整套故事的核心意象，以一句行动或愿景结束。",
         },
-        forbiddenRules: ["禁止同页出现多个视觉焦点", "避免密集小卡片和长段落"],
+        forbiddenRules: ["禁止同页出现多个视觉焦点", "避免密集小卡片和长段落", "禁止为每个要点或副标题逐条配图标，层级用字重、编号与留白表达", "禁止灯泡、火箭、握手、齿轮、靶心等通用比喻图标"],
     },
     "brand-led": {
         mood: ["鲜明", "现代", "品牌化"],
@@ -80,8 +80,8 @@ const PRESET_MODELS: Record<PptVisualDirectionPresetId, PptStyleModel> = {
         graphicLanguage: {
             card: "深色分层面板、清晰描边与受控高光",
             chart: "品牌主色作主序列，强调色只标记关键节点",
-            icon: "几何线性图标，统一线宽和圆角",
-            illustration: "品牌色几何结构与抽象技术场景",
+            icon: "几何线性图标，统一线宽和圆角，仅用于品牌记忆点或类别区分，不逐条装饰要点和副标题",
+            illustration: "品牌色几何结构，具象呈现与内容对应的场景，不做抽象炫光装饰",
             imageTreatment: "冷色统一调色，叠加轻微品牌色蒙版",
         },
         roleMasters: {
@@ -92,7 +92,7 @@ const PRESET_MODELS: Record<PptVisualDirectionPresetId, PptStyleModel> = {
             comparison: "采用一致的品牌化比较框架，强调色只突出推荐项或关键差异。",
             close: "强化品牌识别与下一步行动，保留简洁联系或行动区域。",
         },
-        forbiddenRules: ["禁止任意更换品牌色", "避免霓虹堆叠和无关光效"],
+        forbiddenRules: ["禁止任意更换品牌色", "避免霓虹堆叠和无关光效", "禁止为每个要点或副标题逐条配图标，层级用字重、编号与留白表达", "禁止灯泡、火箭、握手、齿轮、靶心等通用比喻图标"],
     },
 };
 

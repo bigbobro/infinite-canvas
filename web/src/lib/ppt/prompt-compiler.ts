@@ -291,7 +291,18 @@ function pptContentStructureInstructions(pageSpec: CanvasProjectPptPageSpec) {
         narrative: "采用标题—核心信息—支持内容的主张与依据结构，将正文拆成独立信息块。",
         closing: "用核心结论和行动信息收束，不在收尾页堆叠新正文。",
     }[pageSpec.contentForm];
-    return ["结构编号 B1、B2等只用于标识内容块，不作为可见文案。", formInstruction, "先做信息设计，不得只把各段文字上下堆成大文本卡片。", "允许新增不含文字的图标、形状、连线、分区和图表容器来表达已批准内容；不得新增事实或可见标签。"];
+    // SHA-37：icon 从「默认放行」改为「显式编码驱动」——图标只在信息表达明确要求时使用（即声明 visualEncoding channel:"icon"），
+    // 不为要点列表和副标题逐条配图标；结构示意图/流程图的节点符号不受此限（architecture/process 类页面）。
+    const isDiagramForm = pageSpec.contentForm === "architecture" || pageSpec.contentForm === "process";
+    // 分区反映主次：comparison/data 类页面的等宽等高分栏是对比与数据关系本身的表达方式，按内容语义保留，不套用主次约束。
+    const isEvenSplitForm = pageSpec.contentForm === "comparison" || pageSpec.contentForm === "data";
+    return [
+        "结构编号 B1、B2等只用于标识内容块，不作为可见文案。",
+        formInstruction,
+        "先做信息设计，不得只把各段文字上下堆成大文本卡片。",
+        `允许新增不含文字的形状、连线、分区和图表容器来表达已批准内容；图标只在信息表达明确要求时使用，不为要点列表和副标题逐条配图标，条目层级改用编号、字重和留白表达${isDiagramForm ? "；结构示意图和流程图中的节点图形符号不受此限" : ""}；不得新增事实或可见标签。`,
+        isEvenSplitForm ? "对比或数据关系所需的等宽等高分栏按内容语义保留，不受主次分区约束。" : "分区大小与位置须反映内容主次，不得等宽等高平均分格；每页确立一个视觉重心。",
+    ];
 }
 
 function visualEncodingInstruction(encoding: CanvasProjectPptPageSpec["visualEncoding"][number], pageSpec: CanvasProjectPptPageSpec) {

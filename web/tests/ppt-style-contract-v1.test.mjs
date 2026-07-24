@@ -28,6 +28,23 @@ test("三个通用方向都是完整 Contract，来源身份不进入视觉 fing
     assert.equal(api.compilePptStyleContract(preset).value.fingerprint, api.compilePptStyleContract(generated).value.fingerprint);
 });
 
+test("SHA-37：三个 preset 的 icon 文案职能化，forbiddenRules 追加逐条配图标与通用比喻符号禁令", () => {
+    const expectedIcon = {
+        "clean-report": "统一线性图标，仅用于类别区分或全篇复用的记忆锚点，不逐条装饰要点和副标题",
+        "visual-story": "简洁实心符号，整页至多一个视觉隐喻符号",
+        "brand-led": "几何线性图标，统一线宽和圆角，仅用于品牌记忆点或类别区分，不逐条装饰要点和副标题",
+    };
+    for (const preset of api.PPT_VISUAL_DIRECTION_PRESETS) {
+        const contract = api.createPptVisualDirectionPresetContract(preset.id);
+        assert.equal(contract.modelStyle.graphicLanguage.icon, expectedIcon[preset.id]);
+        assert.ok(contract.modelStyle.forbiddenRules.includes("禁止为每个要点或副标题逐条配图标，层级用字重、编号与留白表达"));
+        assert.ok(contract.modelStyle.forbiddenRules.includes("禁止灯泡、火箭、握手、齿轮、靶心等通用比喻图标"));
+    }
+    const brandLed = api.createPptVisualDirectionPresetContract("brand-led");
+    assert.equal(brandLed.modelStyle.graphicLanguage.illustration, "品牌色几何结构，具象呈现与内容对应的场景，不做抽象炫光装饰");
+    assert.doesNotMatch(brandLed.modelStyle.graphicLanguage.illustration, /抽象技术场景/);
+});
+
 test("缺少 palette、typography、shell 或 roleMasters 都 fail-closed", () => {
     for (const field of ["palette", "typography", "shell", "roleMasters"]) {
         const contract = api.createPptVisualDirectionPresetContract();
