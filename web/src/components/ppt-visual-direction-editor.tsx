@@ -5,6 +5,7 @@ import { Check, ChevronDown, ImagePlus, RefreshCw, ShieldCheck, Sparkles, Trash2
 import { PPT_LAYOUT_ROLES, PPT_VISUAL_DIRECTION_PRESETS, createPptStyleContractDraft, createPptVisualDirectionPresetContract, isPptStyleContractValid } from "@/lib/ppt/style-contract";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import type { CanvasProjectPptStyleContract } from "@/stores/canvas/use-canvas-store";
+import { modelOptionLabel, useEffectiveConfig } from "@/stores/use-config-store";
 
 export type PptVisualDirectionCandidate = {
     id: string;
@@ -27,6 +28,7 @@ export type PptVisualDirectionEditorProps = {
     onUseFallback?: () => void;
     onAddReferences?: (references: Array<{ storageKey: string }>) => void;
     extractedDirectionHint?: string;
+    receivedCharacters?: number;
 };
 
 type StyleModel = CanvasProjectPptStyleContract["modelStyle"];
@@ -105,9 +107,26 @@ const FOOTER_OPTIONS = [
     { label: "整套标题 + 页码", value: "deck-title-and-page-number" },
 ] as const;
 
-export function PptVisualDirectionEditor({ value, onChange, candidates, selectedCandidateId, onSelectCandidate, pageCount, loading = false, error, onRetry, onUseFallback, onAddReferences, extractedDirectionHint }: PptVisualDirectionEditorProps) {
+export function PptVisualDirectionEditor({
+    value,
+    onChange,
+    candidates,
+    selectedCandidateId,
+    onSelectCandidate,
+    pageCount,
+    loading = false,
+    error,
+    onRetry,
+    onUseFallback,
+    onAddReferences,
+    extractedDirectionHint,
+    receivedCharacters = 0,
+}: PptVisualDirectionEditorProps) {
     const { message } = App.useApp();
     const { token } = antdTheme.useToken();
+    const effectiveConfig = useEffectiveConfig();
+    const modelValue = effectiveConfig.textModel || effectiveConfig.model;
+    const modelLabel = modelValue ? modelOptionLabel(effectiveConfig, modelValue) : "";
     const fileInputRef = useRef<HTMLInputElement>(null);
     const valueRef = useRef(value);
     const onChangeRef = useRef(onChange);
@@ -226,7 +245,8 @@ export function PptVisualDirectionEditor({ value, onChange, candidates, selected
                     </div>
                     {loading ? (
                         <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: token.colorTextSecondary }}>
-                            <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" /> 正在匹配内容
+                            <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" />
+                            {modelLabel ? `正在使用 ${modelLabel} 匹配视觉方向 · 已接收 ${receivedCharacters} 字符` : "正在匹配视觉方向"}
                         </span>
                     ) : null}
                 </div>
@@ -240,6 +260,11 @@ export function PptVisualDirectionEditor({ value, onChange, candidates, selected
                             <div className="mt-1 text-xs leading-5" style={{ color: token.colorTextSecondary }}>
                                 {error}
                             </div>
+                            {modelLabel ? (
+                                <div className="mt-1 text-xs leading-5" style={{ color: token.colorTextTertiary }}>
+                                    本次使用模型：{modelLabel}
+                                </div>
+                            ) : null}
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">
                             {onRetry ? (

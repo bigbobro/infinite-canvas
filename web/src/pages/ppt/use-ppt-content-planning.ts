@@ -398,10 +398,12 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
                     normalized.pageSpecs[0],
                     normalized.audit.gaps.filter((gap) => gap.pageId === pageId),
                 );
-                // Success only after transactional replace and re-audit of requested/blocking issues.
+                // Success only after transactional replace and re-audit of requested issues (SHA-32：只判请求项，页面其它 blocking 项不影响采纳).
                 assertPptPageAuditIssuesResolved(next, pageId, auditIssues);
                 commitDraft(requestedInputKey, next);
-                setPageRequestState({ inputKey: requestedInputKey, pageId, loading: false, status: "success", error: "", successMessage: "本页已更新", receivedCharacters: 0 });
+                const pendingGapCount = next.audit.gaps.filter((gap) => gap.pageId === pageId && !gap.resolution && gap.blocking).length;
+                const successMessage = pendingGapCount ? `本页已更新，仍有 ${pendingGapCount} 项需在信息缺口中决定` : "本页已更新";
+                setPageRequestState({ inputKey: requestedInputKey, pageId, loading: false, status: "success", error: "", successMessage, receivedCharacters: 0 });
                 return next;
             } catch (error) {
                 if (controller.signal.aborted || requestTokenRef.current !== token || inputKeyRef.current !== requestedInputKey) return null;
@@ -463,6 +465,10 @@ export function usePptContentPlanning(config: AiConfig, input: PptContentPlanReq
     };
 }
 
+// 缓存 key 只取 sourceMaterial + requirements：同材料+同要求 ⇒ 同一草稿。title 不参与——
+// SHA-35 允许内容方案生成后修改 PPT 名称，若 title 参与 key，改名会换到一个空缓存槽，
+// 让已生成的草稿“消失”（视为未生成）。title 仍留在 input 里，重新生成时照常传给模型；
+// 不要把 title 加回这个数组。
 export function createPptContentInputKey(input: PptContentPlanRequest) {
-    return [input.title, input.sourceMaterial, input.requirements].map((value) => `${value.length}:${value}`).join("|");
+    return [input.sourceMaterial, input.requirements].map((value) => `${value.length}:${value}`).join("|");
 }

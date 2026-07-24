@@ -737,15 +737,18 @@ function PptWizard({
                 ) : null}
 
                 {step === 1 && mode === "outline" ? (
-                    <PptContentPlanStep
-                        planning={contentPlanning}
-                        onBack={() => setStep(0)}
-                        onConfirmed={(content) => {
-                            setBrokenReferenceKeys([]);
-                            setFinalizedContent(content);
-                            setStep(2);
-                        }}
-                    />
+                    <div className="flex flex-col gap-4">
+                        <PptDeckTitleConfirm deckTitle={deckTitle} onDeckTitleChange={setDeckTitle} suggestedTitle={contentPlanning.draft?.brief.title || ""} />
+                        <PptContentPlanStep
+                            planning={contentPlanning}
+                            onBack={() => setStep(0)}
+                            onConfirmed={(content) => {
+                                setBrokenReferenceKeys([]);
+                                setFinalizedContent(content);
+                                setStep(2);
+                            }}
+                        />
+                    </div>
                 ) : null}
 
                 {step === 1 && mode === "extract" ? (
@@ -786,6 +789,7 @@ function PptWizard({
                                     onSelectCandidate={stylePlanning.chooseCandidate}
                                     pageCount={finalizedContent?.pageSpecs.length || 0}
                                     loading={stylePlanning.loading}
+                                    receivedCharacters={stylePlanning.receivedCharacters}
                                     error={stylePlanning.error}
                                     onRetry={() => void stylePlanning.generate({ force: true })}
                                     onUseFallback={() => stylePlanning.useFallback()}
@@ -858,6 +862,57 @@ function createDeckBrief(content: FinalizedPptContent, styleContract: CanvasProj
         forbiddenRules: styleRules.forbiddenRules,
         lockedDeckFacts: [],
     };
+}
+
+/** step1 顶部的名称前置确认块：空标题时给建议+一键采用+默认名警示，非空时收敛为一行确认态。 */
+function PptDeckTitleConfirm({ deckTitle, onDeckTitleChange, suggestedTitle }: { deckTitle: string; onDeckTitleChange: (value: string) => void; suggestedTitle: string }) {
+    const [editing, setEditing] = useState(() => !deckTitle.trim());
+    const trimmed = deckTitle.trim();
+
+    if (!editing && trimmed) {
+        return (
+            <section className="flex items-center justify-between gap-3 border-y border-stone-200 py-3 dark:border-stone-800">
+                <span className="text-sm text-stone-500">
+                    PPT 名称：<span className="font-medium text-stone-950 dark:text-stone-100">{trimmed}</span>
+                </span>
+                <Button type="text" size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditing(true)}>
+                    修改
+                </Button>
+            </section>
+        );
+    }
+
+    return (
+        <section className="flex flex-col gap-2 border-y border-stone-200 py-4 dark:border-stone-800">
+            <span className="text-sm font-medium">确认 PPT 名称</span>
+            <Input
+                autoFocus
+                value={deckTitle}
+                onChange={(event) => onDeckTitleChange(event.target.value)}
+                onBlur={() => {
+                    if (deckTitle.trim()) setEditing(false);
+                }}
+                placeholder={suggestedTitle || "例如：2026 年度产品发布提案"}
+            />
+            {!trimmed && suggestedTitle ? (
+                <p className="text-xs text-stone-500">
+                    建议标题：{suggestedTitle}{" "}
+                    <Button
+                        type="link"
+                        size="small"
+                        className="h-auto p-0"
+                        onClick={() => {
+                            onDeckTitleChange(suggestedTitle);
+                            setEditing(false);
+                        }}
+                    >
+                        一键采用
+                    </Button>
+                </p>
+            ) : null}
+            {!trimmed ? <p className="text-xs text-amber-600 dark:text-amber-300">不填写将使用默认名「PPT-{new Date().toLocaleDateString()}」</p> : null}
+        </section>
+    );
 }
 
 function ExtractSpecStep({

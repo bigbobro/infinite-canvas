@@ -596,15 +596,26 @@ export function replacePptContentDraftPage(draft: PptContentDraft, expectedRevis
     return rebuildDraft(next);
 }
 
+/** SHA-32：复核只针对本次请求的项——请求项在重新生成后仍存在（code+field 匹配）才算未解决；页面其它残留 blocking 项（如缺口性 provenance）不影响本次判定。 */
 export function assertPptPageAuditIssuesResolved(draft: PptContentDraft, pageId: string, requestedIssues: Array<Pick<PptContentAuditIssue, "code" | "field" | "message">>) {
     const pageIssues = draft.audit.issues.filter((issue) => issue.pageIds.includes(pageId) && issue.code !== "unresolved_gap");
-    const remaining = pageIssues.filter((issue) => issue.severity === "blocking" || requestedIssues.some((requested) => requested.code === issue.code && (!requested.field || requested.field === issue.field)));
-    if (remaining.length) throw new Error(`本页重新生成后问题仍未解决：${remaining.map((issue) => issue.message).join("；")}；原页已保留`);
+    const remainingMessages = requestedIssues.flatMap((requested) => {
+        const match = pageIssues.find((issue) => issue.code === requested.code && (!requested.field || requested.field === issue.field));
+        return match ? [match.message] : [];
+    });
+    if (remainingMessages.length) throw new Error(`本页重新生成后问题仍未解决：${remainingMessages.join("；")}；原页已保留`);
 }
 
-/** Issue-triggered repair keeps the selected issue plus same-page blocking checks; general AI fill keeps all page issues. */
+/** Issue-triggered repair keeps the selected issue plus same-page blocking checks; general AI fill keeps all page issues. SHA-32：缺口性 provenance 项模型无法解决，排除在修复请求之外。 */
 export function selectPptPageRepairAuditIssues(draft: PptContentDraft, pageId: string, targetIssueId?: string | null): Array<Pick<PptContentAuditIssue, "code" | "field" | "message" | "value">> {
-    const pageIssues = draft.audit.issues.filter((issue) => issue.code !== "unresolved_gap" && issue.pageIds.includes(pageId));
+    const page = draft.pageSpecs.find((item) => item.pageId === pageId);
+    const gapCause = page
+        ? derivePptPageProvenanceGapCause(
+              page,
+              draft.audit.gaps.filter((gap) => gap.pageId === pageId),
+          )
+        : null;
+    const pageIssues = draft.audit.issues.filter((issue) => issue.code !== "unresolved_gap" && issue.pageIds.includes(pageId) && !(gapCause && issue.code === "invalid_content_provenance" && issue.message === PPT_PROVENANCE_MISSING_SOURCE_MESSAGE));
     const selected = new Map<string, PptContentAuditIssue>();
     if (targetIssueId) {
         for (const issue of pageIssues) {
@@ -728,7 +739,7 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
         return !refs.length || refs.length !== block.sourceRefIds.length || !sourceRefsSupportBlockText(refs, block.text);
     });
     if (duplicateSources || invalidSource || invalidBlockSource) {
-        issues.push({ code: "invalid_content_provenance", message: "页面内容存在缺失或无效的来源" });
+        issues.push({ code: "invalid_content_provenance", message: PPT_PROVENANCE_MISSING_SOURCE_MESSAGE });
     }
     if (sourceContext && validatePptPageSourceRefs(pageSpec, sourceContext).length) issues.push({ code: "invalid_content_provenance", message: "页面来源已与当前原始材料或补充要求脱节" });
     if (JSON.stringify(pageSpec.lockedFacts) !== JSON.stringify(derivePptLockedFacts(pageSpec))) issues.push({ code: "invalid_content_provenance", message: "页面锁定事实与内容块派生结果不一致" });
@@ -739,6 +750,44 @@ export function validatePptPageSpec(pageSpec: CanvasProjectPptPageSpec, sourceCo
     }
     for (const message of validatePptPageVisualEncoding(pageSpec)) issues.push({ code: "invalid_visual_encoding", message });
     return issues;
+}
+
+/** SHA-31/32：invalid_content_provenance 的「缺失或无效来源」判决与因果说明共用同一条消息文案，避免两处硬编码字符串漂移。 */
+export const PPT_PROVENANCE_MISSING_SOURCE_MESSAGE = "页面内容存在缺失或无效的来源";
+
+export type PptPageProvenanceGapCause = { gapIds: string[] };
+
+/**
+ * SHA-31/32：判定某页的 invalid_content_provenance（PPT_PROVENANCE_MISSING_SOURCE_MESSAGE 这一条）
+ * 是否纯粹由未决的 unsupported_claim/missing_detail 信息缺口引起——即每个触发无效来源的内容块，都恰好是
+ * 「没有任何来源引用 + 对应一个未决的缺口」。只要出现来源重复、来源结构非法，或某块的无效原因不是「无来源」
+ * （比如引用了不存在的来源 id、来源不再支持文案），就返回 null，交由既有「修复本页」流程处理。
+ */
+export function derivePptPageProvenanceGapCause(pageSpec: CanvasProjectPptPageSpec, pageGaps: PptInformationGap[]): PptPageProvenanceGapCause | null {
+    const sourceById = new Map(pageSpec.sourceRefs.map((sourceRef) => [sourceRef.id, sourceRef]));
+    const duplicateSources = pageSpec.sourceRefs.length !== sourceById.size;
+    const invalidSource = pageSpec.sourceRefs.some(
+        (sourceRef) =>
+            !sourceRef.id.trim() ||
+            !sourceRef.excerpt.trim() ||
+            !SOURCE_KINDS.has(sourceRef.source) ||
+            !SOURCE_RELATIONS.has(sourceRef.relation) ||
+            ((sourceRef.source === "material" || sourceRef.source === "requirements") && (!Number.isInteger(sourceRef.startLine) || !Number.isInteger(sourceRef.endLine) || sourceRef.startLine! < 1 || sourceRef.endLine! < sourceRef.startLine!)),
+    );
+    if (duplicateSources || invalidSource) return null;
+    const gapById = new Map(pageGaps.map((gap) => [gap.id, gap]));
+    const gapIds = new Set<string>();
+    for (const block of pageSpec.contentBlocks) {
+        if (block.kind === "placeholder") continue;
+        const refs = block.sourceRefIds.map((id) => sourceById.get(id)).filter((sourceRef): sourceRef is CanvasProjectPptSourceRef => Boolean(sourceRef));
+        const invalid = !refs.length || refs.length !== block.sourceRefIds.length || !sourceRefsSupportBlockText(refs, block.text);
+        if (!invalid) continue;
+        const gap = block.gapId ? gapById.get(block.gapId) : undefined;
+        const isQualifyingGap = Boolean(gap && !gap.resolution && gap.blocking && (gap.kind === "unsupported_claim" || gap.kind === "missing_detail"));
+        if (refs.length !== 0 || !isQualifyingGap) return null;
+        gapIds.add(gap!.id);
+    }
+    return gapIds.size ? { gapIds: [...gapIds] } : null;
 }
 
 export function validatePptPageSourceRefs(pageSpec: CanvasProjectPptPageSpec, sourceContext: Pick<PptContentSourceInput, "sourceMaterial" | "requirements">) {

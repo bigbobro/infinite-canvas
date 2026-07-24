@@ -48,6 +48,7 @@ type Props = {
         batchLabel: string;
         batchDisabled: boolean;
         batchHidden: boolean;
+        showRestReminder: boolean;
         onBatchAction: () => void;
         onOpenFinalReview: () => void;
         onShowCanvas: (nodeId?: string) => void;
@@ -1766,6 +1767,17 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                     )}
                                 </div>
                             )}
+                            {activeConfirmed && controls.showRestReminder ? (
+                                <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-2" style={{ borderColor: token.colorSuccessBorder, background: token.colorSuccessBg }}>
+                                    <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: token.colorSuccessText }}>
+                                        <CheckCircle2 className="size-3.5 shrink-0" aria-hidden="true" />
+                                        校样已确认，可{controls.batchLabel}
+                                    </span>
+                                    <Button size="small" type="primary" icon={<Sparkles className="size-3.5" />} disabled={controls.batchDisabled} onClick={controls.onBatchAction}>
+                                        {controls.batchLabel}
+                                    </Button>
+                                </div>
+                            ) : null}
                         </footer>
                     </section>
                 </main>

@@ -76,12 +76,8 @@ export async function requestPptStyleDirections(
 }
 
 export function parsePptStyleDirectionResponse(raw: string, input: PptStyleDirectionPlannerInput): PptStyleDirectionCandidate[] {
-    let value: unknown;
-    try {
-        value = JSON.parse(raw.trim());
-    } catch {
-        throw new Error("生成的视觉方向不是严格 JSON，请重试或使用通用方向");
-    }
+    const value = parseTolerantJsonResponse(raw);
+    if (value === undefined) throw new Error("生成的视觉方向不是严格 JSON，请重试或使用通用方向");
     if (!isRecord(value) || !Array.isArray(value.candidates) || value.candidates.length !== 3) throw new Error("视觉方向必须完整返回 3 个候选");
     const recommendedCount = value.candidates.filter((candidate) => isRecord(candidate) && candidate.recommended === true).length;
     if (recommendedCount !== 1) throw new Error("视觉方向必须且只能标记 1 个推荐项");
@@ -169,6 +165,71 @@ function normalizeCandidate(candidate: unknown, index: number, input: PptStyleDi
         basedOnContentRevision: input.contentRevision,
         contract: compiled.value.canonical,
     };
+}
+
+/**
+ * Tolerant JSON parsing for model responses: raw parse → strip a markdown code fence wrapping the
+ * whole response → extract the first balanced `{...}`/`[...]` substring. Returns `undefined` only
+ * once every attempt fails (never retries the network request).
+ */
+function parseTolerantJsonResponse(raw: string): unknown {
+    const trimmed = raw.trim();
+    const direct = tryParseJson(trimmed);
+    if (direct !== undefined) return direct;
+
+    const unfenced = stripMarkdownFence(trimmed);
+    if (unfenced !== trimmed) {
+        const fromFence = tryParseJson(unfenced);
+        if (fromFence !== undefined) return fromFence;
+    }
+
+    const extracted = extractBalancedJson(unfenced);
+    if (extracted !== undefined) return tryParseJson(extracted);
+
+    return undefined;
+}
+
+function tryParseJson(text: string): unknown {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return undefined;
+    }
+}
+
+function stripMarkdownFence(text: string): string {
+    const match = text.match(/^```[^\n]*\n([\s\S]*?)\n?```$/);
+    return match ? match[1].trim() : text;
+}
+
+/** Finds the first `{`/`[` and returns the matching balanced substring, respecting string literals. */
+function extractBalancedJson(text: string): string | undefined {
+    const startIndex = text.search(/[{[]/);
+    if (startIndex === -1) return undefined;
+    const openChar = text[startIndex];
+    const closeChar = openChar === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+    for (let index = startIndex; index < text.length; index++) {
+        const char = text[index];
+        if (inString) {
+            if (escapeNext) escapeNext = false;
+            else if (char === "\\") escapeNext = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') {
+            inString = true;
+            continue;
+        }
+        if (char === openChar) depth += 1;
+        else if (char === closeChar) {
+            depth -= 1;
+            if (depth === 0) return text.slice(startIndex, index + 1);
+        }
+    }
+    return undefined;
 }
 
 function nonEmpty(value: unknown): value is string {

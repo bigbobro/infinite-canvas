@@ -155,9 +155,14 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
     const batchLabel = batchState.kind === "start" ? "生成风格校样" : batchState.kind === "waitingProof" ? "等待确认校样" : batchState.kind === "confirmRest" ? `生成其余 ${batchState.count} 页` : "";
     const batchHidden = batchState.kind === "hidden";
     const batchDisabled = !canvasContext || batchState.kind === "waitingProof" || (batchState.kind === "confirmRest" && !restPlanPreview);
-    // #4：精修台头部按钮只在「锚定流程相关」的前两态出现；confirmRest 阶段收敛到结构面板，避免头部与
-    // 结构面板双入口并存。结构面板自身仍按 batchHidden 展示全部三个非隐藏态。
-    const workspaceBatchHidden = batchHidden || batchState.kind === "confirmRest";
+    // #4：精修台头部批量按钮与结构面板共用同一 batchHidden 判定（原先 confirmRest 态收敛到结构
+    // 面板单入口的设计已被实测证伪：用户确认校样后仍留在精修台，找不到「生成其余页」入口，需回结构
+    // 画布才能触发）。四态下头部与结构面板表现一致：start/waitingProof/confirmRest 均显示按钮，hidden 隐藏。
+    const workspaceBatchHidden = batchHidden;
+    // SHA-36：校样刚确认成功、且当前查看的正是校样页时，精修台底部就地给出「可生成其余页」引导，
+    // 不必强制用户先回结构画布。styleProofConfirmed 已保证 ppt.styleProof 与 styleProofPageId 一致有效，
+    // 天然把「skipAnchor 模式下没有真实校样概念」的情况排除在外。
+    const showRestReminder = batchState.kind === "confirmRest" && styleProofConfirmed && activePageId === styleProofPageId;
 
     const openBatchModal = () => {
         try {
@@ -414,6 +419,7 @@ export function CanvasPptPanel({ generationModule }: { generationModule: PptGene
                     batchLabel,
                     batchDisabled,
                     batchHidden: workspaceBatchHidden,
+                    showRestReminder,
                     onBatchAction: openBatchModal,
                     onOpenFinalReview: () => setFinalReviewOpen(true),
                     onShowCanvas: showStructure,

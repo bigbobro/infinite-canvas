@@ -96,6 +96,8 @@ function contentSourceCoverageDutyItem(pageSpec: CanvasProjectPptPageSpec, gaps:
  * SHA-30d：来源依据按 (source, relation, 行号区间, 摘要) 聚合——normalizePage 为每个内容块各自解析来源，
  * 同一区间被多个块引用时会产生多条结构相同的 sourceRef；这里只做展示层合并，不改 pageSpec.sourceRefs 本身。
  * 无行号的来源（confirmed_assumption/user_answer）区间退化为占位符，实际按摘要聚合。
+ * SHA-33：有行号的条目额外按 (source, relation) 分组做区间归并——同组内区间重叠或互相包含即合并为一条，
+ * 取并集区间、最长摘要、累加支撑块数，避免嵌套/重叠区间在展示层拆成多条重复来源。
  */
 export type PptAggregatedSourceRef = {
     source: CanvasProjectPptSourceRef["source"];
@@ -106,15 +108,27 @@ export type PptAggregatedSourceRef = {
     supportedBlockCount: number;
 };
 
+type PptSourceRefGroup = { ref: CanvasProjectPptSourceRef; refIds: Set<string> };
+
 export function aggregatePptSourceRefs(pageSpec: Pick<CanvasProjectPptPageSpec, "sourceRefs" | "contentBlocks">): PptAggregatedSourceRef[] {
-    const groups = new Map<string, { ref: CanvasProjectPptSourceRef; refIds: Set<string> }>();
+    const rangedGroups = new Map<string, PptSourceRefGroup[]>();
+    const unrangedGroups = new Map<string, PptSourceRefGroup>();
     for (const sourceRef of pageSpec.sourceRefs) {
-        const key = `${sourceRef.source}:${sourceRef.relation}:${sourceRef.startLine ?? "-"}-${sourceRef.endLine ?? "-"}:${normalizeExcerpt(sourceRef.excerpt)}`;
-        const group = groups.get(key);
+        if (sourceRef.startLine !== undefined && sourceRef.endLine !== undefined) {
+            const groupKey = `${sourceRef.source}:${sourceRef.relation}`;
+            const entries = rangedGroups.get(groupKey) ?? [];
+            entries.push({ ref: sourceRef, refIds: new Set([sourceRef.id]) });
+            rangedGroups.set(groupKey, entries);
+            continue;
+        }
+        const key = `${sourceRef.source}:${sourceRef.relation}:-:-:${normalizeExcerpt(sourceRef.excerpt)}`;
+        const group = unrangedGroups.get(key);
         if (group) group.refIds.add(sourceRef.id);
-        else groups.set(key, { ref: sourceRef, refIds: new Set([sourceRef.id]) });
+        else unrangedGroups.set(key, { ref: sourceRef, refIds: new Set([sourceRef.id]) });
     }
-    return [...groups.values()].map(({ ref, refIds }) => ({
+    const merged = [...rangedGroups.values()].flatMap(mergeOverlappingSourceRanges);
+    merged.push(...unrangedGroups.values());
+    return merged.map(({ ref, refIds }) => ({
         source: ref.source,
         relation: ref.relation,
         ...(ref.startLine !== undefined ? { startLine: ref.startLine } : {}),
@@ -122,6 +136,24 @@ export function aggregatePptSourceRefs(pageSpec: Pick<CanvasProjectPptPageSpec, 
         excerpt: ref.excerpt,
         supportedBlockCount: pageSpec.contentBlocks.filter((block) => block.sourceRefIds.some((id) => refIds.has(id))).length,
     }));
+}
+
+/** 同 (source, relation) 分组内按起始行排序后逐条吸收重叠/包含的区间，取区间并集与最长摘要。 */
+function mergeOverlappingSourceRanges(entries: PptSourceRefGroup[]): PptSourceRefGroup[] {
+    const sorted = [...entries].sort((a, b) => a.ref.startLine! - b.ref.startLine! || a.ref.endLine! - b.ref.endLine!);
+    const merged: PptSourceRefGroup[] = [];
+    for (const entry of sorted) {
+        const last = merged[merged.length - 1];
+        if (last && entry.ref.startLine! <= last.ref.endLine!) {
+            const endLine = Math.max(last.ref.endLine!, entry.ref.endLine!);
+            const excerpt = entry.ref.excerpt.length > last.ref.excerpt.length ? entry.ref.excerpt : last.ref.excerpt;
+            for (const id of entry.refIds) last.refIds.add(id);
+            last.ref = { ...last.ref, endLine, excerpt };
+            continue;
+        }
+        merged.push({ ref: { ...entry.ref }, refIds: new Set(entry.refIds) });
+    }
+    return merged;
 }
 
 function normalizeExcerpt(value: string) {

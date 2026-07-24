@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Input, Popconfirm, Skeleton } from "antd";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, FileText, Merge, Pencil, RefreshCw, Save, Sparkles, Square, Trash2, WandSparkles, X } from "lucide-react";
 
-import { pptPageRepairActionLabel, type PptContentAuditAction, type PptContentAuditIssue, type PptInformationGap } from "@/lib/ppt/content-plan";
+import { derivePptPageProvenanceGapCause, PPT_PROVENANCE_MISSING_SOURCE_MESSAGE, pptPageRepairActionLabel, type PptContentAuditAction, type PptContentAuditIssue, type PptInformationGap, type PptPageProvenanceGapCause } from "@/lib/ppt/content-plan";
 import { aggregatePptSourceRefs, derivePptPageDuty, type PptPageDutyItem } from "@/lib/ppt/duty-dashboard";
 import type { CanvasProjectPptContentBlock, CanvasProjectPptPageSpec, CanvasProjectPptSourceRef, PptPrincipleDeviation } from "@/stores/canvas/use-canvas-store";
 import type { FinalizedPptContent, PptContentPlanningController } from "@/pages/ppt/use-ppt-content-planning";
@@ -327,6 +327,7 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
     const sourceById = useMemo(() => new Map(page.sourceRefs.map((source) => [source.id, source])), [page.sourceRefs]);
     const dutyItems = useMemo(() => derivePptPageDuty(page, gaps, issues), [page, gaps, issues]);
     const aggregatedSources = useMemo(() => aggregatePptSourceRefs(page), [page]);
+    const provenanceGapCause = useMemo(() => derivePptPageProvenanceGapCause(page, gaps), [page, gaps]);
     const unresolvedGaps = gaps.filter((gap) => !gap.resolution);
     const resolvedGaps = gaps.filter((gap) => gap.resolution);
     const unresolvedCount = unresolvedGaps.length;
@@ -451,13 +452,13 @@ function ContentPageCard({ page, index, pageIds, issues, gaps, planning }: { pag
                 ) : null}
 
                 {issues.some((issue) => issue.code !== "unresolved_gap" && issue.code !== "principle_question") ? (
-                    <PageIssues issues={issues.filter((issue) => issue.code !== "unresolved_gap" && issue.code !== "principle_question")} planning={planning} />
+                    <PageIssues issues={issues.filter((issue) => issue.code !== "unresolved_gap" && issue.code !== "principle_question")} planning={planning} pageId={page.pageId} provenanceGapCause={provenanceGapCause} />
                 ) : null}
 
                 {issues.some((issue) => issue.code === "principle_question") || page.principleDeviations?.length ? <PrincipleQuestions page={page} issues={issues.filter((issue) => issue.code === "principle_question")} planning={planning} /> : null}
 
                 {unresolvedGaps.length ? (
-                    <section className="border-t border-stone-200 pt-4 dark:border-stone-800">
+                    <section id={pptPageGapsSectionId(page.pageId)} className="border-t border-stone-200 pt-4 dark:border-stone-800">
                         <h4 className="text-sm font-semibold">信息缺口</h4>
                         <div className="mt-3 space-y-3">
                             {unresolvedGaps.map((gap) => (
@@ -562,18 +563,40 @@ function PageDutyRow({ items }: { items: PptPageDutyItem[] }) {
     );
 }
 
+/** SHA-31：缺口区块用固定 id 作为「先处理缺口」按钮的滚动定位目标。 */
+function pptPageGapsSectionId(pageId: string) {
+    return `ppt-page-gaps-${pageId}`;
+}
+
+function scrollToPptPageGaps(pageId: string) {
+    document.getElementById(pptPageGapsSectionId(pageId))?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 /** SHA-30d：30a/30b/30c 处理后仍可能残留的公理层/编辑引入问题——标题降为与「来源依据」同级的次要样式，仪表已承担正向展示。 */
-function PageIssues({ issues, planning }: { issues: PptContentAuditIssue[]; planning: PptContentPlanningController }) {
+function PageIssues({ issues, planning, pageId, provenanceGapCause }: { issues: PptContentAuditIssue[]; planning: PptContentPlanningController; pageId: string; provenanceGapCause: PptPageProvenanceGapCause | null }) {
     return (
         <section className="border-l-2 border-stone-200 pl-3 dark:border-stone-700">
             <p className="text-xs text-stone-500">内容检查</p>
             <div className="mt-2 space-y-2">
-                {issues.map((issue) => (
-                    <div key={issue.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                        <span className="text-stone-600 dark:text-stone-300">{issue.message}</span>
-                        <PageIssueAction issue={issue} planning={planning} />
-                    </div>
-                ))}
+                {issues.map((issue) => {
+                    // SHA-31：该检查项是由未决信息缺口引起时，改为因果说明 + 「先处理缺口」引导，而不是直接投模型修复。
+                    const isGapCaused = Boolean(provenanceGapCause) && issue.code === "invalid_content_provenance" && issue.message === PPT_PROVENANCE_MISSING_SOURCE_MESSAGE;
+                    return (
+                        <div key={issue.id}>
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                                <span className="text-stone-600 dark:text-stone-300">{issue.message}</span>
+                                {isGapCaused ? (
+                                    <Button size="small" type="text" icon={<ArrowDown className="size-3.5" />} onClick={() => scrollToPptPageGaps(pageId)}>
+                                        先处理缺口
+                                    </Button>
+                                ) : (
+                                    <PageIssueAction issue={issue} planning={planning} />
+                                )}
+                            </div>
+                            {isGapCaused ? <p className="mt-1 text-xs text-stone-400">本项由下方 {provenanceGapCause!.gapIds.length} 个信息缺口引起，处理缺口后将自动复核</p> : null}
+                        </div>
+                    );
+                })}
             </div>
         </section>
     );
