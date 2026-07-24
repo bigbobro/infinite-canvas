@@ -29,7 +29,6 @@ description: 当前版本已实现但仍需人工验证的变更项
 遗留观察（非本批缺陷）：
 
 - **视觉方向文本模型选择**：grok-4.5 对该重 schema 稳定产出结构性坏 JSON（少闭括号，三层容错无法救，报错行为正确且现在会显示模型名）；实测 **deepseek-v4-pro（TEXT 渠道）一次成功产出三候选**——换模型即可解，暂无必要加 JSON 修复层。渠道 4 下 gemini-3.5-flash（含 thinking）、gpt-5.6-terra 均被 distributor 拒绝（「No available channel」），属中转站渠道配置问题，非产品问题。
-- **多 tab 配置漂移疑点**：多个 tab 同开时观察到默认文本模型被静默改写、渠道模型列表变化（疑似持久化配置互相覆盖）；单 tab 会话未复现。待复现后再决定是否立 issue。
 
 ## PPT 内容来源与归纳 Contract SHA-26
 
