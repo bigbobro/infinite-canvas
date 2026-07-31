@@ -42,6 +42,37 @@ const activeRequestExecutions = new Map<string, Promise<void>>();
 const activeNotificationDeliveries = new Map<string, Promise<void>>();
 const projectOperationQueues = new Map<string, Promise<void>>();
 
+/**
+ * 同时进行「提交」的请求上限。浏览器对同域只有约 6 条连接通道，图生图请求各带大参考图，
+ * 整批齐发会抢光上行带宽，把排队靠后的请求拖过网关超时（现场表现：大面积「提交结果未知」）。
+ */
+export const PPT_GENERATION_SUBMIT_CONCURRENCY = 3;
+
+/**
+ * 只限「提交阶段」：拿到远端 task ID 后剩下的是低频轮询 GET，可能持续几十分钟，
+ * 继续占位会把后面页面的提交拖到更晚，反而制造新的超时。因此 release 允许被调用多次
+ * （task_created 时提前让位 + 调用结束时兜底），只有第一次生效。
+ */
+function createSubmitGate(limit: number) {
+    let active = 0;
+    const waiting: Array<() => void> = [];
+    const grant = () => {
+        active += 1;
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            active -= 1;
+            waiting.shift()?.();
+        };
+    };
+    return {
+        acquire: (): Promise<() => void> => (active < limit ? Promise.resolve(grant()) : new Promise((resolve) => waiting.push(() => resolve(grant())))),
+    };
+}
+
+const submitGate = createSubmitGate(PPT_GENERATION_SUBMIT_CONCURRENCY);
+
 export class PptGenerationPreSubmitError extends Error {
     override name = "PptGenerationPreSubmitError";
 }
@@ -317,8 +348,22 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
                 return;
             }
             let result: PptGenerationProviderResult;
+            const releaseSubmitSlot = await submitGate.acquire();
             try {
-                result = await dependencies.provider.submit({ project, run, request, onEvent: (event) => onRemoteEvent(request.requestId, event) });
+                try {
+                    result = await dependencies.provider.submit({
+                        project,
+                        run,
+                        request,
+                        onEvent: async (event) => {
+                            // 拿到 task ID 说明提交握手已完成，后面只剩轮询：立刻让位给排队中的提交。
+                            if (event.type === "task_created") releaseSubmitSlot();
+                            await onRemoteEvent(request.requestId, event);
+                        },
+                    });
+                } finally {
+                    releaseSubmitSlot();
+                }
             } catch (error) {
                 await handleProviderError(request.requestId, error);
                 return;

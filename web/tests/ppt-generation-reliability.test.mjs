@@ -7,6 +7,7 @@ let vite;
 let createPptGenerationModule;
 let reducePptGenerationRequest;
 let isPptManualTaskId;
+let PPT_GENERATION_SUBMIT_CONCURRENCY;
 let buildPptPageWorkspace;
 let resolvePptGenerationProviderIdentity;
 let assertPptGenerationProviderIdentity;
@@ -29,7 +30,7 @@ let hashPptContentSource;
 
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
-    ({ createPptGenerationModule, reducePptGenerationRequest, isPptManualTaskId } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
+    ({ createPptGenerationModule, reducePptGenerationRequest, isPptManualTaskId, PPT_GENERATION_SUBMIT_CONCURRENCY } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
     ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ derivePptLockedFacts } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
@@ -90,6 +91,77 @@ test("count=1 与 count=3 每个请求槽只提交和物化一次", async (conte
             assert.equal(harness.stats.resumeCalls, 0);
             assert.equal(harness.notifications.length, 1);
         });
+    }
+});
+
+test("SHA-40：批量提交受并发上限约束，拿到 task ID 后立刻让位，轮询不占提交位", async () => {
+    const count = 8;
+    assert.ok(count > PPT_GENERATION_SUBMIT_CONCURRENCY, "用例请求数必须超过并发上限才有意义");
+    const plan = generationPlan(count, "throttle");
+    const submitEntries = [];
+    let inSubmit = 0;
+    let peakInSubmit = 0;
+    let openSubmit;
+    let openPolling;
+    const submitBarrier = new Promise((resolve) => {
+        openSubmit = resolve;
+    });
+    const pollingBarrier = new Promise((resolve) => {
+        openPolling = resolve;
+    });
+    const harness = createHarness(baseProject("throttle"), {
+        taskOnSubmit: true,
+        duringSubmit: async (request) => {
+            submitEntries.push(request.requestId);
+            inSubmit += 1;
+            peakInSubmit = Math.max(peakInSubmit, inSubmit);
+            await submitBarrier;
+            inSubmit -= 1;
+        },
+        duringPolling: () => pollingBarrier,
+    });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    const started = await module.start(plan);
+    let settled;
+    try {
+        // 提交阶段被卡住时，同时在途的提交恰好等于上限：既没有齐发，也没有被过度串行化。
+        await drainPendingWork();
+        assert.equal(peakInSubmit, PPT_GENERATION_SUBMIT_CONCURRENCY);
+        assert.equal(submitEntries.length, PPT_GENERATION_SUBMIT_CONCURRENCY);
+        assert.equal(harness.stats.materializeCalls, 0);
+
+        // 放行提交、继续卡住轮询：全部请求都能完成提交，证明轮询阶段不再占用并发位。
+        openSubmit();
+        await drainPendingWork();
+        assert.equal(submitEntries.length, count);
+        assert.equal(new Set(submitEntries).size, count);
+        assert.equal(peakInSubmit, PPT_GENERATION_SUBMIT_CONCURRENCY);
+        assert.equal(harness.stats.materializeCalls, 0);
+
+        openPolling();
+        settled = await started.settled;
+    } finally {
+        // 并发闸门是模块级共享的：断言失败也要放行，否则会拖垮后续用例。
+        openSubmit();
+        openPolling();
+        await started.settled.catch(() => undefined);
+    }
+
+    // 限流不改变结果：全部完成，与不限流路径的结构一致。
+    assert.deepEqual(new Set(settled.completedRequestIds), new Set(plan.runs[0].requests.map((request) => request.requestId)));
+    assert.equal(settled.attentionRequestIds.length, 0);
+    assert.equal(harness.stats.submitCalls, count);
+    assert.equal(harness.stats.resumeCalls, 0);
+    assert.equal(harness.stats.materializeCalls, count);
+    assert.equal(harness.notifications.length, 1);
+
+    const durable = await harness.durable.read();
+    assert.equal(runSummary(durable, plan.runs[0].runId).status, "completed");
+    for (const request of plan.runs[0].requests) {
+        const trace = requestTrace(durable, request.requestId);
+        assert.equal(trace.status, "completed");
+        assert.equal(trace.remoteTaskId, `task-${request.requestId}`);
     }
 });
 
@@ -1468,9 +1540,12 @@ function createHarness(project, options = {}) {
                     stats.submitCalls += 1;
                     stats.submittedPrompts.push(request.prompt);
                     const taskId = options.taskOnSubmit || options.taskBeforeSubmitError ? `task-${request.requestId}` : undefined;
+                    // 提交阶段（拿到 task ID 之前）与轮询阶段（拿到之后）各留一个测试可控的停留点。
+                    await options.duringSubmit?.(request);
                     if (taskId) {
                         await onEvent({ type: "task_created", taskId });
                     }
+                    await options.duringPolling?.(request);
                     const submitError = options.submitErrorFor?.(request) || options.submitError;
                     if (submitError) throw submitError;
                     if (taskId) {
@@ -1529,6 +1604,11 @@ function createDurable(initialProject, { failMutations = [], failReads = [], bef
             return structuredClone(state);
         },
     };
+}
+
+/** 执行链全是 promise 链，没有定时器：跨几个宏任务即可把所有可推进的工作跑到停下来为止。 */
+async function drainPendingWork(rounds = 5) {
+    for (let round = 0; round < rounds; round += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function canvasNode(id, type, metadata) {
