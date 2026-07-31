@@ -5,6 +5,9 @@ import { createServer } from "vite";
 
 let vite;
 let createPptGenerationModule;
+let reducePptGenerationRequest;
+let isPptManualTaskId;
+let buildPptPageWorkspace;
 let resolvePptGenerationProviderIdentity;
 let assertPptGenerationProviderIdentity;
 let hasPptRepeatBillingRisk;
@@ -26,7 +29,7 @@ let hashPptContentSource;
 
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
-    ({ createPptGenerationModule } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
+    ({ createPptGenerationModule, reducePptGenerationRequest, isPptManualTaskId } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
     ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ derivePptLockedFacts } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
@@ -36,6 +39,7 @@ before(async () => {
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
     ({ buildPptGenerationNotificationHref } = await vite.ssrLoadModule("/src/pages/canvas/hooks/use-ppt-generation-module.ts"));
     ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
+    ({ buildPptPageWorkspace } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
 });
 
 after(async () => {
@@ -965,6 +969,166 @@ test("远端成功但结果不可取时持久化重复计费风险", async () =>
     assert.equal(hasPptRepeatBillingRisk([trace]), true);
 });
 
+test("SHA-39：人工贴 task ID 只查询取回原任务，不重发生成请求也不留重复计费风险", async () => {
+    const project = projectWithRequest("manual-recovery", { status: "submission_unknown" });
+    const probes = [];
+    const harness = createHarness(project, {
+        probeTask: async ({ trace, taskId }) => {
+            probes.push({ requestId: trace.requestId, status: trace.status, taskId });
+            return { expiresAt: 1900000000 };
+        },
+    });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    const recovered = await module.recover({ type: "attachTaskId", requestId: "request-manual-recovery", taskId: "  task_manual_1  " });
+    await recovered.settled;
+
+    assert.deepEqual(recovered.resumedRequestIds, ["request-manual-recovery"]);
+    assert.deepEqual(probes, [{ requestId: "request-manual-recovery", status: "submission_unknown", taskId: "task_manual_1" }]);
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 1);
+    assert.deepEqual(harness.stats.resumedTaskIds, ["task_manual_1"]);
+    assert.deepEqual(harness.stats.materializedResultIdentities, ["result-request-manual-recovery"]);
+
+    const durable = await harness.durable.read();
+    const trace = requestTrace(durable, "request-manual-recovery");
+    assert.equal(trace.status, "completed");
+    assert.equal(trace.remoteTaskId, "task_manual_1");
+    assert.equal(trace.remoteTaskExpiresAt, 1900000000);
+    assert.equal(trace.billingRisk, undefined);
+    assert.equal(hasPptRepeatBillingRisk([trace]), false);
+    assert.deepEqual(
+        trace.recentEvents.map((event) => event.status),
+        ["submission_unknown", "submitted", "running", "succeeded", "materializing", "completed"],
+    );
+    const requestNode = durable.nodes.find((node) => node.metadata?.pptGenerationRequest?.requestId === "request-manual-recovery");
+    assert.equal(requestNode.metadata.status, "success");
+    assert.equal(requestNode.metadata.storageKey, "storage-result-request-manual-recovery");
+    assert.equal(requestNode.metadata.imageTask, undefined);
+    assert.equal(runSummary(durable, "run-manual-recovery").status, "completed");
+    assert.deepEqual(
+        harness.notifications.map((event) => event.status),
+        ["completed"],
+    );
+
+    const finalRecovery = await module.recover({ type: "reconcileProject" });
+    await finalRecovery.settled;
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 1);
+});
+
+test("SHA-39：非法 task ID、非未知状态与核对不过的 task ID 都不写状态，修正后仍可找回", async () => {
+    assert.equal(isPptManualTaskId("task_abc"), true);
+    assert.equal(isPptManualTaskId("  task_abc  "), true);
+    assert.equal(isPptManualTaskId("task_"), false);
+    assert.equal(isPptManualTaskId("task abc"), false);
+    assert.equal(isPptManualTaskId("abc"), false);
+    assert.equal(isPptManualTaskId(""), false);
+
+    const probes = [];
+    const harness = createHarness(projectWithRequest("manual-reject", { status: "submission_unknown" }), {
+        probeTask: async ({ taskId }) => {
+            probes.push(taskId);
+            if (taskId !== "task_good") throw new Error("没查到这个 task ID：请核对是否复制完整，以及它是否属于当前渠道 API Key 所在的账号");
+        },
+    });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    for (const taskId of ["", "   ", "abc", "task_", "task id"]) {
+        await assert.rejects(module.recover({ type: "attachTaskId", requestId: "request-manual-reject", taskId }), /task_ 开头/);
+    }
+    assert.deepEqual(probes, []);
+
+    await assert.rejects(module.recover({ type: "attachTaskId", requestId: "request-manual-reject", taskId: "task_wrong" }), /没查到这个 task ID/);
+    assert.deepEqual(probes, ["task_wrong"]);
+    let trace = requestTrace(await harness.durable.read(), "request-manual-reject");
+    assert.equal(trace.status, "submission_unknown");
+    assert.equal(trace.remoteTaskId, undefined);
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 0);
+
+    const retried = await module.recover({ type: "attachTaskId", requestId: "request-manual-reject", taskId: "task_good" });
+    await retried.settled;
+    trace = requestTrace(await harness.durable.read(), "request-manual-reject");
+    assert.equal(trace.status, "completed");
+    assert.equal(trace.remoteTaskId, "task_good");
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 1);
+
+    await assert.rejects(module.recover({ type: "attachTaskId", requestId: "request-manual-reject", taskId: "task_second" }), /提交结果未知/);
+    const runningHarness = createHarness(projectWithRequest("manual-running", { status: "running", remoteTaskId: "task-running" }), { probeTask: async () => {} });
+    await assert.rejects(createPptGenerationModule(runningHarness.dependencies).recover({ type: "attachTaskId", requestId: "request-manual-running", taskId: "task_manual" }), /提交结果未知/);
+    assert.equal(runningHarness.stats.resumeCalls, 0);
+});
+
+test("SHA-39：批量三个槽全未知时逐个找回，错误区一直保留入口直到最后一个取回", async () => {
+    const harness = createHarness(projectWithUnknownBatch("manual-batch", 3), { probeTask: async () => ({}) });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    // 工作台 UI 的找回入口就是按这个读模型渲染的：待找回请求列表非空 → 出现输入框，指向列表里的第一个槽。
+    const pendingRecoverables = (project) => {
+        const take = buildPptPageWorkspace(project, project.ppt.pages[0]).takes.find((item) => item.takeId === "take-1");
+        return { requests: take.generationRequests.filter((request) => request.status === "submission_unknown" && !request.remoteTaskId), issues: take.issues };
+    };
+
+    let pending = pendingRecoverables(await harness.durable.read());
+    assert.deepEqual(
+        pending.requests.map((request) => request.slotIndex),
+        [0, 1, 2],
+    );
+    assert.ok(pending.issues.some((issue) => issue.includes("提交或保存结果未知")));
+
+    for (const slotIndex of [0, 1, 2]) {
+        const recovered = await module.recover({ type: "attachTaskId", requestId: `request-manual-batch-${slotIndex}`, taskId: `task_manual_batch_${slotIndex}` });
+        await recovered.settled;
+        pending = pendingRecoverables(await harness.durable.read());
+        // 入口一直在，直到最后一个槽取回；取回一个后自动指向下一个待找回的槽。
+        assert.equal(pending.requests.length, 2 - slotIndex);
+        assert.equal(pending.requests[0]?.slotIndex, slotIndex < 2 ? slotIndex + 1 : undefined);
+    }
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.equal(harness.stats.resumeCalls, 3);
+    assert.deepEqual(harness.stats.resumedTaskIds, ["task_manual_batch_0", "task_manual_batch_1", "task_manual_batch_2"]);
+    const durable = await harness.durable.read();
+    assert.deepEqual(
+        [0, 1, 2].map((slotIndex) => requestTrace(durable, `request-manual-batch-${slotIndex}`).status),
+        ["completed", "completed", "completed"],
+    );
+    assert.equal(runSummary(durable, "run-manual-batch").status, "completed");
+    assert.equal(pendingRecoverables(durable).issues.length, 0);
+});
+
+test("SHA-39：状态机只放开 submission_unknown → task_created，其余迁移仍被拒绝", () => {
+    const at = "2026-07-31T00:00:00.000Z";
+    const unknown = { requestId: "request-transition", runId: "run-transition", status: "submission_unknown", createdAt: at, updatedAt: at, recentEvents: [{ status: "submission_unknown", at }] };
+
+    const attached = reducePptGenerationRequest(unknown, { type: "task_created", at, taskId: "task_manual" });
+    assert.equal(attached.status, "submitted");
+    assert.equal(attached.remoteTaskId, "task_manual");
+    assert.deepEqual(
+        attached.recentEvents.map((event) => event.status),
+        ["submission_unknown", "submitted"],
+    );
+
+    for (const event of [
+        { type: "running", at },
+        { type: "succeeded", at, resultIdentity: "result" },
+        { type: "materializing", at },
+        { type: "completed", at },
+        { type: "recoverable_error", at, error: "boom" },
+        { type: "persisted", at },
+        { type: "submitting", at },
+    ]) {
+        assert.throws(() => reducePptGenerationRequest(unknown, event), new RegExp(`不能从 submission_unknown 进入 ${event.type}`));
+    }
+    for (const status of ["draft", "persisted", "failed", "abandoned", "completed"]) {
+        assert.throws(() => reducePptGenerationRequest({ ...unknown, status }, { type: "task_created", at, taskId: "task_manual" }), new RegExp(`不能从 ${status} 进入 task_created`));
+    }
+    assert.throws(() => reducePptGenerationRequest(attached, { type: "task_created", at, taskId: "task_other" }), /task ID 不可改写/);
+    assert.throws(() => reducePptGenerationRequest(attached, { type: "submission_unknown", at }), /不能从 submitted 进入 submission_unknown/);
+});
+
 function styleContract(direction = "清晰专业的报告视觉") {
     const contract = createPptVisualDirectionPresetContract("clean-report");
     contract.source = { kind: "custom" };
@@ -1123,7 +1287,15 @@ function generationPlan(count, suffix) {
     const deckBrief = structuredDeckBrief();
     const pageSpec = structuredPageSpec("page-1", "第一页", "测试提示词");
     const target = { pageId: "page-1", takeId: "take-1", semanticText: structuredPageText(pageSpec), layoutIntent: [PPT_PAGE_PROMPT], layoutConfirmed: true, extraTexts: [], override: undefined, overrideConfirmed: false };
-    const compilation = compilePptPromptSnapshot({ compilePolicy: "structured", snapshotId: `snapshot-${suffix}`, compiledAt: createdAt, deckBrief, pageSpecs: [pageSpec], deckShell: derivePptDeckShellFacts([pageSpec], "测试整套标题"), targets: [target] });
+    const compilation = compilePptPromptSnapshot({
+        compilePolicy: "structured",
+        snapshotId: `snapshot-${suffix}`,
+        compiledAt: createdAt,
+        deckBrief,
+        pageSpecs: [pageSpec],
+        deckShell: derivePptDeckShellFacts([pageSpec], "测试整套标题"),
+        targets: [target],
+    });
     const prompt = compilation.prompts[0].finalPrompt;
     const rootNodeId = `root-${suffix}`;
     const requestNodeIds = count === 1 ? [rootNodeId] : Array.from({ length: count }, (_, index) => `slot-${suffix}-${index}`);
@@ -1223,6 +1395,60 @@ function projectWithRequest(suffix, { status, remoteTaskId, pageId = "page-1", t
     return project;
 }
 
+/** 批量生成后整批「提交结果未知」的现场：一个 batch root + count 个各自待找回的请求槽。 */
+function projectWithUnknownBatch(suffix, count) {
+    const project = baseProject(suffix);
+    const at = "2026-07-21T00:00:00.000Z";
+    const runId = `run-${suffix}`;
+    const slotNodeId = (slotIndex) => `slot-${suffix}-${slotIndex}`;
+    const requestIds = Array.from({ length: count }, (_, slotIndex) => `request-${suffix}-${slotIndex}`);
+    project.nodes.push(
+        canvasNode(`root-${suffix}`, "image", {
+            status: "error",
+            pptPageId: "page-1",
+            pptTakeId: "take-1",
+            pptPageIndex: 1,
+            isBatchRoot: true,
+            batchChildIds: requestIds.map((_, slotIndex) => slotNodeId(slotIndex)),
+            pptGenerationRun: { runId, batchId: `batch-${suffix}`, pageId: "page-1", takeId: "take-1", requestIds, plannedCount: count, status: "needs_attention", createdAt: at, updatedAt: at },
+        }),
+        ...requestIds.map((requestId, slotIndex) =>
+            canvasNode(slotNodeId(slotIndex), "image", {
+                status: "error",
+                pptPageId: "page-1",
+                pptTakeId: "take-1",
+                pptPageIndex: 1,
+                batchRootId: `root-${suffix}`,
+                errorDetails: "提交结果未知：network timeout",
+                pptGenerationRequest: {
+                    requestId,
+                    runId,
+                    batchId: `batch-${suffix}`,
+                    pageId: "page-1",
+                    takeId: "take-1",
+                    slotIndex,
+                    requestType: "textToImage",
+                    model: "fake-image",
+                    providerIdentity: fakeProviderIdentity(),
+                    status: "submission_unknown",
+                    error: "提交结果未知：network timeout",
+                    createdAt: at,
+                    updatedAt: at,
+                    recentEvents: [
+                        { status: "submitting", at },
+                        { status: "submission_unknown", at, error: "提交结果未知：network timeout" },
+                    ],
+                },
+            }),
+        ),
+    );
+    project.connections.push(
+        { id: `config-root-${suffix}`, fromNodeId: "config", toNodeId: `root-${suffix}` },
+        ...requestIds.map((_, slotIndex) => ({ id: `root-slot-${suffix}-${slotIndex}`, fromNodeId: `root-${suffix}`, toNodeId: slotNodeId(slotIndex) })),
+    );
+    return project;
+}
+
 function createHarness(project, options = {}) {
     const durable = createDurable(project, options.durableOptions);
     const stats = { submitCalls: 0, resumeCalls: 0, materializeCalls: 0, submittedPrompts: [], resumedTaskIds: [], materializedResultIdentities: [] };
@@ -1262,6 +1488,7 @@ function createHarness(project, options = {}) {
                 },
                 ...(options.classifyError ? { classifyError: options.classifyError } : {}),
                 ...(options.hasBillingRisk ? { hasBillingRisk: options.hasBillingRisk } : {}),
+                ...(options.probeTask ? { probeTask: options.probeTask } : {}),
             },
             materialize: async (providerResult) => {
                 stats.materializeCalls += 1;

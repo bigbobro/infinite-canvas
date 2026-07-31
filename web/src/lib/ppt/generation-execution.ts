@@ -24,7 +24,9 @@ export type PptGenerationRequestEvent =
 const allowedFrom: Record<PptGenerationRequestEvent["type"], readonly PptGenerationRequestStatus[]> = {
     persisted: ["draft", "persisted"],
     submitting: ["persisted", "submitting"],
-    task_created: ["submitting", "submitted", "running", "recoverable_error"],
+    // submission_unknown 只允许人工找回命令（attachTaskId）带着后台查到的 task ID 进入，
+    // 自动路径不会从这里发出 task_created：reconcileProject 只续查已有 task ID 的请求，绝不重发生成请求。
+    task_created: ["submitting", "submitted", "running", "recoverable_error", "submission_unknown"],
     running: ["submitted", "running", "recoverable_error"],
     submission_unknown: ["submitting", "submission_unknown"],
     succeeded: ["submitting", "submitted", "running", "succeeded", "materializing", "recoverable_error"],
@@ -121,6 +123,8 @@ export type PptGenerationModuleDependencies = {
         resume: (input: { project: CanvasProject; trace: PptGenerationRequestTrace; onEvent: (event: PptGenerationRemoteEvent) => Promise<void> }) => Promise<PptGenerationProviderResult>;
         classifyError?: (error: unknown, trace: PptGenerationRequestTrace) => "submission_unknown" | "recoverable_error" | "failed";
         hasBillingRisk?: (error: unknown, trace: PptGenerationRequestTrace) => boolean;
+        /** 人工找回前核对 task ID：只做一次查询，抛错即表示不可绑定（错误文案由 provider 层给出）；查到的保留期一并带回。 */
+        probeTask?: (input: { trace: PptGenerationRequestTrace; taskId: string }) => Promise<{ expiresAt?: number } | void>;
     };
     materialize: (result: PptGenerationProviderResult) => Promise<CanvasNodeMetadata>;
     notify?: (event: { runId: string; pageId: string; takeId: string; status: PptGenerationRunStatus }) => void | Promise<void>;
@@ -138,7 +142,12 @@ export type GenerationSettledResult = {
     attentionRequestIds: string[];
 };
 
-export type GenerationRecoveryCommand = { type: "reconcileProject" } | { type: "retrieveExisting"; requestId: string } | { type: "abandonUnknown"; requestId: string };
+export type GenerationRecoveryCommand = { type: "reconcileProject" } | { type: "retrieveExisting"; requestId: string } | { type: "abandonUnknown"; requestId: string } | { type: "attachTaskId"; requestId: string; taskId: string };
+
+/** 后台复制来的任务 ID：trim 后必须是 task_ 前缀且不含空白。UI 与找回命令共用这条规则。 */
+export function isPptManualTaskId(value: string) {
+    return /^task_\S+$/.test(value.trim());
+}
 
 export type GenerationRecoveryResult = {
     resumedRequestIds: string[];
@@ -397,6 +406,15 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
                     await tryDeliverNotification(trace.runId);
                     abandonedRequestIds.push(trace.requestId);
                 }
+                if (command.type === "attachTaskId") {
+                    const taskId = command.taskId.trim();
+                    if (!isPptManualTaskId(taskId)) throw new Error("task ID 需要以 task_ 开头，请从供应商后台复制完整的任务 ID");
+                    const trace = findRequestTrace(await readProject(), command.requestId);
+                    if (trace.status !== "submission_unknown" || trace.remoteTaskId) throw new Error("只有「提交结果未知」且没有 task ID 的请求才能人工找回");
+                    // task ID 一旦落盘不可改写：先核对任务存在且属于当前渠道账号，核对不过时不写任何状态，用户可修正后重试。
+                    const probe = await dependencies.provider.probeTask?.({ trace, taskId });
+                    await onRemoteEvent(command.requestId, { type: "task_created", taskId, expiresAt: probe?.expiresAt });
+                }
                 if (command.type === "reconcileProject") {
                     const traces = allRequestTraces(await readProject());
                     const neverSubmitted = traces.filter((trace) => trace.status === "draft" || trace.status === "persisted");
@@ -424,7 +442,7 @@ export function createPptGenerationModule(dependencies: PptGenerationModuleDepen
                 const project = await readProject();
                 if (command.type === "retrieveExisting" && !findRequestTrace(project, command.requestId).remoteTaskId) throw new Error("该请求没有可重新获取的远端 task ID");
                 const candidates =
-                    command.type === "retrieveExisting"
+                    command.type === "retrieveExisting" || command.type === "attachTaskId"
                         ? [findRequestTrace(project, command.requestId)]
                         : command.type === "reconcileProject"
                           ? allRequestTraces(project).filter((trace) => trace.remoteTaskId && ["submitted", "running", "succeeded", "materializing", "recoverable_error"].includes(trace.status))

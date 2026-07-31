@@ -161,6 +161,30 @@ export async function requestMaolaoImageTask(config: AiConfig, payload: unknown,
     return await fetchImageTaskContents(config, handle.taskId, delivered, options?.signal);
 }
 
+export type ImageTaskProbe = { status?: ImageTaskResponse["status"]; error?: string; expiresAt?: number };
+
+/**
+ * 单次查询任务状态，不进入轮询。用于人工粘贴 task ID 时先核对任务是否存在、是否属于当前渠道账号：
+ * task ID 一旦落盘就不可改写，核对失败时调用方可以不写任何状态，让用户修正后重试。
+ * model 需为 encodeChannelModel 编码值，据此解析出任务所属渠道。
+ */
+export async function probeImageTask(config: AiConfig, model: string, taskId: string, signal?: AbortSignal): Promise<ImageTaskProbe> {
+    const requestConfig = resolveModelRequestConfig(config, model);
+    try {
+        const task = (
+            await axios.get<ImageTaskResponse>(taskUrl(requestConfig, `/images/tasks/${encodeURIComponent(taskId)}`), {
+                headers: taskHeaders(requestConfig),
+                timeout: POLL_TIMEOUT_MS,
+                signal,
+            })
+        ).data;
+        return { status: task.status, error: readImageTaskError(task.error) || undefined, expiresAt: task.expires_at };
+    } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 404) throw new ImageTaskUnavailableError("图片任务不存在或已失效");
+        throw error;
+    }
+}
+
 /**
  * 恢复一个已存在的任务：跳过提交，直接轮询并取图。用于页面重载后续轮询。
  * model 需为 encodeChannelModel 编码值，据此解析出任务所属渠道。

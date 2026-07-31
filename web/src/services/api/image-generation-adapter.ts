@@ -1,5 +1,5 @@
 import { requestEdit, requestGeneration } from "@/services/api/image";
-import { resumeImageTask } from "@/services/api/maolao-image";
+import { probeImageTask, resumeImageTask, type ImageTaskProbe } from "@/services/api/maolao-image";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 
@@ -22,6 +22,8 @@ export type ImageGenerationProviderResult = {
 export type ImageGenerationProviderAdapter = {
     submit: (input: ImageGenerationProviderInput) => Promise<ImageGenerationProviderResult>;
     resume: (input: Omit<ImageGenerationProviderInput, "prompt" | "references"> & { remoteTaskId: string }) => Promise<ImageGenerationProviderResult>;
+    /** 单次查询任务状态，不取图、不计费。用于人工粘贴 task ID 前核对归属。 */
+    probe: (input: { config: AiConfig; remoteTaskId: string; signal?: AbortSignal }) => Promise<ImageTaskProbe>;
 };
 
 export const imageGenerationProviderAdapter: ImageGenerationProviderAdapter = {
@@ -65,6 +67,8 @@ export const imageGenerationProviderAdapter: ImageGenerationProviderAdapter = {
         if (!image) throw new Error("图片任务没有可恢复的结果");
         return { dataUrl: image.dataUrl, resultIdentity: `${remoteTaskId}:0`, remoteTaskId };
     },
+
+    probe: ({ config, remoteTaskId, signal }) => probeImageTask(config, config.model, remoteTaskId, signal),
 };
 
 function createEventQueue(onEvent: ImageGenerationProviderInput["onEvent"]) {

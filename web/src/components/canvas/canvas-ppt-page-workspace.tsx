@@ -15,7 +15,7 @@ import type { CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { GENERATION_COUNT_MAX, GENERATION_COUNT_MIN, getGenerationCount, resolveGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { PPT_PAGE_PROMPT } from "@/lib/ppt/deck-builder";
 import type { PptPageRewriteSpec } from "@/lib/ppt/content-plan";
-import type { PptGenerationModule } from "@/lib/ppt/generation-execution";
+import { isPptManualTaskId, type PptGenerationModule } from "@/lib/ppt/generation-execution";
 import { createGenerationPlan, previewGenerationPlan, type GenerationPlan } from "@/lib/ppt/generation-plan";
 import { setPptPageConfirmedNode } from "@/lib/ppt/page-confirmation";
 import { applyPptCanonicalPageRewrite, applyPptCanonicalPageTextEdit, approvePptCanonicalPageContent, buildPptPageWorkspace, getPptCanonicalPageText, type PptPageWorkspaceTake } from "@/lib/ppt/page-workspace";
@@ -140,6 +140,8 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     const [configBaseline, setConfigBaseline] = useState<GenerationConfigDraft>();
     const [visualDirectionOpen, setVisualDirectionOpen] = useState(false);
     const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+    const [manualTaskIdDraft, setManualTaskIdDraft] = useState("");
+    const [attachingTaskId, setAttachingTaskId] = useState(false);
     const [workspaceColumnHeight, setWorkspaceColumnHeight] = useState(0);
     const [upperPaneHeight, setUpperPaneHeight] = useState<number>();
     const [workspaceColumnElement, setWorkspaceColumnElement] = useState<HTMLElement | null>(null);
@@ -302,6 +304,10 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
     const riskyRequest = riskyRequests[0];
     const repeatBillingRisk = Boolean(activeTake?.requiresRepeatBillingConfirmation);
     const retrievableRequest = activeTake?.generationRequests.find((request) => request.remoteTaskId && possiblySubmittedStatuses.includes(request.status));
+    // 人工找回只针对「提交结果未知且没有 task ID」的请求：远端可能已经生成并计费，只是响应在回程丢了。
+    // 批量生成时同一方案可能有多个这样的请求，逐个粘贴各自的 task ID。
+    const manualRecoverableRequests = activeTake?.generationRequests.filter((request) => request.status === "submission_unknown" && !request.remoteTaskId) || [];
+    const manualRecoverableRequest = manualRecoverableRequests[0];
     const abandonableRequest = riskyRequest ?? (retrievableRequest?.status === "recoverable_error" ? retrievableRequest : undefined);
     const activeConfirmed = Boolean(activeNode && activeNode.id === workspace.resolvedConfirmedNodeId);
     // 预览井下缘信息条用：当前查看候选稿在其方案分支内的序号（第 N 稿）。
@@ -493,6 +499,21 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
             message.info("已开始重新获取原任务结果");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "重新获取失败");
+        }
+    };
+
+    const attachManualTaskId = async () => {
+        if (!manualRecoverableRequest || !isPptManualTaskId(manualTaskIdDraft) || attachingTaskId) return;
+        setAttachingTaskId(true);
+        try {
+            const result = await generationModule.recover({ type: "attachTaskId", requestId: manualRecoverableRequest.requestId, taskId: manualTaskIdDraft.trim() });
+            void result.settled.catch((error) => message.error(error instanceof Error ? error.message : "任务结果保存失败"));
+            setManualTaskIdDraft("");
+            message.info("已开始按 task ID 取回原任务结果，不会重新提交生成请求");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "找回失败");
+        } finally {
+            setAttachingTaskId(false);
         }
     };
 
@@ -1519,6 +1540,28 @@ export function CanvasPptPageWorkspace({ open, projectId, pageId, targetTakeId, 
                                                             标记放弃
                                                         </Button>
                                                     ) : null}
+                                                </div>
+                                            ) : null}
+                                            {manualRecoverableRequest ? (
+                                                <div className="mt-1.5 space-y-1">
+                                                    <div className="flex items-center gap-1">
+                                                        <Input
+                                                            size="small"
+                                                            className="!h-7 max-w-[260px]"
+                                                            value={manualTaskIdDraft}
+                                                            placeholder={`粘贴请求 ${manualRecoverableRequest.slotIndex + 1} 的后台 task ID（task_ 开头）`}
+                                                            aria-label={`粘贴请求 ${manualRecoverableRequest.slotIndex + 1} 的后台 task ID 找回`}
+                                                            onChange={(event) => setManualTaskIdDraft(event.target.value)}
+                                                            onPressEnter={() => void attachManualTaskId()}
+                                                        />
+                                                        <Button type="text" size="small" className="!h-7 !px-1.5" loading={attachingTaskId} disabled={!isPptManualTaskId(manualTaskIdDraft)} onClick={() => void attachManualTaskId()}>
+                                                            找回
+                                                        </Button>
+                                                    </div>
+                                                    <div className="text-[11px] opacity-80">
+                                                        到供应商后台复制请求 {manualRecoverableRequest.slotIndex + 1} 的 task ID 贴进来，系统只查询取图、不会重新提交生成，也不会重复计费；图片正文有保留时限（默认 1 小时），过期后只能重新生成。
+                                                        {manualRecoverableRequests.length > 1 ? `本方案共有 ${manualRecoverableRequests.length} 个请求待找回，取回一个后这里会自动换到下一个，请逐个粘贴各自的 task ID。` : ""}
+                                                    </div>
                                                 </div>
                                             ) : null}
                                         </div>

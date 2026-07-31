@@ -135,6 +135,18 @@ export function usePptGenerationModule({ projectId, projectLoaded, effectiveConf
                         return "submission_unknown";
                     },
                     hasBillingRisk: (error) => error instanceof ImageTaskDeliveryUnavailableError,
+                    probeTask: async ({ trace, taskId }) => {
+                        const config = requestConfig(configRef.current, trace.providerIdentity);
+                        let probe: Awaited<ReturnType<typeof imageGenerationProviderAdapter.probe>>;
+                        try {
+                            probe = await imageGenerationProviderAdapter.probe({ config, remoteTaskId: taskId });
+                        } catch (error) {
+                            if (error instanceof ImageTaskUnavailableError) throw new Error("没查到这个 task ID：请核对是否复制完整，以及它是否属于当前渠道 API Key 所在的账号");
+                            throw new Error(`无法核对 task ID：${error instanceof Error ? error.message : "网络异常"}，请稍后重试`);
+                        }
+                        if (probe.status === "failed") throw new Error(`供应商侧这个任务是失败状态${probe.error ? `（${probe.error}）` : ""}，没有可取回的图片`);
+                        return { expiresAt: probe.expiresAt };
+                    },
                 },
                 materialize: async (result) => imageMetadata(await uploadImage(result.dataUrl)),
                 notify: ({ runId, pageId, takeId, status }) => notifyRun(message, navigate, projectId, runId, pageId, takeId, status),
