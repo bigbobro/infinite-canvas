@@ -116,6 +116,64 @@ test("SHA-26：没有 proposedAnswer 的占位缺口不能确认当前占位内�
     assert.doesNotMatch(gapSection, /确认采用当前内容/);
 });
 
+test("SHA-38：缺口卡引用绑定块原文与位置标签，同页多张同类卡可相互区分", () => {
+    const first = "首个方案把交付周期缩短到两周";
+    const second = "第二个方案把人力成本降低三成";
+    const html = renderPlan(
+        [
+            gap("g-body-1", "请确认本段新增表述", { pageId: "page-1", kind: "unsupported_claim", reason: "该表述引入了原材料未支持的事实或结论", proposedAnswer: first }),
+            gap("g-body-2", "请确认本段新增表述", { pageId: "page-1", kind: "unsupported_claim", reason: "该表述引入了原材料未支持的事实或结论", proposedAnswer: second }),
+        ],
+        {
+            contentBlocks: [
+                { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
+                { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: [] },
+                { id: "body-1", kind: "body", text: first, sourceRefIds: [], gapId: "g-body-1" },
+                { id: "body-2", kind: "body", text: second, sourceRefIds: [], gapId: "g-body-2" },
+            ],
+        },
+    );
+    const gapSection = sectionStartingAt(html, "信息缺口");
+    assert.match(gapSection, /当前页面上的这句话 · 正文第 1 块/);
+    assert.match(gapSection, /当前页面上的这句话 · 正文第 2 块/);
+    assert.equal(gapSection.match(new RegExp(first, "g"))?.length, 1);
+    assert.equal(gapSection.match(new RegExp(second, "g"))?.length, 1);
+    assert.equal(gapSection.match(/确认采用当前内容/g)?.length, 2);
+    assert.doesNotMatch(gapSection, /AI 建议，尚未采纳/);
+});
+
+test("SHA-38：AI 建议与绑定块不同时，当前这句话与 AI 建议并存且各自只出现一次", () => {
+    const current = "现有正文的原始表述";
+    const proposed = "模型改写后的表述";
+    const html = renderPlan([gap("g-body", "请确认本段新增表述", { pageId: "page-1", kind: "unsupported_claim", reason: "该表述引入了原材料未支持的事实或结论", proposedAnswer: proposed })], {
+        contentBlocks: [
+            { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
+            { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: [] },
+            { id: "body", kind: "body", text: current, sourceRefIds: [], gapId: "g-body" },
+        ],
+    });
+    const gapSection = sectionStartingAt(html, "信息缺口");
+    assert.match(gapSection, /当前页面上的这句话 · 正文/);
+    assert.doesNotMatch(gapSection, /当前页面上的这句话 · 正文第/);
+    assert.match(gapSection, /AI 建议，尚未采纳/);
+    assert.match(gapSection, /采纳 AI 建议/);
+    assert.equal(gapSection.match(new RegExp(current, "g"))?.length, 1);
+    assert.equal(gapSection.match(new RegExp(proposed, "g"))?.length, 1);
+    assert.doesNotMatch(gapSection, /确认采用当前内容/);
+});
+
+test("SHA-38：占位块缺口与整套缺口不引用模板占位文案", () => {
+    const html = renderPlan([gap("g-list", "请补充本页列表内容", { pageId: "page-1" }), gap("g-deck", "整套材料仍需确认受众")], {
+        contentBlocks: [
+            { id: "title", kind: "title", text: "测试页", sourceRefIds: [] },
+            { id: "claim", kind: "primary_claim", text: "核心信息", sourceRefIds: [] },
+            { id: "list", kind: "placeholder", text: "待补充", sourceRefIds: [], gapId: "g-list" },
+        ],
+    });
+    assert.doesNotMatch(html, /当前页面上的这句话/);
+    assert.match(sectionStartingAt(html, "信息缺口"), /让 AI 给建议/);
+});
+
 test("SHA-20：页级修复可见 loading、success、error 终态且进行中禁用重复提交", () => {
     const loading = renderPlan([], {
         pageRequest: { pageId: "page-1", loading: true, status: "loading", error: "", successMessage: "" },

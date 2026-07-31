@@ -758,6 +758,9 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
     const proposedAnswer = gap.proposedAnswer?.trim() || "";
     const proposedEqualsBoundBlock = Boolean(proposedAnswer && boundBlockText && proposedAnswer === boundBlockText);
     const showProposedAnswer = Boolean(proposedAnswer && !proposedEqualsBoundBlock);
+    // SHA-38：缺口卡必须亮出被质疑的那句话，否则同页多张同类卡文案完全一样、无从判断在确认什么；占位块只有模板文案，引用出来反成噪音。
+    const showBoundBlockText = Boolean(boundBlockText) && boundBlock?.kind !== "placeholder";
+    const boundBlockLabel = boundPage && boundBlock ? blockPositionLabel(boundPage, boundBlock) : "";
     const confirmCurrentText = proposedEqualsBoundBlock ? boundBlockText : "";
     const requiresConcreteContent = Boolean(gap.briefField || boundPage?.contentBlocks.some((block) => block.gapId === gap.id && (block.kind === "title" || block.kind === "primary_claim")));
     if (resolved) {
@@ -790,10 +793,20 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
                 </div>
                 <span className={`text-[11px] ${gap.blocking ? "text-amber-600 dark:text-amber-300" : "text-stone-400"}`}>{gap.blocking ? "需要决定" : "可选"}</span>
             </div>
-            {showProposedAnswer ? (
-                <div className="mt-3 border-y border-stone-100 py-2 text-sm dark:border-stone-800">
-                    <p className="text-xs text-stone-400">AI 建议，尚未采纳</p>
-                    <p className="mt-1 leading-6 text-stone-600 dark:text-stone-300">{proposedAnswer}</p>
+            {showBoundBlockText || showProposedAnswer ? (
+                <div className="mt-3 divide-y divide-stone-100 border-y border-stone-100 text-sm dark:divide-stone-800 dark:border-stone-800">
+                    {showBoundBlockText ? (
+                        <div className="py-2">
+                            <p className="text-xs text-stone-400">当前页面上的这句话{boundBlockLabel ? ` · ${boundBlockLabel}` : ""}</p>
+                            <p className="mt-1 whitespace-pre-wrap border-l-2 border-stone-200 pl-2 leading-6 text-stone-600 dark:border-stone-700 dark:text-stone-300">{boundBlockText}</p>
+                        </div>
+                    ) : null}
+                    {showProposedAnswer ? (
+                        <div className="py-2">
+                            <p className="text-xs text-stone-400">AI 建议，尚未采纳</p>
+                            <p className="mt-1 leading-6 text-stone-600 dark:text-stone-300">{proposedAnswer}</p>
+                        </div>
+                    ) : null}
                 </div>
             ) : null}
             <div className="mt-3 flex gap-2">
@@ -833,6 +846,14 @@ function InformationGapEditor({ gap, planning }: { gap: PptInformationGap; plann
             </div>
         </div>
     );
+}
+
+/** 缺口卡引用绑定块时的位置标签：同类块多于一块才带序号，序号与「页面内容」里的排列顺序一致，便于在页面上找到这句话。 */
+function blockPositionLabel(page: CanvasProjectPptPageSpec, block: CanvasProjectPptContentBlock) {
+    const label = BLOCK_LABELS[block.kind];
+    const sameKindBlocks = page.contentBlocks.filter((item) => item.kind === block.kind);
+    if (sameKindBlocks.length < 2) return label;
+    return `${label}第 ${sameKindBlocks.findIndex((item) => item.id === block.id) + 1} 块`;
 }
 
 function resolutionLabel(kind: NonNullable<PptInformationGap["resolution"]>["kind"]) {
