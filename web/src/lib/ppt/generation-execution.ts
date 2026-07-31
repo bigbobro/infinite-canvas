@@ -511,9 +511,12 @@ async function preparePlan(plan: GenerationPlan, expectedKind: GenerationPlan["k
     if (blockingIssue) throw new Error(`最终提示词检查未通过：${blockingIssue.message}`);
     await durableCanvas.mutate((project) => {
         if (!project.ppt) throw new Error("当前工程不是 PPT 工作台工程");
+        // 【前状态检查】只有对「计划构建时看到的工程」判断才成立的两项：
+        // 1) assertGenerationPlanKind 校验 candidateEdit 的源候选血缘——源候选必须是计划之外已经存在的候选，
+        //    在投影里判断等于让计划自证。
+        // 2) 未完成请求冲突——投影已经把本计划自己的 draft 请求与 preparing run 写进节点，
+        //    对投影判断会与自己冲突，必然误报「仍有未完成请求」。
         assertGenerationPlanKind(project, plan, expectedKind);
-        assertCompilerInputsCurrent(project, plan);
-        assertGenerationPlanCurrentTargets(project, plan);
         const unresolved = allRequestTraces(project).filter((trace) => !["completed", "failed", "abandoned"].includes(trace.status));
         const unresolvedRuns = allRunSummaries(project).filter((run) => run.status === "preparing" || run.status === "running" || run.status === "needs_attention");
         const conflict = plan.runs.find((run) => unresolved.some((trace) => trace.pageId === run.pageId && trace.takeId === run.takeId) || unresolvedRuns.some((summary) => summary.pageId === run.pageId && summary.takeId === run.takeId));
@@ -527,7 +530,16 @@ async function preparePlan(plan: GenerationPlan, expectedKind: GenerationPlan["k
             if (!run && !request) return node;
             return { ...node, metadata: { ...node.metadata, ...(run ? { pptGenerationRun: run } : {}), ...(request ? { pptGenerationRequest: request } : {}) } };
         });
-        return { ...project, nodes, connections: next.connections, ppt: applyGenerationPlanPptOps(project.ppt, plan.pptOps) };
+        const projected: CanvasProject = { ...project, nodes, connections: next.connections, ppt: applyGenerationPlanPptOps(project.ppt, plan.pptOps) };
+        // 【后状态检查】编译输入与当前目标必须对「应用 plan ops 之后的工程投影」比较：
+        // 计划构建时就是按这个投影算 compilation.targets 的（deriveAndGenerate 的方案节点、
+        // generateRest 的校样连线都还是 pending），对前状态比较会把计划自己预留的方案误判成
+        // 「Compiler 输入节点已变更」——deriveAndGenerate 必现。
+        // 失效保护不受影响：源页规格漂移由 assertCompilerInputsCurrent 比对 ppt.pageSpecs 与快照拦下
+        //（plan ops 不写这个页面的 PageSpec，投影里仍是用户当前的版本）。
+        assertCompilerInputsCurrent(projected, plan);
+        assertGenerationPlanCurrentTargets(projected, plan);
+        return projected;
     });
 }
 

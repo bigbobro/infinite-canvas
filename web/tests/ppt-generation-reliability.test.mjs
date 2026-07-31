@@ -9,12 +9,15 @@ let reducePptGenerationRequest;
 let isPptManualTaskId;
 let PPT_GENERATION_SUBMIT_CONCURRENCY;
 let buildPptPageWorkspace;
+let getPptCanonicalPageText;
+let applyPptCanonicalPageTextEdit;
 let resolvePptGenerationProviderIdentity;
 let assertPptGenerationProviderIdentity;
 let hasPptRepeatBillingRisk;
 let buildPptDeckProject;
 let createGenerationPlan;
 let createPptCandidateEditPlan;
+let assertGenerationPlanCurrentTargets;
 let createPptVisualDirectionPresetContract;
 let compilePptPromptSnapshot;
 let derivePptDeckShellFacts;
@@ -31,7 +34,7 @@ let hashPptContentSource;
 before(async () => {
     vite = await createServer({ server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
     ({ createPptGenerationModule, reducePptGenerationRequest, isPptManualTaskId, PPT_GENERATION_SUBMIT_CONCURRENCY } = await vite.ssrLoadModule("/src/lib/ppt/generation-execution.ts"));
-    ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
+    ({ resolvePptGenerationProviderIdentity, assertPptGenerationProviderIdentity, createGenerationPlan, createPptCandidateEditPlan, assertGenerationPlanCurrentTargets } = await vite.ssrLoadModule("/src/lib/ppt/generation-plan.ts"));
     ({ compilePptPromptSnapshot, derivePptDeckShellFacts } = await vite.ssrLoadModule("/src/lib/ppt/prompt-compiler.ts"));
     ({ derivePptLockedFacts } = await vite.ssrLoadModule("/src/lib/ppt/content-plan.ts"));
     ({ PPT_PAGE_PROMPT, hashPptContentSource } = await vite.ssrLoadModule("/src/lib/ppt/deck-builder.ts"));
@@ -40,7 +43,11 @@ before(async () => {
     ({ defaultConfig } = await vite.ssrLoadModule("/src/stores/use-config-store.ts"));
     ({ buildPptGenerationNotificationHref } = await vite.ssrLoadModule("/src/pages/canvas/hooks/use-ppt-generation-module.ts"));
     ({ createPptVisualDirectionPresetContract } = await vite.ssrLoadModule("/src/lib/ppt/style-contract.ts"));
-    ({ buildPptPageWorkspace } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
+    ({ buildPptPageWorkspace, getPptCanonicalPageText, applyPptCanonicalPageTextEdit } = await vite.ssrLoadModule("/src/lib/ppt/page-workspace.ts"));
+    // 生产里画布页在任何画布操作之前就注册了内置节点定义；测试环境要还原这一步，
+    // 否则 applyCanvasAgentOps 的 add_node 认不出 config/image，会一律兜底成 text 节点。
+    const { registerBuiltinNodes } = await vite.ssrLoadModule("/src/components/canvas/nodes/builtin-nodes.tsx");
+    registerBuiltinNodes();
 });
 
 after(async () => {
@@ -688,6 +695,50 @@ test("POST 前 Compiler 输入节点才变更时为 0 POST 且明确失败", asy
     assert.equal(requestTrace(await harness.durable.read(), plan.runs[0].requests[0].requestId).status, "failed");
 });
 
+test("SHA-41：强合约模式派生新方案并生成，一步通过 durable gate", async () => {
+    const project = deriveProject("derive-generate");
+    const plan = derivePlan(project);
+    // 根因固化：同一份计划对「应用 plan ops 之前」的工程校验必然失败——预留方案此刻还不存在。
+    // preparePlan 因此必须先建出投影再校验；谁把顺序改回去，下面的 start 就会失败。
+    assert.throws(() => assertGenerationPlanCurrentTargets(project, plan), /Compiler 输入节点已变更/);
+    const harness = createHarness(project, { taskOnSubmit: true });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    const started = await module.start(plan);
+    await started.settled;
+    const persisted = await harness.durable.read();
+    const anchorNode = persisted.nodes.find((node) => node.id === "derived-anchor");
+    const configNode = persisted.nodes.find((node) => node.id === "derived-config");
+
+    assert.ok(persisted.ppt.pages[0].takes.some((take) => take.takeId === "derived-take" && take.anchorNodeId === "derived-anchor" && take.configNodeId === "derived-config"));
+    assert.equal(anchorNode?.type, "text");
+    assert.equal(configNode?.type, "config");
+    assert.equal(anchorNode?.metadata.pptTakeId, "derived-take");
+    assert.equal(configNode?.metadata.pptTakeId, "derived-take");
+    assert.ok(persisted.connections.some((connection) => connection.fromNodeId === "derived-anchor" && connection.toNodeId === "derived-config"));
+    assert.ok(persisted.connections.some((connection) => connection.fromNodeId === "inherited-reference" && connection.toNodeId === "derived-config"));
+    assert.equal(harness.stats.submitCalls, 1);
+    assert.equal(requestTrace(persisted, plan.runs[0].requests[0].requestId).status, "completed");
+});
+
+test("SHA-41：派生计划冻结后源页规格再改动，start 仍被拒且 POST 为 0", async () => {
+    const project = deriveProject("derive-stale-spec");
+    const plan = derivePlan(project);
+    const pageId = project.ppt.pages[0].pageId;
+    const drifted = {
+        ...project,
+        ppt: applyPptCanonicalPageTextEdit(project.ppt, pageId, project.ppt.pageSpecs[0].version, "关键指标复盘\n设备在线率 98.5%", "2026-07-31T00:00:00.000Z"),
+    };
+    const harness = createHarness(drifted, { taskOnSubmit: true });
+    const module = createPptGenerationModule(harness.dependencies);
+
+    await assert.rejects(module.start(plan), /规格已变更/);
+    const persisted = await harness.durable.read();
+
+    assert.equal(harness.stats.submitCalls, 0);
+    assert.ok(!persisted.ppt.pages[0].takes.some((take) => take.takeId === "derived-take"));
+});
+
 test("Agent 不能修改、连入或删除 PPT 受控输入", () => {
     const project = baseProject("agent-guard");
     project.nodes.push(canvasNode("style", "text", { content: "专业风格", status: "success", pptRole: "style" }), canvasNode("ordinary", "text", { content: "未确认结论", status: "success" }));
@@ -1295,6 +1346,41 @@ function compilerProject(suffix) {
         showImageInfo: false,
         ...partial,
     };
+}
+
+/** 「保存并生成新方案」的现场：源方案的生成配置上挂着一张会被新方案继承的参考图。 */
+function deriveProject(suffix) {
+    const project = compilerProject(suffix);
+    project.nodes.push(canvasNode("inherited-reference", "image", { content: "data:image/png;base64,AA==", storageKey: "image:inherited-reference", status: "success" }));
+    project.connections.push({ id: "inherited-reference-config", fromNodeId: "inherited-reference", toNodeId: project.ppt.pages[0].takes[0].configNodeId });
+    return project;
+}
+
+/** 复刻 canvas-ppt-page-workspace 的 deriveAndGenerate intent：方案与两个节点都只是预留 ID，落盘由 plan ops 完成。 */
+function derivePlan(project) {
+    const page = project.ppt.pages[0];
+    const sourceConfig = project.nodes.find((node) => node.id === page.takes[0].configNodeId);
+    return createGenerationPlan(
+        {
+            kind: "deriveAndGenerate",
+            pageId: page.pageId,
+            reservedTakeId: "derived-take",
+            reservedAnchorNodeId: "derived-anchor",
+            reservedConfigNodeId: "derived-config",
+            configMetadata: {
+                prompt: "",
+                pptLayoutPrompt: sourceConfig.metadata.pptLayoutPrompt,
+                model: sourceConfig.metadata.model,
+                size: sourceConfig.metadata.size,
+                count: 1,
+                pptPageIndex: page.index,
+                pptRole: "page",
+            },
+            anchorContent: getPptCanonicalPageText(project.ppt, page.pageId),
+            inheritedInputNodeIds: ["inherited-reference"],
+        },
+        { project, effectiveConfig: defaultConfig },
+    );
 }
 
 function projectWithLineagedCandidate(suffix) {
